@@ -208,6 +208,19 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
         except Exception as e:
             raise RuntimeError(f"[ExtractValleysAlgorithm] failed to save valley output: {e}")
 
+        # Add result to QGIS project
+        try:
+            feedback.pushInfo("Add Valley lines layer to QGIS Map...")  
+            from qgis.core import QgsVectorLayer, QgsProject
+            vlayer = QgsVectorLayer(valley_output_path, "Valley Lines", "ogr")
+            if not vlayer.isValid():
+                feedback.reportError(f"Failed to load valley lines layer: {valley_output_path}")
+            else:
+                QgsProject.instance().addMapLayer(vlayer)
+                feedback.pushInfo("Valley lines layer added to QGIS project.")
+        except Exception as e:
+            feedback.reportError(f"Could not add valley lines to QGIS project: {e}")
+
         results = {self.OUTPUT_VALLEYS: valley_output_path}
         if filled_output_path:
             results[self.OUTPUT_FILLED] = filled_output_path

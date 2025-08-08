@@ -7,7 +7,6 @@
 # -----------------------------------------------------------------------------
 import os
 import sys
-import configparser
 from collections import defaultdict
 import warnings
 import matplotlib.pyplot as plt
@@ -24,30 +23,34 @@ from shapely.ops import linemerge, nearest_points, unary_union
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import savgol_filter
 
-# --- Read configuration ---
+# ---  Configuration ---
 _thisdir = os.path.dirname(__file__)
-config_path = os.path.join(_thisdir, "topo_drain_core_config.ini")
 
-config = configparser.ConfigParser()
-config.read(config_path)
-
-# 1) WHITEBOX_DIR: if unset or empty, default to local "WBT" folder
-_wbt_pkg = os.path.join(_thisdir, "WBT")
-whitebox_dir = config.get("Paths", "WHITEBOX_DIR", fallback="").strip() or _wbt_pkg
+# WhiteBoxTools directory
+whitebox_dir = os.path.join(_thisdir, "WBT")
 print(f"[TOPO DRAIN CORE] Using WhiteboxTools directory: {whitebox_dir}")
 
-# 2) TEMP_DIRECTORY: required
-temp_directory = config.get("Paths", "TEMP_DIRECTORY", fallback="").strip()
-if not temp_directory:
-    raise RuntimeError("TEMP_DIRECTORY must be set in topo_drain_config.ini")
-if not os.path.isdir(temp_directory):
-    raise FileNotFoundError(f"[Config Error] Temp directory not found: {temp_directory}")
+# Temporary and working directories
+TEMP_DIRECTORY = None
+WORKING_DIRECTORY = None
+NODATA = -32768  # Default NoData value for raster operations
 
-# 3) WORKING_DIRECTORY: if unset or empty, fall back to temp_directory
-working_directory = config.get("Paths", "WORKING_DIRECTORY", fallback="").strip() or temp_directory
-if not os.path.isdir(working_directory):
-    raise FileNotFoundError(f"[Config Error] Working directory not found: {working_directory}")
+def set_temp_and_working_dir(temp_dir, working_dir):
+    global TEMP_DIRECTORY, WORKING_DIRECTORY
+    print(f"[TopoDrainCore] Setting TEMP_DIRECTORY: {temp_dir}")
+    TEMP_DIRECTORY = temp_dir
+    print(f"[TopoDrainCore] Setting WhiteboxTools WORKING_DIRECTORY: {working_dir}")
+    WORKING_DIRECTORY = working_dir
+    if wbt is not None:
+        if WORKING_DIRECTORY:
+            wbt.set_working_dir(WORKING_DIRECTORY)
 
+def set_nodata_value(no_data_val):
+    global NODATA
+    NODATA = no_data_val
+    # if wbt is not None:
+    #     wbt.set_nodata_value(NODATA)
+        
 # --- Ensure we can import the bundled or configured WhiteboxTools ---
 if whitebox_dir not in sys.path:
     sys.path.insert(0, whitebox_dir)
@@ -56,8 +59,6 @@ from topo_drain.core.WBT.whitebox_tools import WhiteboxTools
 # --- Instantiate and configure WBT ---
 wbt = WhiteboxTools()
 wbt.set_whitebox_dir(whitebox_dir)
-wbt.set_working_dir(working_directory)
-os.environ["NODATA"] = "-32768"
 
 def add_m_to_gdf(
     gdf: gpd.GeoDataFrame,
@@ -511,7 +512,7 @@ def create_contour_lines(
             raise RuntimeError("WhiteboxTools not initialized.")
 
         if output_path is None:
-            output_path = os.path.join(temp_directory, f"contours.shp")
+            output_path = os.path.join(TEMP_DIRECTORY, f"contours.shp")
 
         else:
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -587,7 +588,7 @@ def extract_valleys(
     """
     Extract valley lines using WhiteboxTools. You can override the filled DEM,
     flow-direction, and flow-accumulation outputs; all other intermediate files
-    (streams rasters and vectors, network) use defaults in temp_directory.
+    (streams rasters and vectors, network) use defaults in TEMP_DIRECTORY.
 
     Args:
         dtm_path (str):
@@ -623,7 +624,7 @@ def extract_valleys(
 
     # Build defaults for everything
     if not postfix:
-        d = lambda name: os.path.join(temp_directory, name)
+        d = lambda name: os.path.join(TEMP_DIRECTORY, name)
         defaults = {
             "filled":         d("filled.tif"),
             "fdir":           d("fdir.tif"),
@@ -635,7 +636,7 @@ def extract_valleys(
             "network":        d("stream_network.shp"),
         }
     else:
-        d = lambda base: os.path.join(temp_directory, f"{base}_{postfix}")
+        d = lambda base: os.path.join(TEMP_DIRECTORY, f"{base}_{postfix}")
         defaults = {
             "filled":         d("filled") + ".tif",
             "fdir":           d("fdir") + ".tif",
@@ -707,7 +708,7 @@ def extract_valleys(
         else:
             print(f"[ExtractValleys] Log-scaled accumulation → {facc_log_output_path}")
         try:
-            log_raster(input_raster=facc_output_path, output_path=facc_log_output_path, nodata=float(os.environ["NODATA"]))
+            log_raster(input_raster=facc_output_path, output_path=facc_log_output_path, nodata=float(NODATA))
             if not os.path.exists(facc_log_output_path):
                 raise RuntimeError(f"[ExtractValleys] Log-scaled accumulation output not found at {facc_log_output_path}")
         except Exception as e:
@@ -849,7 +850,7 @@ def extract_ridges(
 
     # 1) Invert the DTM
     print("[ExtractRidges] Inverting DTM…")
-    inverted_dtm = os.path.join(temp_directory, f"inverted_dtm_{postfix}.tif")
+    inverted_dtm = os.path.join(TEMP_DIRECTORY, f"inverted_dtm_{postfix}.tif")
     inverted_dtm = invert_dtm(dtm_path, inverted_dtm)
     print(f"[ExtractRidges] Inversion complete: {inverted_dtm}")
 
@@ -902,7 +903,7 @@ def extract_main_valleys(
     valley_clipped = gpd.overlay(valley_lines, perimeter, how="intersection")
 
     print("[ExtractMainValleys] Rasterizing valley lines...")
-    valley_raster_path = os.path.join(temp_directory, "valley_mask.tif")
+    valley_raster_path = os.path.join(TEMP_DIRECTORY, "valley_mask.tif")
     valley_mask = line_to_raster(
         gdf=valley_clipped.geometry,
         reference_raster=facc_path,
@@ -1425,13 +1426,13 @@ def get_constant_slope_line(
         raise RuntimeError("WhiteboxTools not initialized.")
 
     # --- File paths ---
-    cost_raster_path = os.path.join(temp_directory, "cost.tif")
-    source_raster_path = os.path.join(temp_directory, "source.tif")
-    destination_raster_path = os.path.join(temp_directory, "destination.tif")
-    accum_raster_path = os.path.join(temp_directory, "accum.tif")
-    backlink_raster_path = os.path.join(temp_directory, "backlink.tif")
-    best_destination_path = os.path.join(temp_directory, "destination_best.tif")
-    pathway_raster_path = os.path.join(temp_directory, "pathway.tif")
+    cost_raster_path = os.path.join(TEMP_DIRECTORY, "cost.tif")
+    source_raster_path = os.path.join(TEMP_DIRECTORY, "source.tif")
+    destination_raster_path = os.path.join(TEMP_DIRECTORY, "destination.tif")
+    accum_raster_path = os.path.join(TEMP_DIRECTORY, "accum.tif")
+    backlink_raster_path = os.path.join(TEMP_DIRECTORY, "backlink.tif")
+    best_destination_path = os.path.join(TEMP_DIRECTORY, "destination_best.tif")
+    pathway_raster_path = os.path.join(TEMP_DIRECTORY, "pathway.tif")
 
     # --- Create cost raster ---
     cost_raster_path = create_slope_cost_raster(
@@ -1560,7 +1561,7 @@ def get_constant_slope_lines(
 
         print("[ConstantSlopeLines] Rasterizing all barrier features into mask")
         barrier_mask = vector_to_mask(mask_layers, dtm_path)
-        barrier_raster = os.path.join(temp_directory, "barrier_mask.tif")
+        barrier_raster = os.path.join(TEMP_DIRECTORY, "barrier_mask.tif")
         with rasterio.open(barrier_raster, "w", **profile) as dst:
             dst.write(barrier_mask.astype("uint8"), 1)
         print(f"[ConstantSlopeLines] Barrier raster saved to {barrier_raster}")

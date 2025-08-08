@@ -34,8 +34,9 @@ import os
 import sys
 import inspect
 
-from qgis.core import QgsProcessingAlgorithm, QgsApplication
+from qgis.core import QgsProcessingAlgorithm, QgsApplication, QgsProcessingUtils
 from .topo_drain_provider import TopoDrainProvider
+from topo_drain.core.topo_drain_core import set_temp_and_working_dir
 
 cmd_folder = os.path.split(inspect.getfile(inspect.currentframe()))[0]
 
@@ -52,6 +53,9 @@ class TopoDrainPlugin(object):
         """Init Processing provider for QGIS >= 3.8."""
         self.provider = TopoDrainProvider()
         QgsApplication.processingRegistry().addProvider(self.provider)
+        temp_dir = QgsProcessingUtils.tempFolder()
+        working_dir = QgsProcessingUtils.tempFolder()
+        set_temp_and_working_dir(temp_dir, working_dir)
 
     def initGui(self):
         self.initProcessing()
