@@ -5,12 +5,10 @@
 [general]
 name=Topo Drain
 qgisMinimumVersion=3.0
-description=A QGIS plugin for planning surface drainage water management. It automates the extraction of main valleys and ridges, and supports various other water retention planning methods, such as Keyline Design (keypoints, keylines), pond siting and various other sponge-scape measures. The algorithms are mainly based on WhiteboxTools. The plugin will be developed further on a regular basis.
+description=A QGIS plugin for planning surface drainage water management. It automates the extraction of main valleys and ridges, and supports various other water retention planning methods.
 version=0.1
 author=Timo Wicki
-email=wickitimo@gmail.com
-
-about=A QGIS plugin for planning surface-drainage water management. It automates the extraction of main valleys and ridges and supports various water-retention planning methods—such as Keyline Design (keypoints, keylines), pond siting, and other sponge-scape measures. The plugin will be developed further on a regular basis. Core algorithms leverage WhiteboxTools (Lindsay, 2017–2020; see https://github.com/jblindsay/whitebox-tools).
+about=A QGIS plugin for planning surface-drainage water management. It automates the extraction of main valleys and ridges and supports various water-retention planning methods—such as road siting, pond siting, Keyline Design, and other sponge-scape measures. Influencing surface runoff on land is complex and requires significant expertise. For instance: Keyline Design and swale planning should not be performed blindly respectively fully automatically. This tool is intended as an aid for users with experience in land surface water management - For example, equidistant keylines are generally more appropriate than keylines that always follow precise slope gradients, as the latter can result in overly complex keyline design layouts. Also it's safer to use keyline design for planning vegetation (agroforestry) and farming management (e.g., cultivation patterns) patterns than for swales. The main goal should be to slow and sink water where it falls, not to transport it from valleys to ridges. The plugin will be developed further on a regular basis. Core algorithms leverage WhiteboxTools (Lindsay, 2017–2020; see https://github.com/jblindsay/whitebox-tools).
 
 tracker=https://github.com/wickit7/topo-drain-plugin/issues
 repository=https://github.com/wickit7/topo-drain-plugin

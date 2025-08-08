@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # -----------------------------------------------------------------------------
-# Name: extract_valleys.py
+# Name: extract_valleys_tool.py
 #
 # Purpose: Python tool to create valley lines (river network) based on WhiteboxTools
 #
@@ -8,7 +8,8 @@
 
 import os
 import rasterio
-from topo_drain import extract_valleys
+#from topo_drain.core.topo_drain_core import extract_valleys  # <-- updated import
+from topo_drain_core import extract_valleys  # <-- updated import
 import geopandas as gpd
 
 def extract_valleys_tool(

@@ -31,7 +31,7 @@ __copyright__ = '(C) 2025 by Timo Wicki'
 __revision__ = '$Format:%H$'
 
 from qgis.core import QgsProcessingProvider
-from .extract_valleys import ExtractValleys
+from .extract_valleys_algorithm import ExtractValleysAlgorithm
 
 
 class TopoDrainProvider(QgsProcessingProvider):
@@ -53,7 +53,7 @@ class TopoDrainProvider(QgsProcessingProvider):
         """
         Loads all algorithms belonging to this provider.
         """
-        self.addAlgorithm(ExtractValleys())
+        self.addAlgorithm(ExtractValleysAlgorithm())
         # add additional algorithms here
         # self.addAlgorithm(MyOtherAlgorithm())
 

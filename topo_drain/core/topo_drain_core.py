@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # -----------------------------------------------------------------------------
-# Name: topo_drain.py
+# Name: topo_drain_core.py
 #
 # Purpose: Script with python functions of topo drain qgis plugin
 #
@@ -26,7 +26,7 @@ from scipy.signal import savgol_filter
 
 # --- Read configuration ---
 _thisdir = os.path.dirname(__file__)
-config_path = os.path.join(_thisdir, "topo_drain_config.ini")
+config_path = os.path.join(_thisdir, "topo_drain_core_config.ini")
 
 config = configparser.ConfigParser()
 config.read(config_path)
@@ -34,6 +34,7 @@ config.read(config_path)
 # 1) WHITEBOX_DIR: if unset or empty, default to local "WBT" folder
 _wbt_pkg = os.path.join(_thisdir, "WBT")
 whitebox_dir = config.get("Paths", "WHITEBOX_DIR", fallback="").strip() or _wbt_pkg
+print(f"[TOPO DRAIN CORE] Using WhiteboxTools directory: {whitebox_dir}")
 
 # 2) TEMP_DIRECTORY: required
 temp_directory = config.get("Paths", "TEMP_DIRECTORY", fallback="").strip()
@@ -50,7 +51,7 @@ if not os.path.isdir(working_directory):
 # --- Ensure we can import the bundled or configured WhiteboxTools ---
 if whitebox_dir not in sys.path:
     sys.path.insert(0, whitebox_dir)
-from whitebox_tools import WhiteboxTools
+from topo_drain.core.WBT.whitebox_tools import WhiteboxTools
 
 # --- Instantiate and configure WBT ---
 wbt = WhiteboxTools()
@@ -271,72 +272,6 @@ def vector_to_mask(
     )
 
     return mask
-
-
-def fill_dtm(input_dtm: str, output_dtm: str, dist: float = 0) -> str:
-    """
-    Fill depressions in a DTM using least-cost breach algorithm (WhiteboxTools).
-
-    Args:
-        input_dtm (str): Path to input DTM (GeoTIFF).
-        output_dtm (str): Path to filled output DTM.rasterize
-        dist (float): Maximum search distance for breach paths in cells.
-    Returns:
-        str: Path to the filled DTM.
-    """
-    try:
-        if wbt is None:
-                raise RuntimeError("WhiteboxTools not initialized.")
-        wbt.breach_depressions_least_cost(
-            dem=input_dtm,
-            output=output_dtm,
-            dist=dist
-        )
-        return output_dtm
-
-    except Exception as e:
-        raise RuntimeError(f"WhiteboxTools 'breach_depressions_least_cost' failed: {e}")
-
-
-def resample_raster(input_path, output_path, scale_factor=0.5):
-    """
-    Resample a raster to a new resolution using bilinear interpolation.
-
-    Args:
-        input_path (str): Path to the input raster (GeoTIFF).
-        output_path (str): Path where the resampled raster will be saved.
-        scale_factor (float): Scaling factor for resolution (e.g., 0.5 halves the resolution).
-
-    Returns:
-        str: Path to the resampled raster.
-    """
-    with rasterio.open(input_path) as src:
-        # Neue Auflösung und Dimensionen
-        new_width = int(src.width / scale_factor)
-        new_height = int(src.height / scale_factor)
-
-        # Skalierungs-Transform
-        scale = Affine.scale(
-            src.width / new_width,
-            src.height / new_height
-        )
-        new_transform = src.transform * scale
-
-        # Neue Metadaten
-        kwargs = src.meta.copy()
-        kwargs.update({
-            'transform': new_transform,
-            'width': new_width,
-            'height': new_height
-        })
-
-        with rasterio.open(output_path, 'w', **kwargs) as dst:
-            for i in range(1, src.count + 1):
-                dst.write(
-                    src.read(i, out_shape=(src.count, new_height, new_width), resampling=Resampling.bilinear),
-                    i
-                )
-    return output_path
 
 def invert_dtm(dtm_path: str, output_path: str) -> str:
     """
@@ -646,7 +581,8 @@ def extract_valleys(
     facc_log_output_path: str = None,
     accumulation_threshold: int = 1000,
     dist_facc: float = 50,
-    postfix: str = None
+    postfix: str = None,
+    feedback=None
 ) -> gpd.GeoDataFrame:
     """
     Extract valley lines using WhiteboxTools. You can override the filled DEM,
@@ -670,6 +606,8 @@ def extract_valleys(
             Maximum breach distance (in raster units) for depression filling.
         postfix (str, optional):
             Optional string to include in default output filenames.
+        feedback (QgsProcessingFeedback, optional):
+            Optional feedback object for progress reporting/logging (for QGIS Plugin).
 
     Returns:
         GeoDataFrame:
@@ -678,7 +616,10 @@ def extract_valleys(
     if wbt is None:
         raise RuntimeError("WhiteboxTools not initialized.")
 
-    print("[ExtractValleys] Starting valley extraction process...")
+    if feedback:
+        feedback.pushInfo("[ExtractValleys] Starting valley extraction process...")
+    else:
+        print("[ExtractValleys] Starting valley extraction process...")
 
     # Build defaults for everything
     if not postfix:
@@ -706,7 +647,8 @@ def extract_valleys(
             "network":        d("stream_network") + ".shp",
         }
 
-    # Only these three can be overridden
+    print(f"[ExtractValleys] Define paths for outputs")
+    # Only these four can be overridden
     filled_output_path   = filled_output_path   or defaults["filled"]
     fdir_output_path     = fdir_output_path     or defaults["fdir"]
     facc_output_path     = facc_output_path     or defaults["facc"]
@@ -719,50 +661,146 @@ def extract_valleys(
     stream_network_output_path = defaults["network"]
 
     try:
-        print(f"[ExtractValleys] Filling depressions → {filled_output_path}")
-        fill_dtm(input_dtm=dtm_path, output_dtm=filled_output_path, dist=dist_facc)
+        if feedback:
+            feedback.pushInfo(f"[ExtractValleys] Filling depressions → {filled_output_path}")
+        else:
+            print(f"[ExtractValleys] Filling depressions → {filled_output_path}")
+        try:
+            ret = wbt.breach_depressions_least_cost(
+                dem=dtm_path,
+                output=filled_output_path,
+                dist=int(dist_facc)
+            )
+            if ret != 0 or not os.path.exists(filled_output_path):
+                raise RuntimeError(f"[ExtractValleys] Depression filling failed: WhiteboxTools returned {ret}, output not found at {filled_output_path}")
+        except Exception as e:
+            raise RuntimeError(f"[ExtractValleys] Depression filling failed: {e}")
 
-        print(f"[ExtractValleys] Flow direction → {fdir_output_path}")
-        wbt.d8_pointer(dem=filled_output_path, output=fdir_output_path)
+        if feedback:
+            feedback.pushInfo(f"[ExtractValleys] Flow direction → {fdir_output_path}")
+        else:
+            print(f"[ExtractValleys] Flow direction → {fdir_output_path}")
+        try:
+            ret = wbt.d8_pointer(dem=filled_output_path, output=fdir_output_path)
+            if ret != 0 or not os.path.exists(fdir_output_path):
+                raise RuntimeError(f"[ExtractValleys] Flow direction failed: WhiteboxTools returned {ret}, output not found at {fdir_output_path}")
+        except Exception as e:
+            raise RuntimeError(f"[ExtractValleys] Flow direction failed: {e}")
 
-        print(f"[ExtractValleys] Flow accumulation → {facc_output_path}")
-        wbt.d8_flow_accumulation(i=filled_output_path,
-                                 output=facc_output_path,
-                                 out_type="specific contributing area")
+        if feedback:
+            feedback.pushInfo(f"[ExtractValleys] Flow accumulation → {facc_output_path}")
+        else:
+            print(f"[ExtractValleys] Flow accumulation → {facc_output_path}")
+        try:
+            ret = wbt.d8_flow_accumulation(
+                i=filled_output_path,
+                output=facc_output_path,
+                out_type="specific contributing area"
+            )
+            if ret != 0 or not os.path.exists(facc_output_path):
+                raise RuntimeError(f"[ExtractValleys] Flow accumulation failed: WhiteboxTools returned {ret}, output not found at {facc_output_path}")
+        except Exception as e:
+            raise RuntimeError(f"[ExtractValleys] Flow accumulation failed: {e}")
 
-        print(f"[ExtractValleys] Log-scaled accumulation → {facc_log_output_path}")
-        log_raster(input_raster=facc_output_path, output_path=facc_log_output_path)
+        if feedback:
+            feedback.pushInfo(f"[ExtractValleys] Log-scaled accumulation → {facc_log_output_path}")
+        else:
+            print(f"[ExtractValleys] Log-scaled accumulation → {facc_log_output_path}")
+        try:
+            log_raster(input_raster=facc_output_path, output_path=facc_log_output_path, nodata=float(os.environ["NODATA"]))
+            if not os.path.exists(facc_log_output_path):
+                raise RuntimeError(f"[ExtractValleys] Log-scaled accumulation output not found at {facc_log_output_path}")
+        except Exception as e:
+            raise RuntimeError(f"[ExtractValleys] Log-scaled accumulation failed: {e}")
 
-        print(f"[ExtractValleys] Extracting streams (threshold={accumulation_threshold})")
-        wbt.extract_streams(flow_accum=facc_output_path,
-                            output=streams_output_path,
-                            threshold=accumulation_threshold)
+        if feedback:
+            feedback.pushInfo(f"[ExtractValleys] Extracting streams (threshold={accumulation_threshold})")
+        else:
+            print(f"[ExtractValleys] Extracting streams (threshold={accumulation_threshold})")
+        try:
+            ret = wbt.extract_streams(
+                flow_accum=facc_output_path,
+                output=streams_output_path,
+                threshold=accumulation_threshold
+            )
+            if ret != 0 or not os.path.exists(streams_output_path):
+                raise RuntimeError(f"[ExtractValleys] Stream extraction failed: WhiteboxTools returned {ret}, output not found at {streams_output_path}")
+        except Exception as e:
+            raise RuntimeError(f"[ExtractValleys] Stream extraction failed: {e}")
 
-        print("[ExtractValleys] Vectorizing streams")
-        wbt.raster_streams_to_vector(streams=streams_output_path,
-                                     d8_pntr=fdir_output_path,
-                                     output=streams_vec_output_path)
+        if feedback:
+            feedback.pushInfo("[ExtractValleys] Vectorizing streams")
+        else:
+            print("[ExtractValleys] Vectorizing streams")
+        try:
+            ret = wbt.raster_streams_to_vector(
+                streams=streams_output_path,
+                d8_pntr=fdir_output_path,
+                output=streams_vec_output_path
+            )
+            if ret != 0 or not os.path.exists(streams_vec_output_path):
+                raise RuntimeError(f"[ExtractValleys] Vectorizing streams failed: WhiteboxTools returned {ret}, output not found at {streams_vec_output_path}")
+        except Exception as e:
+            raise RuntimeError(f"[ExtractValleys] Vectorizing streams failed: {e}")
 
-        print("[ExtractValleys] Identifying stream links")
         streams_vec_id = streams_linked_output_path.replace(".shp", "_id.tif")
-        wbt.stream_link_identifier(d8_pntr=fdir_output_path,
-                                   streams=streams_output_path,
-                                   output=streams_vec_id)
+        try:
+            if feedback:
+                feedback.pushInfo("[ExtractValleys] Identifying stream links")
+            else:
+                print("[ExtractValleys] Identifying stream links")
+            ret = wbt.stream_link_identifier(
+                d8_pntr=fdir_output_path,
+                streams=streams_output_path,
+                output=streams_vec_id
+            )
+            if ret != 0 or not os.path.exists(streams_vec_id):
+                raise RuntimeError(f"[ExtractValleys] Stream link identifier failed: WhiteboxTools returned {ret}, output not found at {streams_vec_id}")
+        except Exception as e:
+            raise RuntimeError(f"[ExtractValleys] Stream link identifier failed: {e}")
 
-        print("[ExtractValleys] Converting linked streams")
-        wbt.raster_streams_to_vector(streams=streams_vec_id,
-                                     d8_pntr=fdir_output_path,
-                                     output=streams_linked_output_path)
+        try:
+            if feedback:
+                feedback.pushInfo("[ExtractValleys] Converting linked streams")
+            else:
+                print("[ExtractValleys] Converting linked streams")
+            wbt.raster_streams_to_vector(
+                streams=streams_vec_id,
+                d8_pntr=fdir_output_path,
+                output=streams_linked_output_path
+            )
+        except Exception as e:
+            raise RuntimeError(f"[ExtractValleys] Converting linked streams failed: {e}")
 
-        print("[ExtractValleys] Network analysis")
-        ####### Hier musste ich die wbt Funktion anpassen in whitebox_tools.py!!
-        wbt.vector_stream_network_analysis(streams=streams_linked_output_path, 
-                                           dem=fdir_output_path,
-                                           output=stream_network_output_path)
+        try:
+            if feedback:
+                feedback.pushInfo("[ExtractValleys] Network analysis")
+            else:
+                print("[ExtractValleys] Network analysis")
+            wbt.vector_stream_network_analysis(
+                streams=streams_linked_output_path, 
+                dem=fdir_output_path,
+                output=stream_network_output_path
+            )
+        except Exception as e:
+            raise RuntimeError(f"[ExtractValleys] Network analysis failed: {e}")
 
-        print(f"[ExtractValleys] Loading network from {stream_network_output_path}")
+        if feedback:
+            feedback.pushInfo(f"[ExtractValleys] Loading network from {stream_network_output_path}")
+        else:
+            print(f"[ExtractValleys] Loading network from {stream_network_output_path}")
+
+        # Check if the file exists and is non-empty before reading
+        if not os.path.exists(stream_network_output_path):
+            raise RuntimeError(f"[ExtractValleys] Network output file not found: {stream_network_output_path}")
         gdf = gpd.read_file(stream_network_output_path)
-        print(f"[ExtractValleys] Completed: {len(gdf)} features extracted.")
+        if gdf.empty:
+            raise RuntimeError(f"[ExtractValleys] Network output file is empty: {stream_network_output_path}")
+
+        if feedback:
+            feedback.pushInfo(f"[ExtractValleys] Completed: {len(gdf)} features extracted.")
+        else:
+            print(f"[ExtractValleys] Completed: {len(gdf)} features extracted.")
 
         return gdf
 
