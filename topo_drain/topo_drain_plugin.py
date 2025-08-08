@@ -38,41 +38,53 @@ import importlib
 from qgis.core import QgsProcessingAlgorithm, QgsApplication, QgsProcessingUtils
 from qgis.PyQt.QtWidgets import QMessageBox
 from .topo_drain_provider import TopoDrainProvider
-from topo_drain.core.topo_drain_core import set_temp_and_working_dir
+from topo_drain.core.topo_drain_core import set_temp_and_working_dir, set_whitebox_dir
+from processing.core.ProcessingConfig import ProcessingConfig
 
 cmd_folder = os.path.split(inspect.getfile(inspect.currentframe()))[0]
 
 if cmd_folder not in sys.path:
     sys.path.insert(0, cmd_folder)
 
-# Read dependencies from requirements.txt
-dep_file = os.path.join(cmd_folder, "requirements.txt")
-REQUIRED_PACKAGES = []
-if os.path.exists(dep_file):
-    with open(dep_file, "r") as f:
-        for line in f:
-            pkg = line.strip()
-            if pkg and not pkg.startswith("#"):
-                # Only take the package name (strip version specifiers)
-                REQUIRED_PACKAGES.append(pkg.split()[0].split("=")[0])
-    missing = []
-    for pkg in REQUIRED_PACKAGES:
-        if importlib.util.find_spec(pkg) is None:
-            missing.append(pkg)
-    if missing:
-        msg = (
-            "The following Python packages are required but not installed in your QGIS Python environment:\n\n"
-            + ", ".join(missing) +
-            "\n\nPlease install them using your QGIS Python environment before using this plugin."
-        )
-        QMessageBox.critical(None, "TopoDrain Plugin - Missing Dependencies", msg)
-        raise ImportError(msg)
-
-
 class TopoDrainPlugin(object):
 
     def __init__(self):
         self.provider = None
+
+    def get_whiteboxtools_executable_path_v2(self):
+        # The key used by the WhiteboxTools plugin for the executable path
+        WBT_EXECUTABLE_KEY = "WBT_EXECUTABLE"
+        exe_path = ProcessingConfig.getSetting(WBT_EXECUTABLE_KEY)
+        print(f"WhiteboxTools executable path from ProcessingConfig: {exe_path}")
+        if not exe_path:
+            msg = "WhiteboxTools executable path could not be determined. Please ensure the WhiteboxTools plugin is installed and configured correctly."
+            QMessageBox.critical(None, "TopoDrain Plugin - WhiteboxTools Error", msg)
+            raise RuntimeError("WhiteboxTools executable path not found.")
+        return exe_path
+
+    def check_python_dependencies(self):
+        # Read python dependencies from requirements.txt
+        dep_file = os.path.join(cmd_folder, "requirements.txt")
+        REQUIRED_PACKAGES = []
+        if os.path.exists(dep_file):
+            with open(dep_file, "r") as f:
+                for line in f:
+                    pkg = line.strip()
+                    if pkg and not pkg.startswith("#"):
+                        # Only take the package name (strip version specifiers)
+                        REQUIRED_PACKAGES.append(pkg.split()[0].split("=")[0])
+            missing = []
+            for pkg in REQUIRED_PACKAGES:
+                if importlib.util.find_spec(pkg) is None:
+                    missing.append(pkg)
+            if missing:
+                msg = (
+                    "The following Python packages are required but not installed in your QGIS Python environment:\n\n"
+                    + ", ".join(missing) +
+                    "\n\nPlease install them using your QGIS Python environment before using this plugin."
+                )
+                QMessageBox.critical(None, "TopoDrain Plugin - Missing Dependencies", msg)
+                raise ImportError(msg)
 
     def initProcessing(self):
         """Init Processing provider for QGIS >= 3.8."""
@@ -81,6 +93,10 @@ class TopoDrainPlugin(object):
         temp_dir = QgsProcessingUtils.tempFolder()
         working_dir = QgsProcessingUtils.tempFolder()
         set_temp_and_working_dir(temp_dir, working_dir)
+        whitebox_dir = self.get_whiteboxtools_executable_path()
+        if whitebox_dir:
+            set_whitebox_dir(whitebox_dir)
+        self.check_python_dependencies()
 
     def initGui(self):
         self.initProcessing()

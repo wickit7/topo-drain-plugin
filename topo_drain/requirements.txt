@@ -2,3 +2,5 @@ numpy
 rasterio
 shapely
 geopandas
+scipy
+matplotlib

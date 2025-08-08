@@ -27,23 +27,31 @@ from scipy.signal import savgol_filter
 _thisdir = os.path.dirname(__file__)
 
 # WhiteBoxTools directory
-whitebox_dir = os.path.join(_thisdir, "WBT")
-print(f"[TOPO DRAIN CORE] Using WhiteboxTools directory: {whitebox_dir}")
+default_whitebox_dir = os.path.join(_thisdir, "WBT")
 
 # Temporary and working directories
+WHITEBOX_DIRECTORY = default_whitebox_dir
 TEMP_DIRECTORY = None
 WORKING_DIRECTORY = None
 NODATA = -32768  # Default NoData value for raster operations
+
+def set_whitebox_dir(whitebox_dir):
+    global WHITEBOX_DIRECTORY
+    WHITEBOX_DIRECTORY = whitebox_dir
+    print(f"[TOPO DRAIN CORE] Setting WhiteboxTools directory: {whitebox_dir}")
+    if wbt is not None:
+        if WHITEBOX_DIRECTORY:
+            wbt.set_whitebox_dir(WHITEBOX_DIRECTORY)
 
 def set_temp_and_working_dir(temp_dir, working_dir):
     global TEMP_DIRECTORY, WORKING_DIRECTORY
     print(f"[TopoDrainCore] Setting TEMP_DIRECTORY: {temp_dir}")
     TEMP_DIRECTORY = temp_dir
-    # print(f"[TopoDrainCore] Setting WhiteboxTools WORKING_DIRECTORY: {working_dir}")
-    # WORKING_DIRECTORY = working_dir
-    # if wbt is not None:
-    #     if WORKING_DIRECTORY:
-    #         wbt.set_working_dir(WORKING_DIRECTORY)
+    print(f"[TopoDrainCore] Setting WhiteboxTools WORKING_DIRECTORY: {working_dir}")
+    WORKING_DIRECTORY = working_dir
+    if wbt is not None:
+        if WORKING_DIRECTORY:
+            wbt.set_working_dir(WORKING_DIRECTORY)
 
 def set_nodata_value(no_data_val):
     global NODATA
@@ -52,13 +60,13 @@ def set_nodata_value(no_data_val):
     #     wbt.set_nodata_value(NODATA)
         
 # --- Ensure we can import the bundled or configured WhiteboxTools ---
-if whitebox_dir not in sys.path:
-    sys.path.insert(0, whitebox_dir)
+if WHITEBOX_DIRECTORY not in sys.path:
+    sys.path.insert(0, WHITEBOX_DIRECTORY)
 from topo_drain.core.WBT.whitebox_tools import WhiteboxTools
 
 # --- Instantiate and configure WBT ---
 wbt = WhiteboxTools()
-wbt.set_whitebox_dir(whitebox_dir)
+wbt.set_whitebox_dir(WHITEBOX_DIRECTORY)
 
 
 def stitch_multilinestring(geom, preserve_original=False):
@@ -454,6 +462,7 @@ def modify_dtm_with_mask(
     return output_path
 
 
+
 def raster_to_linestring_wbt(raster_path: str) -> LineString:
     """
     Uses WhiteboxTools to vectorize a raster and return a merged LineString or MultiLineString.
@@ -508,9 +517,7 @@ def extract_valleys(
     feedback=None
 ) -> gpd.GeoDataFrame:
     """
-    Extract valley lines using WhiteboxTools. You can override the filled DEM,
-    flow-direction, and flow-accumulation outputs; all other intermediate files
-    (streams rasters and vectors, network) use defaults in TEMP_DIRECTORY.
+    Extract valley lines using WhiteboxTools. 
 
     Args:
         dtm_path (str):
