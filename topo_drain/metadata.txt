@@ -35,10 +35,11 @@ deprecated=False
 # Since QGIS 3.8, a comma separated list of plugins to be installed
 # (or upgraded) can be specified.
 # Check the documentation for more information.
-# plugin_dependencies=
+# plugin_dependencies=python:numpy>=1.20.1,<1.27;python:rasterio>=1.1.5,<1.5;python:shapely>=1.7.0,<2.1;python:geopandas>=0.8.1,<1.1
+
 
 Category of the plugin: Raster, Vector, Database or Web
-# category=
+# category=plugin
 
 # If the plugin can run on QGIS Server.
 server=False

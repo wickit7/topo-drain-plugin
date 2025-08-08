@@ -33,8 +33,10 @@ __revision__ = '$Format:%H$'
 import os
 import sys
 import inspect
+import importlib
 
 from qgis.core import QgsProcessingAlgorithm, QgsApplication, QgsProcessingUtils
+from qgis.PyQt.QtWidgets import QMessageBox
 from .topo_drain_provider import TopoDrainProvider
 from topo_drain.core.topo_drain_core import set_temp_and_working_dir
 
@@ -42,6 +44,29 @@ cmd_folder = os.path.split(inspect.getfile(inspect.currentframe()))[0]
 
 if cmd_folder not in sys.path:
     sys.path.insert(0, cmd_folder)
+
+# Read dependencies from requirements.txt
+dep_file = os.path.join(cmd_folder, "requirements.txt")
+REQUIRED_PACKAGES = []
+if os.path.exists(dep_file):
+    with open(dep_file, "r") as f:
+        for line in f:
+            pkg = line.strip()
+            if pkg and not pkg.startswith("#"):
+                # Only take the package name (strip version specifiers)
+                REQUIRED_PACKAGES.append(pkg.split()[0].split("=")[0])
+    missing = []
+    for pkg in REQUIRED_PACKAGES:
+        if importlib.util.find_spec(pkg) is None:
+            missing.append(pkg)
+    if missing:
+        msg = (
+            "The following Python packages are required but not installed in your QGIS Python environment:\n\n"
+            + ", ".join(missing) +
+            "\n\nPlease install them using your QGIS Python environment before using this plugin."
+        )
+        QMessageBox.critical(None, "TopoDrain Plugin - Missing Dependencies", msg)
+        raise ImportError(msg)
 
 
 class TopoDrainPlugin(object):

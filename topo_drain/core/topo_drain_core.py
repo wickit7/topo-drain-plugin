@@ -39,11 +39,11 @@ def set_temp_and_working_dir(temp_dir, working_dir):
     global TEMP_DIRECTORY, WORKING_DIRECTORY
     print(f"[TopoDrainCore] Setting TEMP_DIRECTORY: {temp_dir}")
     TEMP_DIRECTORY = temp_dir
-    print(f"[TopoDrainCore] Setting WhiteboxTools WORKING_DIRECTORY: {working_dir}")
-    WORKING_DIRECTORY = working_dir
-    if wbt is not None:
-        if WORKING_DIRECTORY:
-            wbt.set_working_dir(WORKING_DIRECTORY)
+    # print(f"[TopoDrainCore] Setting WhiteboxTools WORKING_DIRECTORY: {working_dir}")
+    # WORKING_DIRECTORY = working_dir
+    # if wbt is not None:
+    #     if WORKING_DIRECTORY:
+    #         wbt.set_working_dir(WORKING_DIRECTORY)
 
 def set_nodata_value(no_data_val):
     global NODATA
@@ -59,34 +59,6 @@ from topo_drain.core.WBT.whitebox_tools import WhiteboxTools
 # --- Instantiate and configure WBT ---
 wbt = WhiteboxTools()
 wbt.set_whitebox_dir(whitebox_dir)
-
-def add_m_to_gdf(
-    gdf: gpd.GeoDataFrame,
-    geom_col: str = "geometry",
-    out_col: str = "geometry_m"
-) -> gpd.GeoDataFrame:
-    """
-    For each LineString in gdf[geom_col], compute a cumulative-distance 'm'
-    at each vertex and return a new 3D LineString in gdf[out_col].
-    """
-
-    def _line_with_m(ls: LineString) -> LineString:
-        # 1) extract 2D coords
-        coords = list(ls.coords)
-        # 2) compute segment lengths
-        seg_lens = np.hypot(
-            np.diff([c[0] for c in coords]),
-            np.diff([c[1] for c in coords])
-        )
-        # 3) cumulative distance (m), starting at 0
-        m_vals = np.insert(np.cumsum(seg_lens), 0, 0.0)
-        # 4) build 3D coords
-        coords3 = [(x, y, m) for (x, y), m in zip(coords, m_vals)]
-        return LineString(coords3)
-
-    # apply to each geometry
-    gdf[out_col] = gdf[geom_col].apply(_line_with_m)
-    return gdf
 
 
 def stitch_multilinestring(geom, preserve_original=False):
@@ -480,56 +452,6 @@ def modify_dtm_with_mask(
         dst.write(modified.astype("float32"), 1)
 
     return output_path
-
-def create_contour_lines(
-    dtm_path: str,
-    spacing: float = 1.0,
-    base: float = 0.0,
-    smooth: int = 9,
-    tolerance: float = 10.0,
-    output_path: str = None
-) -> gpd.GeoDataFrame:
-    """
-    Generate smooth contour lines from a DTM using WhiteboxTools.
-
-    Args:
-        dtm_path (str): Path to the raster file.
-        spacing (float): Contour interval.
-        base (float): Base elevation (usually 0).
-        smooth (int): Smoothing factor (higher = smoother).
-        tolerance (float): Simplification tolerance.
-        output_path (str, optional): If provided, use this path for output shapefile.
-                                     Otherwise, a temporary path will be generated.
-
-    Returns:
-        GeoDataFrame: Smoothed contour lines.
-
-    Raises:
-        RuntimeError: If contour generation fails.
-    """
-    try:
-        if wbt is None:
-            raise RuntimeError("WhiteboxTools not initialized.")
-
-        if output_path is None:
-            output_path = os.path.join(TEMP_DIRECTORY, f"contours.shp")
-
-        else:
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-
-        wbt.contours_from_raster(
-            i=dtm_path,
-            output=output_path,
-            interval=spacing,
-            base=base,
-            smooth=smooth,
-            tolerance=tolerance
-        )
-
-        return gpd.read_file(output_path)
-
-    except Exception as e:
-        raise RuntimeError(f"Failed to create contour lines: {e}")
 
 
 def raster_to_linestring_wbt(raster_path: str) -> LineString:

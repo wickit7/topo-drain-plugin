@@ -8,7 +8,8 @@
 
 from qgis.PyQt.QtCore import QCoreApplication
 from qgis.core import (QgsProcessing, QgsProcessingAlgorithm, QgsProcessingParameterRasterLayer,
-                       QgsProcessingParameterFileDestination, QgsProcessingParameterNumber)
+                       QgsProcessingParameterFileDestination, QgsProcessingParameterNumber,
+                       QgsVectorLayer, QgsProject)
 import os
 import rasterio
 import geopandas as gpd
@@ -211,7 +212,6 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
         # Add result to QGIS project
         try:
             feedback.pushInfo("Add Valley lines layer to QGIS Map...")  
-            from qgis.core import QgsVectorLayer, QgsProject
             vlayer = QgsVectorLayer(valley_output_path, "Valley Lines", "ogr")
             if not vlayer.isValid():
                 feedback.reportError(f"Failed to load valley lines layer: {valley_output_path}")
