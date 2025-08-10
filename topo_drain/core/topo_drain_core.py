@@ -29,10 +29,11 @@ _thisdir = os.path.dirname(__file__)
 
 # WhiteBoxTools directory
 default_whitebox_dir = os.path.join(_thisdir, "WBT")
-
+default_nodata = -32768  # Default NoData value for rasters
 # Temporary and working directories
 WHITEBOX_DIRECTORY = default_whitebox_dir
 wbt = None  # Do not instantiate yet
+NODATA = default_nodata
 
 def set_whitebox_dir(whitebox_dir):
     global WHITEBOX_DIRECTORY, wbt
