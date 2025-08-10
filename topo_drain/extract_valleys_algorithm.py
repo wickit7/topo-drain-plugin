@@ -7,13 +7,14 @@
 # -----------------------------------------------------------------------------
 
 from qgis.PyQt.QtCore import QCoreApplication
-from qgis.core import (QgsProcessing, QgsProcessingAlgorithm, QgsProcessingParameterRasterLayer,
+from qgis.core import (QgsProcessing, QgsRasterLayer, QgsProcessingAlgorithm, QgsProcessingParameterRasterLayer,
                        QgsProcessingParameterFileDestination, QgsProcessingParameterNumber,
-                       QgsVectorLayer, QgsProject)
+                       QgsVectorLayer, QgsProject, QgsProcessingParameterBoolean)
+
 import os
 import rasterio
 import geopandas as gpd
-from topo_drain.core.topo_drain_core import extract_valleys
+
 
 class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
     """
@@ -40,11 +41,24 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
     ACCUM_THRESHOLD = 'ACCUM_THRESHOLD'
     DIST_FACC = 'DIST_FACC'
 
+    ADD_VALLEYS_TO_MAP = 'ADD_VALLEYS_TO_MAP'
+    ADD_FILLED_TO_MAP = 'ADD_FILLED_TO_MAP'
+    ADD_FDIR_TO_MAP = 'ADD_FDIR_TO_MAP'
+    ADD_FACC_TO_MAP = 'ADD_FACC_TO_MAP'
+    ADD_FACC_LOG_TO_MAP = 'ADD_FACC_LOG_TO_MAP'
+    ADD_OUTPUTS_TO_MAP = 'ADD_OUTPUTS_TO_MAP'
+
+    def __init__(self, core=None):
+        super().__init__()
+        self.core = core  # Should be set to a TopoDrainCore instance by the plugin
+
+    def set_core(self, core):
+        self.core = core
     def tr(self, string):
         return QCoreApplication.translate('Processing', string)
 
     def createInstance(self):
-        return ExtractValleysAlgorithm()
+        return ExtractValleysAlgorithm(core=self.core)
 
     def name(self):
         return 'extract_valleys'
@@ -65,6 +79,41 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
         )
 
     def initAlgorithm(self, config=None):
+        self.addParameter(
+            QgsProcessingParameterBoolean(
+                self.ADD_VALLEYS_TO_MAP,
+                self.tr('Add Valley Lines to QGIS map'),
+                defaultValue=True
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterBoolean(
+                self.ADD_FILLED_TO_MAP,
+                self.tr('Add Filled DTM to QGIS map'),
+                defaultValue=False
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterBoolean(
+                self.ADD_FDIR_TO_MAP,
+                self.tr('Add Flow Direction to QGIS map'),
+                defaultValue=False
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterBoolean(
+                self.ADD_FACC_TO_MAP,
+                self.tr('Add Flow Accumulation to QGIS map'),
+                defaultValue=False
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterBoolean(
+                self.ADD_FACC_LOG_TO_MAP,
+                self.tr('Add Log-Scaled Accumulation to QGIS map'),
+                defaultValue=False
+            )
+        )
         self.addParameter(
             QgsProcessingParameterRasterLayer(
                 self.INPUT_DTM,
@@ -126,12 +175,21 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
                 defaultValue=1000
             )
         )
+        self.addParameter(
+            QgsProcessingParameterBoolean(
+                self.ADD_OUTPUTS_TO_MAP,
+                self.tr('Add all outputs to QGIS map'),
+                defaultValue=True
+            )
+        )
 
 
     def processAlgorithm(self, parameters, context, feedback):
+        # Validate and read input parameters
         dtm_layer = self.parameterAsRasterLayer(parameters, self.INPUT_DTM, context)
         dtm_path = dtm_layer.source()
-
+        if not dtm_path or not os.path.exists(dtm_path):
+            raise FileNotFoundError(f"[Input Error] DTM file not found: {dtm_path}")
         valley_output_path = self.parameterAsFileOutput(parameters, self.OUTPUT_VALLEYS, context)
         filled_output_path = self.parameterAsFileOutput(parameters, self.OUTPUT_FILLED, context)
         fdir_output_path = self.parameterAsFileOutput(parameters, self.OUTPUT_FDIR, context)
@@ -139,6 +197,12 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
         facc_log_output_path = self.parameterAsFileOutput(parameters, self.OUTPUT_FACC_LOG, context)
         accumulation_threshold = self.parameterAsInt(parameters, self.ACCUM_THRESHOLD, context)
         dist_facc = self.parameterAsDouble(parameters, self.DIST_FACC, context)
+        # Read boolean parameters for adding layers to the map
+        add_valleys = self.parameterAsBool(parameters, self.ADD_VALLEYS_TO_MAP, context)
+        add_filled = self.parameterAsBool(parameters, self.ADD_FILLED_TO_MAP, context)
+        add_fdir = self.parameterAsBool(parameters, self.ADD_FDIR_TO_MAP, context)
+        add_facc = self.parameterAsBool(parameters, self.ADD_FACC_TO_MAP, context)
+        add_facc_log = self.parameterAsBool(parameters, self.ADD_FACC_LOG_TO_MAP, context)
 
         feedback.pushInfo("Input:")
         feedback.pushInfo(f"DTM Input: {dtm_path}")
@@ -178,9 +242,13 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
             dtm_crs = src.crs # Read CRS from the DTM
             feedback.pushInfo(f"crs: {dtm_crs}")
 
-        feedback.pushInfo("Processig extract_valleys...")
-        # Run the core extraction
-        gdf_valleys = extract_valleys(
+        feedback.pushInfo("Processing extract_valleys via TopoDrainCore...")
+        if not self.core:
+            from topo_drain.core.topo_drain_core import TopoDrainCore
+            print("TopoDrainCore not set, creating default instance.")
+            self.core = TopoDrainCore()  # fallback: create default instance (not recommended for plugin use)
+
+        gdf_valleys = self.core.extract_valleys(
             dtm_path=dtm_path,
             filled_output_path=filled_output_path,
             fdir_output_path=fdir_output_path,
@@ -209,17 +277,63 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
         except Exception as e:
             raise RuntimeError(f"[ExtractValleysAlgorithm] failed to save valley output: {e}")
 
-        # Add result to QGIS project
-        try:
-            feedback.pushInfo("Add Valley lines layer to QGIS Map...")  
-            vlayer = QgsVectorLayer(valley_output_path, "Valley Lines", "ogr")
-            if not vlayer.isValid():
-                feedback.reportError(f"Failed to load valley lines layer: {valley_output_path}")
-            else:
-                QgsProject.instance().addMapLayer(vlayer)
-                feedback.pushInfo("Valley lines layer added to QGIS project.")
-        except Exception as e:
-            feedback.reportError(f"Could not add valley lines to QGIS project: {e}")
+        # Optionally add each output to QGIS project
+        # Add valley lines
+        if add_valleys:
+            try:
+                feedback.pushInfo("Add Valley lines layer to QGIS Map...")  
+                vlayer = QgsVectorLayer(valley_output_path, "Valley Lines", "ogr")
+                if not vlayer.isValid():
+                    feedback.reportError(f"Failed to load valley lines layer: {valley_output_path}")
+                else:
+                    QgsProject.instance().addMapLayer(vlayer)
+                    feedback.pushInfo("Valley lines layer added to QGIS project.")
+            except Exception as e:
+                feedback.reportError(f"Could not add valley lines to QGIS project: {e}")
+        # Add filled DTM
+        if add_filled and filled_output_path and os.path.exists(filled_output_path):
+            try:
+                rlayer = QgsRasterLayer(filled_output_path, "Filled DTM")
+                if rlayer.isValid():
+                    QgsProject.instance().addMapLayer(rlayer)
+                    feedback.pushInfo("Filled DTM layer added to QGIS project.")
+                else:
+                    feedback.reportError(f"Failed to load filled DTM: {filled_output_path}")
+            except Exception as e:
+                feedback.reportError(f"Could not add filled DTM to QGIS project: {e}")
+        # Add flow direction
+        if add_fdir and fdir_output_path and os.path.exists(fdir_output_path):
+            try:
+                rlayer = QgsRasterLayer(fdir_output_path, "Flow Direction")
+                if rlayer.isValid():
+                    QgsProject.instance().addMapLayer(rlayer)
+                    feedback.pushInfo("Flow Direction layer added to QGIS project.")
+                else:
+                    feedback.reportError(f"Failed to load flow direction: {fdir_output_path}")
+            except Exception as e:
+                feedback.reportError(f"Could not add flow direction to QGIS project: {e}")
+        # Add flow accumulation
+        if add_facc and facc_output_path and os.path.exists(facc_output_path):
+            try:
+                rlayer = QgsRasterLayer(facc_output_path, "Flow Accumulation")
+                if rlayer.isValid():
+                    QgsProject.instance().addMapLayer(rlayer)
+                    feedback.pushInfo("Flow Accumulation layer added to QGIS project.")
+                else:
+                    feedback.reportError(f"Failed to load flow accumulation: {facc_output_path}")
+            except Exception as e:
+                feedback.reportError(f"Could not add flow accumulation to QGIS project: {e}")
+        # Add log-scaled accumulation
+        if add_facc_log and facc_log_output_path and os.path.exists(facc_log_output_path):
+            try:
+                rlayer = QgsRasterLayer(facc_log_output_path, "Log-Scaled Accumulation")
+                if rlayer.isValid():
+                    QgsProject.instance().addMapLayer(rlayer)
+                    feedback.pushInfo("Log-Scaled Accumulation layer added to QGIS project.")
+                else:
+                    feedback.reportError(f"Failed to load log-scaled accumulation: {facc_log_output_path}")
+            except Exception as e:
+                feedback.reportError(f"Could not add log-scaled accumulation to QGIS project: {e}")
 
         results = {self.OUTPUT_VALLEYS: valley_output_path}
         if filled_output_path:

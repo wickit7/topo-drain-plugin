@@ -33,14 +33,13 @@ __revision__ = '$Format:%H$'
 from qgis.core import QgsProcessingProvider
 from .extract_valleys_algorithm import ExtractValleysAlgorithm
 
-
 class TopoDrainProvider(QgsProcessingProvider):
-
-    def __init__(self):
+    def __init__(self, core=None):
         """
-        Default constructor.
+        Default constructor. Accepts a TopoDrainCore instance.
         """
-        QgsProcessingProvider.__init__(self)
+        super().__init__()
+        self.core = core
 
     def unload(self):
         """
@@ -53,7 +52,9 @@ class TopoDrainProvider(QgsProcessingProvider):
         """
         Loads all algorithms belonging to this provider.
         """
-        self.addAlgorithm(ExtractValleysAlgorithm())
+        # Use the shared core instance
+        extract_valleys_alg = ExtractValleysAlgorithm(core=self.core)
+        self.addAlgorithm(extract_valleys_alg)
         # add additional algorithms here
         # self.addAlgorithm(MyOtherAlgorithm())
 
