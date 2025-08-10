@@ -51,11 +51,11 @@ class TopoDrainPlugin(object):
     def __init__(self):
         self.provider = None
 
-    def get_whiteboxtools_executable_path_v2(self):
+    def get_whiteboxtools_executable_path(self):
         # The key used by the WhiteboxTools plugin for the executable path
         WBT_EXECUTABLE_KEY = "WBT_EXECUTABLE"
         exe_path = ProcessingConfig.getSetting(WBT_EXECUTABLE_KEY)
-        print(f"WhiteboxTools executable path from ProcessingConfig: {exe_path}")
+        print(f"WhiteboxTools executable path from QGIS Settings: {exe_path}")
         if not exe_path:
             msg = "WhiteboxTools executable path could not be determined. Please ensure the WhiteboxTools plugin is installed and configured correctly."
             QMessageBox.critical(None, "TopoDrain Plugin - WhiteboxTools Error", msg)
@@ -93,10 +93,12 @@ class TopoDrainPlugin(object):
         temp_dir = QgsProcessingUtils.tempFolder()
         working_dir = QgsProcessingUtils.tempFolder()
         set_temp_and_working_dir(temp_dir, working_dir)
-        whitebox_dir = self.get_whiteboxtools_executable_path()
-        if whitebox_dir:
+        whitebox_executable_path = self.get_whiteboxtools_executable_path()
+        if whitebox_executable_path:
+            whitebox_dir = os.path.dirname(whitebox_executable_path)
             set_whitebox_dir(whitebox_dir)
         self.check_python_dependencies()
+
 
     def initGui(self):
         self.initProcessing()

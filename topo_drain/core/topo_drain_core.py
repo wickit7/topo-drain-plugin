@@ -7,6 +7,7 @@
 # -----------------------------------------------------------------------------
 import os
 import sys
+import importlib.util
 from collections import defaultdict
 import warnings
 import matplotlib.pyplot as plt
@@ -31,17 +32,31 @@ default_whitebox_dir = os.path.join(_thisdir, "WBT")
 
 # Temporary and working directories
 WHITEBOX_DIRECTORY = default_whitebox_dir
-TEMP_DIRECTORY = None
-WORKING_DIRECTORY = None
-NODATA = -32768  # Default NoData value for raster operations
+wbt = None  # Do not instantiate yet
 
 def set_whitebox_dir(whitebox_dir):
-    global WHITEBOX_DIRECTORY
+    global WHITEBOX_DIRECTORY, wbt
     WHITEBOX_DIRECTORY = whitebox_dir
     print(f"[TOPO DRAIN CORE] Setting WhiteboxTools directory: {whitebox_dir}")
-    if wbt is not None:
-        if WHITEBOX_DIRECTORY:
-            wbt.set_whitebox_dir(WHITEBOX_DIRECTORY)
+    # --- Ensure we can import the bundled or configured WhiteboxTools ---
+    if WHITEBOX_DIRECTORY not in sys.path:
+        sys.path.insert(0, WHITEBOX_DIRECTORY)
+    if WHITEBOX_DIRECTORY == default_whitebox_dir:
+        # Use the bundled import
+        from topo_drain.core.WBT.whitebox_tools import WhiteboxTools
+    else:
+        # Dynamically import from the configured directory
+        wbt_path = os.path.join(WHITEBOX_DIRECTORY, "whitebox_tools.py")
+        spec = importlib.util.spec_from_file_location("whitebox_tools", wbt_path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Could not load WhiteboxTools from {wbt_path}")
+        whitebox_tools_mod = importlib.util.module_from_spec(spec)
+        sys.modules["whitebox_tools"] = whitebox_tools_mod
+        spec.loader.exec_module(whitebox_tools_mod)
+        WhiteboxTools = whitebox_tools_mod.WhiteboxTools
+    wbt = WhiteboxTools()
+    wbt.set_whitebox_dir(WHITEBOX_DIRECTORY)
+            
 
 def set_temp_and_working_dir(temp_dir, working_dir):
     global TEMP_DIRECTORY, WORKING_DIRECTORY
@@ -58,15 +73,6 @@ def set_nodata_value(no_data_val):
     NODATA = no_data_val
     # if wbt is not None:
     #     wbt.set_nodata_value(NODATA)
-        
-# --- Ensure we can import the bundled or configured WhiteboxTools ---
-if WHITEBOX_DIRECTORY not in sys.path:
-    sys.path.insert(0, WHITEBOX_DIRECTORY)
-from topo_drain.core.WBT.whitebox_tools import WhiteboxTools
-
-# --- Instantiate and configure WBT ---
-wbt = WhiteboxTools()
-wbt.set_whitebox_dir(WHITEBOX_DIRECTORY)
 
 
 def stitch_multilinestring(geom, preserve_original=False):
