@@ -21,10 +21,35 @@ from shapely.geometry import LineString, MultiLineString, Point
 from shapely.ops import linemerge, nearest_points, unary_union
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import savgol_filter
+import re
+import subprocess
+
+# Import QGIS dependencies only if available
+try:
+    from qgis.core import (
+        QgsRunProcess,
+        QgsBlockingProcess,
+        QgsProcessingFeedback,
+        QgsProcessingException,
+    )
+    from qgis.PyQt.QtCore import QProcess
+    try:
+        from qgis.utils import iface
+    except ImportError:
+        iface = None
+    QGIS_AVAILABLE = True
+except ImportError:
+    QGIS_AVAILABLE = False
+    QgsProcessingFeedback = None
+    QgsProcessingException = Exception
+
+# Progress regex for parsing WhiteboxTools output
+progress_regex = re.compile(r'\d+%')
+
 
 # ---  Class TopoDrainCore ---
 class TopoDrainCore:
-    def __init__(self, whitebox_directory=None, nodata=None):
+    def __init__(self, whitebox_directory=None, nodata=None, crs=None, temp_directory=None, working_directory=None):
         print("[TopoDrainCore] Initializing TopoDrainCore...")
         self._thisdir = os.path.dirname(__file__)
         print(f"[TopoDrainCore] Module directory: {self._thisdir}")
@@ -34,12 +59,15 @@ class TopoDrainCore:
         print(f"[TopoDrainCore] Using WhiteboxTools directory: {self.whitebox_directory}")
         self.nodata = nodata if nodata is not None else -32768
         print(f"[TopoDrainCore] NoData value set to: {self.nodata}")
+        self.crs = crs if crs is not None else "EPSG:2056"
+        print(f"[TopoDrainCore] crs value set to: {self.crs}")
+        self.temp_directory = temp_directory if temp_directory is not None else None
+        print(f"[TopoDrainCore] Temp directory set to: {self.temp_directory if self.temp_directory else 'Not set'}")
+        self.working_directory = working_directory if working_directory is not None else None
+        print(f"[TopoDrainCore] Working directory set to: {self.working_directory if self.working_directory else 'Not set'}")
         self.wbt = self._init_whitebox_tools(self.whitebox_directory)
         print(f"[TopoDrainCore] WhiteboxTools initialized: {self.wbt is not None}")
-        self.temp_directory = None
-        self.working_directory = None
         print("[TopoDrainCore] Initialization complete.")
-
 
     def _init_whitebox_tools(self, whitebox_directory):
         if whitebox_directory not in sys.path:
@@ -56,11 +84,14 @@ class TopoDrainCore:
             spec.loader.exec_module(whitebox_tools_mod)
             WhiteboxTools = whitebox_tools_mod.WhiteboxTools
         wbt = WhiteboxTools()
-        wbt.set_whitebox_dir(whitebox_directory)
+        if self.working_directory:
+            wbt.set_working_dir(self.working_directory)
         return wbt
 
-    def set_temp_and_working_dir(self, temp_dir, working_dir):
+    def set_temp_directory(self, temp_dir):
         self.temp_directory = temp_dir
+
+    def set_working_directory(self, working_dir):
         self.working_directory = working_dir
         if self.wbt is not None and self.working_directory:
             self.wbt.set_working_dir(self.working_directory)
@@ -68,6 +99,122 @@ class TopoDrainCore:
     def set_nodata_value(self, nodata):
         self.nodata = nodata
 
+    def set_crs(self, crs):
+        self.crs = crs
+
+    def execute_wbt(self, tool_name, feedback=None, **kwargs):
+        """
+        Execute a WhiteboxTools command with progress monitoring.
+        Similar to the WBT for QGIS plugin's execute() function.
+
+        Args:
+            tool_name (str): Name of the WhiteboxTools command
+            feedback (QgsProcessingFeedback, optional): Feedback object for progress reporting
+            **kwargs: Tool parameters as keyword arguments
+
+        Returns:
+            int: Return code (0 = success)
+        """
+        if feedback is None and QGIS_AVAILABLE:
+            feedback = QgsProcessingFeedback()
+
+        # Build command line arguments
+        wbt_executable = os.path.join(self.whitebox_directory, "whitebox_tools")
+        if os.name == 'nt':  # Windows
+            wbt_executable += ".exe"
+
+        arguments = [wbt_executable, f'--run={tool_name}']
+
+        # Add parameters
+        for param, value in kwargs.items():
+            if value is not None:
+                arguments.append(f'--{param}="{value}"')
+
+        if feedback:
+            fused_command = ' '.join(arguments)
+            feedback.pushInfo('WhiteboxTools command:')
+            feedback.pushCommandInfo(fused_command)
+            feedback.pushInfo('WhiteboxTools output:')
+
+        if QGIS_AVAILABLE and feedback:
+            # Use QGIS process handling with progress monitoring
+            return self._execute_with_qgis_process(arguments, feedback)
+        else:
+            # Fallback to subprocess
+            return self._execute_with_subprocess(arguments, feedback)
+
+    def _execute_with_qgis_process(self, arguments, feedback):
+        """Execute using QGIS QgsBlockingProcess with progress monitoring."""
+        
+        def on_stdout(ba):
+            val = ba.data().decode('utf-8')
+            if '%' in val:
+                # Extract progress percentage
+                match = progress_regex.search(val)
+                if match:
+                    progress_str = match.group(0).rstrip('%')
+                    try:
+                        progress = int(progress_str)
+                        feedback.setProgress(progress)
+                    except ValueError:
+                        pass
+                else:
+                    on_stdout.buffer += val
+            else:
+                on_stdout.buffer += val
+
+            if on_stdout.buffer.endswith(('\n', '\r')):
+                feedback.pushConsoleInfo(on_stdout.buffer.rstrip())
+                on_stdout.buffer = ''
+
+        on_stdout.buffer = ''
+
+        def on_stderr(ba):
+            val = ba.data().decode('utf-8')
+            on_stderr.buffer += val
+
+            if on_stderr.buffer.endswith(('\n', '\r')):
+                feedback.reportError(on_stderr.buffer.rstrip())
+                on_stderr.buffer = ''
+
+        on_stderr.buffer = ''
+
+        command, *args = QgsRunProcess.splitCommand(' '.join(arguments))
+        proc = QgsBlockingProcess(command, args)
+        proc.setStdOutHandler(on_stdout)
+        proc.setStdErrHandler(on_stderr)
+
+        res = proc.run(feedback)
+        
+        if feedback.isCanceled() and res != 0:
+            feedback.pushInfo('Process was canceled and did not complete.')
+        elif not feedback.isCanceled() and proc.exitStatus() == QProcess.CrashExit:
+            raise QgsProcessingException('Process was unexpectedly terminated.')
+        elif res == 0:
+            feedback.pushInfo('Process completed successfully.')
+        elif proc.processError() == QProcess.FailedToStart:
+            raise QgsProcessingException(f'Process "{command}" failed to start. Either "{command}" is missing, or you may have insufficient permissions to run the program.')
+        else:
+            feedback.reportError(f'Process returned error code {res}')
+
+        return res
+
+    def _execute_with_subprocess(self, arguments, feedback):
+        """Fallback execution using subprocess."""
+        try:
+            result = subprocess.run(arguments, capture_output=True, text=True, check=False)
+            
+            if feedback:
+                if result.stdout:
+                    feedback.pushInfo(result.stdout)
+                if result.stderr:
+                    feedback.reportError(result.stderr)
+                    
+            return result.returncode
+        except Exception as e:
+            if feedback:
+                feedback.reportError(f"Error executing WhiteboxTools: {e}")
+            return 1
 
     def stitch_multilinestring(self, geom, preserve_original=False):
         """
@@ -592,10 +739,14 @@ class TopoDrainCore:
             else:
                 print(f"[ExtractValleys] Filling depressions → {filled_output_path}")
             try:
-                ret = self.wbt.breach_depressions_least_cost(
+                ret = self.execute_wbt(
+                    'breach_depressions_least_cost',
+                    feedback=feedback,
                     dem=dtm_path,
                     output=filled_output_path,
-                    dist=int(dist_facc)
+                    dist=int(dist_facc),
+                    fill=True,
+                    min_dist=True
                 )
                 if ret != 0 or not os.path.exists(filled_output_path):
                     raise RuntimeError(f"[ExtractValleys] Depression filling failed: WhiteboxTools returned {ret}, output not found at {filled_output_path}")
@@ -607,7 +758,12 @@ class TopoDrainCore:
             else:
                 print(f"[ExtractValleys] Flow direction → {fdir_output_path}")
             try:
-                ret = self.wbt.d8_pointer(dem=filled_output_path, output=fdir_output_path)
+                ret = self.execute_wbt(
+                    'd8_pointer',
+                    feedback=feedback,
+                    dem=filled_output_path,
+                    output=fdir_output_path
+                )
                 if ret != 0 or not os.path.exists(fdir_output_path):
                     raise RuntimeError(f"[ExtractValleys] Flow direction failed: WhiteboxTools returned {ret}, output not found at {fdir_output_path}")
             except Exception as e:
@@ -618,7 +774,9 @@ class TopoDrainCore:
             else:
                 print(f"[ExtractValleys] Flow accumulation → {facc_output_path}")
             try:
-                ret = self.wbt.d8_flow_accumulation(
+                ret = self.execute_wbt(
+                    'd8_flow_accumulation',
+                    feedback=feedback,
                     i=filled_output_path,
                     output=facc_output_path,
                     out_type="specific contributing area"
@@ -644,7 +802,9 @@ class TopoDrainCore:
             else:
                 print(f"[ExtractValleys] Extracting streams (threshold={accumulation_threshold})")
             try:
-                ret = self.wbt.extract_streams(
+                ret = self.execute_wbt(
+                    'extract_streams',
+                    feedback=feedback,
                     flow_accum=facc_output_path,
                     output=streams_output_path,
                     threshold=accumulation_threshold
@@ -659,7 +819,9 @@ class TopoDrainCore:
             else:
                 print("[ExtractValleys] Vectorizing streams")
             try:
-                ret = self.wbt.raster_streams_to_vector(
+                ret = self.execute_wbt(
+                    'raster_streams_to_vector',
+                    feedback=feedback,
                     streams=streams_output_path,
                     d8_pntr=fdir_output_path,
                     output=streams_vec_output_path
@@ -675,7 +837,9 @@ class TopoDrainCore:
                     feedback.pushInfo("[ExtractValleys] Identifying stream links")
                 else:
                     print("[ExtractValleys] Identifying stream links")
-                ret = self.wbt.stream_link_identifier(
+                ret = self.execute_wbt(
+                    'stream_link_identifier',
+                    feedback=feedback,
                     d8_pntr=fdir_output_path,
                     streams=streams_output_path,
                     output=streams_vec_id
@@ -690,11 +854,15 @@ class TopoDrainCore:
                     feedback.pushInfo("[ExtractValleys] Converting linked streams")
                 else:
                     print("[ExtractValleys] Converting linked streams")
-                self.wbt.raster_streams_to_vector(
+                ret = self.execute_wbt(
+                    'raster_streams_to_vector',
+                    feedback=feedback,
                     streams=streams_vec_id,
                     d8_pntr=fdir_output_path,
                     output=streams_linked_output_path
                 )
+                if ret != 0 or not os.path.exists(streams_linked_output_path):
+                    raise RuntimeError(f"[ExtractValleys] Converting linked streams failed: WhiteboxTools returned {ret}, output not found at {streams_linked_output_path}")
             except Exception as e:
                 raise RuntimeError(f"[ExtractValleys] Converting linked streams failed: {e}")
 
@@ -703,11 +871,15 @@ class TopoDrainCore:
                     feedback.pushInfo("[ExtractValleys] Network analysis")
                 else:
                     print("[ExtractValleys] Network analysis")
-                self.wbt.vector_stream_network_analysis(
-                    streams=streams_linked_output_path, 
-                    dem=fdir_output_path,
+                ret = self.execute_wbt(
+                    'VectorStreamNetworkAnalysis',
+                    feedback=feedback,
+                    streams=streams_linked_output_path,
+                    dem=filled_output_path,
                     output=stream_network_output_path
-                )
+                    )
+                if ret != 0 or not os.path.exists(stream_network_output_path):
+                    raise RuntimeError(f"[ExtractValleys] Network analysis failed: WhiteboxTools returned {ret}, output not found at {stream_network_output_path}")
             except Exception as e:
                 raise RuntimeError(f"[ExtractValleys] Network analysis failed: {e}")
 

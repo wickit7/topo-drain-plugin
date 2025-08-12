@@ -7,17 +7,15 @@
 # -----------------------------------------------------------------------------
 
 from qgis.PyQt.QtCore import QCoreApplication
-from qgis.core import (QgsProcessing, QgsRasterLayer, QgsProcessingAlgorithm, QgsProcessingParameterRasterLayer,
+from qgis.PyQt.QtGui import QColor
+from qgis.core import (QgsRasterLayer, QgsProcessingAlgorithm, QgsProcessingParameterRasterLayer,
                        QgsProcessingParameterFileDestination, QgsProcessingParameterNumber,
                        QgsVectorLayer, QgsProject, QgsProcessingParameterBoolean,
-                       QgsSymbol, QgsLineSymbol, QgsMarkerLineSymbolLayer, 
-                       QgsSimpleMarkerSymbolLayer, QgsSingleSymbolRenderer, QgsMarkerSymbol)
-from qgis.PyQt.QtGui import QColor
-
+                       QgsLineSymbol, QgsMarkerLineSymbolLayer, QgsSimpleMarkerSymbolLayer, 
+                       QgsSingleSymbolRenderer, QgsMarkerSymbol)
 import os
-import rasterio
 import geopandas as gpd
-
+from .utils import get_crs_from_layer
 
 class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
     """
@@ -314,12 +312,16 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
             raise FileNotFoundError(f"[Input Error] directory not found: {os.path.dirname(streams_output_path)}")
         
         feedback.pushInfo("Reading CRS from DTM...")
-        # Read CRS from the DTM
-        dtm_crs = None
-        with rasterio.open(dtm_path) as src:
-            dtm_crs = src.crs # Read CRS from the DTM
-            feedback.pushInfo(f"crs: {dtm_crs}")
+        # Read CRS from the DTM using QGIS layer
+        dtm_crs = get_crs_from_layer(dtm_layer)
+        feedback.pushInfo(f"DTM Layer crs: {dtm_crs}")
 
+        # Check if self.core.crs matches dtm_crs, warn and update if not
+        if self.core and hasattr(self.core, "crs"):
+            if self.core.crs != dtm_crs:
+                feedback.reportError(f"Warning: TopoDrainCore CRS ({self.core.crs}) does not match DTM CRS ({dtm_crs}). Updating TopoDrainCore CRS to match DTM.")
+                self.core.crs = dtm_crs
+                
         feedback.pushInfo("Processing extract_valleys via TopoDrainCore...")
         if not self.core:
             from topo_drain.core.topo_drain_core import TopoDrainCore
@@ -338,16 +340,7 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
             feedback=feedback
         )
 
-        # Assign the CRS from the input DTM
-        if dtm_crs:
-            feedback.pushInfo("Setting CRS for output valley lines...")
-            if gdf_valleys.crs is None:
-                gdf_valleys.crs = dtm_crs
-            else:
-                feedback.pushInfo("Overriding existing CRS with DTM CRS...")
-                # If the GeoDataFrame already has a CRS, we override it with the DTM 
-                # CRS to ensure consistency
-                gdf_valleys = gdf_valleys.set_crs(dtm_crs, allow_override=True)
+        feedback.pushInfo(f"Valley lines CRS: {gdf_valleys.crs}")
 
         # Save result
         try:
