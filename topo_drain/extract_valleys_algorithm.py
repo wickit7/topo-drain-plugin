@@ -9,7 +9,10 @@
 from qgis.PyQt.QtCore import QCoreApplication
 from qgis.core import (QgsProcessing, QgsRasterLayer, QgsProcessingAlgorithm, QgsProcessingParameterRasterLayer,
                        QgsProcessingParameterFileDestination, QgsProcessingParameterNumber,
-                       QgsVectorLayer, QgsProject, QgsProcessingParameterBoolean)
+                       QgsVectorLayer, QgsProject, QgsProcessingParameterBoolean,
+                       QgsSymbol, QgsLineSymbol, QgsMarkerLineSymbolLayer, 
+                       QgsSimpleMarkerSymbolLayer, QgsSingleSymbolRenderer, QgsMarkerSymbol)
+from qgis.PyQt.QtGui import QColor
 
 import os
 import rasterio
@@ -23,13 +26,13 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
     This algorithm leverages several WhiteboxTools (WBT) processes:
     - BreachDepressionsLeastCost: Optimally breaches depressions in the DEM to prepare it for hydrological analysis, providing a lower-impact alternative to depression filling.
     - D8Pointer: Generates a flow direction raster using the D8 algorithm, assigning flow from each cell to its steepest downslope neighbor.
-    - fd8_flow_accumulation: Calculates flow accumulation (contributing area) using the FD8 algorithm, distributing flow among downslope neighbors.
+    - D8FlowAccumulation: Calculates flow accumulation (contributing area) using the FD8 algorithm, distributing flow among downslope neighbors.
     - ExtractStreams: Extracts stream networks from the flow accumulation raster based on a user-defined threshold, identifying significant flow paths.
     - RasterStreamsToVector: Converts rasterized stream networks into vector line features for further analysis or export.
     - StreamLinkIdentifier: Assigns unique identifiers to each stream segment (link) in the raster stream network.
     - VectorStreamNetworkAnalysis: Analyzes the vectorized stream network, calculating stream order (e.g., HORTON), tributary IDs (TRIB_ID), and additional attributes such as the downstream link ID (DS_LINK_ID) for each stream segment (FID).
 
-    For more customization, you can use individual WhiteboxTools algorithms directly in the QGIS Processing Toolbox (WhiteBox Pulgin) step by step.
+    For more customization, you can use individual WhiteboxTools algorithms directly in the QGIS Processing Toolbox (WhiteBox Plugin) step by step.
     """
 
     INPUT_DTM = 'INPUT_DTM'
@@ -38,6 +41,7 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
     OUTPUT_FDIR = 'OUTPUT_FDIR'
     OUTPUT_FACC = 'OUTPUT_FACC'
     OUTPUT_FACC_LOG = 'OUTPUT_FACC_LOG'
+    OUTPUT_STREAMS = 'OUTPUT_STREAMS'
     ACCUM_THRESHOLD = 'ACCUM_THRESHOLD'
     DIST_FACC = 'DIST_FACC'
 
@@ -46,7 +50,7 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
     ADD_FDIR_TO_MAP = 'ADD_FDIR_TO_MAP'
     ADD_FACC_TO_MAP = 'ADD_FACC_TO_MAP'
     ADD_FACC_LOG_TO_MAP = 'ADD_FACC_LOG_TO_MAP'
-    ADD_OUTPUTS_TO_MAP = 'ADD_OUTPUTS_TO_MAP'
+    ADD_STREAMS_TO_MAP = 'ADD_STREAMS_TO_MAP'
 
     def __init__(self, core=None):
         super().__init__()
@@ -74,91 +78,27 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
 
     def shortHelpString(self):
         return self.tr(
-            "Extracts valley lines (stream network) from a digital terrain model using WhiteboxTools." \
-
+            """QGIS Processing Algorithm for extracting valley lines (stream network) from a DEM resp. DTM
+                This algorithm leverages several WhiteboxTools (WBT) processes:
+                - BreachDepressionsLeastCost: Optimally breaches depressions in the DEM to prepare it for hydrological analysis, providing a lower-impact alternative to depression filling.
+                - D8Pointer: Generates a flow direction raster using the D8 algorithm, assigning flow from each cell to its steepest downslope neighbor.
+                - D8FlowAccumulation: Calculates flow accumulation (contributing area) using the FD8 algorithm, distributing flow among downslope neighbors.
+                - ExtractStreams: Extracts stream networks from the flow accumulation raster based on a user-defined threshold, identifying significant flow paths.
+                - RasterStreamsToVector: Converts rasterized stream networks into vector line features for further analysis or export.
+                - StreamLinkIdentifier: Assigns unique identifiers to each stream segment (link) in the raster stream network.
+                - VectorStreamNetworkAnalysis: Analyzes the vectorized stream network, calculating stream order (e.g., HORTON), tributary IDs (TRIB_ID), and additional attributes such as the downstream link ID (DS_LINK_ID) for each stream segment (FID).
+                For more customization, you can use individual WhiteboxTools algorithms directly in the QGIS Processing Toolbox (WhiteBox Plugin) step by step."""
         )
 
-    def initAlgorithm(self, config=None):
-        self.addParameter(
-            QgsProcessingParameterBoolean(
-                self.ADD_VALLEYS_TO_MAP,
-                self.tr('Add Valley Lines to QGIS map'),
-                defaultValue=True
-            )
-        )
-        self.addParameter(
-            QgsProcessingParameterBoolean(
-                self.ADD_FILLED_TO_MAP,
-                self.tr('Add Filled DTM to QGIS map'),
-                defaultValue=False
-            )
-        )
-        self.addParameter(
-            QgsProcessingParameterBoolean(
-                self.ADD_FDIR_TO_MAP,
-                self.tr('Add Flow Direction to QGIS map'),
-                defaultValue=False
-            )
-        )
-        self.addParameter(
-            QgsProcessingParameterBoolean(
-                self.ADD_FACC_TO_MAP,
-                self.tr('Add Flow Accumulation to QGIS map'),
-                defaultValue=False
-            )
-        )
-        self.addParameter(
-            QgsProcessingParameterBoolean(
-                self.ADD_FACC_LOG_TO_MAP,
-                self.tr('Add Log-Scaled Accumulation to QGIS map'),
-                defaultValue=False
-            )
-        )
+    def initAlgorithm(self, config=None):        
+        # Input parameters
         self.addParameter(
             QgsProcessingParameterRasterLayer(
                 self.INPUT_DTM,
                 self.tr('Input DTM (GeoTIFF)')
             )
         )
-        self.addParameter(
-            QgsProcessingParameterFileDestination(
-                self.OUTPUT_VALLEYS,
-                self.tr('Output Valley Lines'),
-                fileFilter='Shapefile (*.shp);;GeoPackage (*.gpkg)'
-            )
-        )
-        self.addParameter(
-            QgsProcessingParameterFileDestination(
-                self.OUTPUT_FILLED,
-                self.tr('Output Filled DTM (output of WBT `BreachDepressionsLeastCost`)'),
-                fileFilter='GeoTIFF (*.tif)',
-                optional=True
-            )
-        )
-        self.addParameter(
-            QgsProcessingParameterFileDestination(
-                self.OUTPUT_FDIR,
-                self.tr('Output Flow Direction Raster (output of WBT `D8Pointer`)'),
-                fileFilter='GeoTIFF (*.tif)',
-                optional=True
-            )
-        )
-        self.addParameter(
-            QgsProcessingParameterFileDestination(
-                self.OUTPUT_FACC,
-                self.tr('Output Flow Accumulation Raster (output of WBT `D8FlowAccumulation`)'),
-                fileFilter='GeoTIFF (*.tif)',
-                optional=True
-            )
-        )
-        self.addParameter(
-            QgsProcessingParameterFileDestination(
-                self.OUTPUT_FACC_LOG,
-                self.tr('Output Log-Scaled Accumulation Raster'),
-                fileFilter='GeoTIFF (*.tif)',
-                optional=True
-            )
-        )
+        # Algorithm parameters
         self.addParameter(
             QgsProcessingParameterNumber(
                 self.DIST_FACC,
@@ -175,14 +115,146 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
                 defaultValue=1000
             )
         )
+        # Output parameters with "Add to Map" options
+        self.addParameter(
+            QgsProcessingParameterFileDestination(
+                self.OUTPUT_VALLEYS,
+                self.tr('Output Valley Lines'),
+                fileFilter='Shapefile (*.shp);;GeoPackage (*.gpkg)'
+            )
+        )
         self.addParameter(
             QgsProcessingParameterBoolean(
-                self.ADD_OUTPUTS_TO_MAP,
-                self.tr('Add all outputs to QGIS map'),
+                self.ADD_VALLEYS_TO_MAP,
+                self.tr('Add Valley Lines to QGIS map'),
                 defaultValue=True
             )
         )
+        self.addParameter(
+            QgsProcessingParameterFileDestination(
+                self.OUTPUT_FILLED,
+                self.tr('Output Filled DTM (output of WBT `BreachDepressionsLeastCost`)'),
+                fileFilter='GeoTIFF (*.tif)',
+                optional=True
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterBoolean(
+                self.ADD_FILLED_TO_MAP,
+                self.tr('Add Filled DTM to QGIS map'),
+                defaultValue=False
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterFileDestination(
+                self.OUTPUT_FDIR,
+                self.tr('Output Flow Direction Raster (output of WBT `D8Pointer`)'),
+                fileFilter='GeoTIFF (*.tif)',
+                optional=True
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterBoolean(
+                self.ADD_FDIR_TO_MAP,
+                self.tr('Add Flow Direction to QGIS map'),
+                defaultValue=False
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterFileDestination(
+                self.OUTPUT_FACC,
+                self.tr('Output Flow Accumulation Raster (output of WBT `D8FlowAccumulation`)'),
+                fileFilter='GeoTIFF (*.tif)',
+                optional=True
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterBoolean(
+                self.ADD_FACC_TO_MAP,
+                self.tr('Add Flow Accumulation to QGIS map'),
+                defaultValue=False
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterFileDestination(
+                self.OUTPUT_FACC_LOG,
+                self.tr('Output Log-Scaled Accumulation Raster'),
+                fileFilter='GeoTIFF (*.tif)',
+                optional=True
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterBoolean(
+                self.ADD_FACC_LOG_TO_MAP,
+                self.tr('Add Log-Scaled Accumulation to QGIS map'),
+                defaultValue=False
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterFileDestination(
+                self.OUTPUT_STREAMS,
+                self.tr('Output Stream Raster'),
+                fileFilter='GeoTIFF (*.tif)',
+                optional=True
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterBoolean(
+                self.ADD_STREAMS_TO_MAP,
+                self.tr('Add Stream Raster to QGIS map'),
+                defaultValue=False
+            )
+        )
 
+    def _apply_valley_symbology(self, vlayer, feedback=None):
+        """Apply blue line symbology with flow direction markers to valley lines layer."""
+        try:
+            # Create a line symbol with blue color
+            line_symbol = QgsLineSymbol.createSimple({
+                'color': '#0066CC',  # Blue color
+                'width': '0.4',
+                'capstyle': 'round',
+                'joinstyle': 'round'
+            })
+            
+            # Create marker line symbol layer for flow direction arrows
+            marker_line = QgsMarkerLineSymbolLayer()
+            marker_line.setPlacement(QgsMarkerLineSymbolLayer.Interval)
+            marker_line.setInterval(20)  # Place markers every 20 map units
+            marker_line.setRotateMarker(True)  # Rotate markers along line direction
+            
+            # Create marker symbol for arrows
+            marker_symbol = QgsMarkerSymbol()
+            marker_symbol.deleteSymbolLayer(0)  # Remove default layer
+            
+            # Create arrow marker layer
+            arrow_marker = QgsSimpleMarkerSymbolLayer()
+            arrow_marker.setShape(QgsSimpleMarkerSymbolLayer.ArrowHead)
+            arrow_marker.setSize(4)  # Arrow size
+            arrow_marker.setColor(QColor('#003366'))  # Dark blue for arrows
+            arrow_marker.setStrokeColor(QColor('#0066CC'))  # Even darker outline
+            arrow_marker.setStrokeWidth(0.2)
+            arrow_marker.setAngle(0)  # Don't add extra rotation, let the marker line handle it
+            
+            # Add arrow to marker symbol
+            marker_symbol.appendSymbolLayer(arrow_marker)
+            
+            # Set the marker symbol to the marker line
+            marker_line.setSubSymbol(marker_symbol)
+            
+            # Add marker line to the main line symbol
+            line_symbol.appendSymbolLayer(marker_line)
+            
+            # Apply the symbol to the layer
+            renderer = QgsSingleSymbolRenderer(line_symbol)
+            vlayer.setRenderer(renderer)
+            vlayer.triggerRepaint()
+            
+        except Exception as e:
+            # If symbology fails, just continue without it - for debugging, let's see the error
+            if feedback:
+                feedback.reportError(f"Failed to apply symbology: {str(e)}")
+            pass
 
     def processAlgorithm(self, parameters, context, feedback):
         # Validate and read input parameters
@@ -195,6 +267,7 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
         fdir_output_path = self.parameterAsFileOutput(parameters, self.OUTPUT_FDIR, context)
         facc_output_path = self.parameterAsFileOutput(parameters, self.OUTPUT_FACC, context)
         facc_log_output_path = self.parameterAsFileOutput(parameters, self.OUTPUT_FACC_LOG, context)
+        streams_output_path = self.parameterAsFileOutput(parameters, self.OUTPUT_STREAMS, context)
         accumulation_threshold = self.parameterAsInt(parameters, self.ACCUM_THRESHOLD, context)
         dist_facc = self.parameterAsDouble(parameters, self.DIST_FACC, context)
         # Read boolean parameters for adding layers to the map
@@ -203,6 +276,7 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
         add_fdir = self.parameterAsBool(parameters, self.ADD_FDIR_TO_MAP, context)
         add_facc = self.parameterAsBool(parameters, self.ADD_FACC_TO_MAP, context)
         add_facc_log = self.parameterAsBool(parameters, self.ADD_FACC_LOG_TO_MAP, context)
+        add_streams = self.parameterAsBool(parameters, self.ADD_STREAMS_TO_MAP, context)
 
         feedback.pushInfo("Input:")
         feedback.pushInfo(f"DTM Input: {dtm_path}")
@@ -215,6 +289,8 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
             feedback.pushInfo(f"Flow Accumulation Output: {facc_output_path}")
         if facc_log_output_path:
             feedback.pushInfo(f"Log-Scaled Accumulation Output: {facc_log_output_path}") 
+        if streams_output_path:
+            feedback.pushInfo(f"Stream Raster Output: {streams_output_path}")
         feedback.pushInfo(f"Accumulation Threshold: {accumulation_threshold}")
         feedback.pushInfo(f"Max Search Distance for Breach Paths: {dist_facc}")
 
@@ -234,6 +310,8 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
             raise FileNotFoundError(f"[Input Error] directory not found: {os.path.dirname(facc_output_path)}")
         if facc_log_output_path and not os.path.isdir(os.path.dirname(facc_log_output_path)):
             raise FileNotFoundError(f"[Input Error] directory not found: {os.path.dirname(facc_log_output_path)}")
+        if streams_output_path and not os.path.isdir(os.path.dirname(streams_output_path)):
+            raise FileNotFoundError(f"[Input Error] directory not found: {os.path.dirname(streams_output_path)}")
         
         feedback.pushInfo("Reading CRS from DTM...")
         # Read CRS from the DTM
@@ -254,6 +332,7 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
             fdir_output_path=fdir_output_path,
             facc_output_path=facc_output_path,
             facc_log_output_path=facc_log_output_path,
+            streams_output_path=streams_output_path,
             accumulation_threshold=float(accumulation_threshold),
             dist_facc=dist_facc,
             feedback=feedback
@@ -286,8 +365,10 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
                 if not vlayer.isValid():
                     feedback.reportError(f"Failed to load valley lines layer: {valley_output_path}")
                 else:
+                    # Apply blue line symbology with flow direction markers
+                    self._apply_valley_symbology(vlayer, feedback)
                     QgsProject.instance().addMapLayer(vlayer)
-                    feedback.pushInfo("Valley lines layer added to QGIS project.")
+                    feedback.pushInfo("Valley lines layer added to QGIS project with flow direction symbology.")
             except Exception as e:
                 feedback.reportError(f"Could not add valley lines to QGIS project: {e}")
         # Add filled DTM
@@ -334,6 +415,17 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
                     feedback.reportError(f"Failed to load log-scaled accumulation: {facc_log_output_path}")
             except Exception as e:
                 feedback.reportError(f"Could not add log-scaled accumulation to QGIS project: {e}")
+        # Add streams
+        if add_streams and streams_output_path and os.path.exists(streams_output_path):
+            try:
+                rlayer = QgsRasterLayer(streams_output_path, "Streams")
+                if rlayer.isValid():
+                    QgsProject.instance().addMapLayer(rlayer)
+                    feedback.pushInfo("Streams layer added to QGIS project.")
+                else:
+                    feedback.reportError(f"Failed to load streams: {streams_output_path}")
+            except Exception as e:
+                feedback.reportError(f"Could not add streams to QGIS project: {e}")
 
         results = {self.OUTPUT_VALLEYS: valley_output_path}
         if filled_output_path:
@@ -344,5 +436,7 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
             results[self.OUTPUT_FACC] = facc_output_path
         if facc_log_output_path:
             results[self.OUTPUT_FACC_LOG] = facc_log_output_path
+        if streams_output_path:
+            results[self.OUTPUT_STREAMS] = streams_output_path
 
         return results

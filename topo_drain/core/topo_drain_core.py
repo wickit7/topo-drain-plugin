@@ -69,10 +69,6 @@ class TopoDrainCore:
         self.nodata = nodata
 
 
-
-
-
-
     def stitch_multilinestring(self, geom, preserve_original=False):
         """
         Turn a MultiLineString (or a multipart LineString) into a single LineString
@@ -500,7 +496,7 @@ class TopoDrainCore:
                     f"Raster vectorized to {len(merged.geoms)} disjoint parts; returning a MultiLineString."
                 )
             return merged
-
+        
     def extract_valleys(
         self,
         dtm_path: str,
@@ -508,6 +504,7 @@ class TopoDrainCore:
         fdir_output_path: str = None,
         facc_output_path: str = None,
         facc_log_output_path: str = None,
+        streams_output_path: str  = None,
         accumulation_threshold: int = 1000,
         dist_facc: float = 50,
         postfix: str = None,
@@ -527,6 +524,8 @@ class TopoDrainCore:
                 Path to save the flow-accumulation raster GeoTIFF (".tif").
             facc_log_output_path (str, optional):
                 Path to save the log-scaled accumulation raster GeoTIFF (".tif").
+            streams_output_path (str, optional):
+                Path to save the extracted stream raster GeoTIFF (".tif").
             accumulation_threshold (int):
                 Threshold for stream extraction (flow accumulation units).
             dist_facc (float):
@@ -580,9 +579,9 @@ class TopoDrainCore:
         fdir_output_path     = fdir_output_path     or defaults["fdir"]
         facc_output_path     = facc_output_path     or defaults["facc"]
         facc_log_output_path = facc_log_output_path or defaults["facc_log"]
+        streams_output_path  = streams_output_path  or defaults["streams"]
 
         # intermediate paths always use defaults:
-        streams_output_path        = defaults["streams"]
         streams_vec_output_path    = defaults["streams_vec"]
         streams_linked_output_path = defaults["streams_linked"]
         stream_network_output_path = defaults["network"]
@@ -742,6 +741,7 @@ class TopoDrainCore:
         inverted_fdir_output_path: str = None,
         inverted_facc_output_path: str = None,
         inverted_facc_log_output_path: str = None,
+        inverted_streams_output_path: str = None,
         accumulation_threshold: int = 1000,
         dist_facc: float = 50,
         postfix: str = "inverted"
@@ -761,6 +761,8 @@ class TopoDrainCore:
                 Where to save the inverted‐DTM’s flow‐accumulation raster (GeoTIFF).
             inverted_facc_log_output_path (str, optional):
                 Where to save the inverted‐DTM’s log‐scaled accumulation raster (GeoTIFF).
+            inverted_streams_output_path (str, optional):
+                Where to save the inverted‐DTM’s extracted streams (GeoTIFF).   
             accumulation_threshold (int):
                 Threshold for ridge extraction (analogous to stream threshold).
             dist_facc (float):
@@ -789,6 +791,7 @@ class TopoDrainCore:
         inv_fdir   = inverted_fdir_output_path
         inv_facc   = inverted_facc_output_path
         inv_facc_log = inverted_facc_log_output_path
+        inv_streams = inverted_streams_output_path
 
         # 3) Call extract_valleys on the inverted DTM
         print("[ExtractRidges] Running valley-extraction on inverted DTM…")
@@ -798,6 +801,7 @@ class TopoDrainCore:
             fdir_output_path=inv_fdir,
             facc_output_path=inv_facc,
             facc_log_output_path=inv_facc_log,
+            streams_output_path=inv_streams,
             accumulation_threshold=accumulation_threshold,
             dist_facc=dist_facc,
             postfix=postfix
