@@ -46,7 +46,6 @@ except ImportError:
 # Progress regex for parsing WhiteboxTools output
 progress_regex = re.compile(r'\d+%')
 
-
 # ---  Class TopoDrainCore ---
 class TopoDrainCore:
     def __init__(self, whitebox_directory=None, nodata=None, crs=None, temp_directory=None, working_directory=None):
@@ -102,7 +101,7 @@ class TopoDrainCore:
     def set_crs(self, crs):
         self.crs = crs
 
-    def execute_wbt(self, tool_name, feedback=None, **kwargs):
+    def _execute_wbt(self, tool_name, feedback=None, **kwargs):
         """
         Execute a WhiteboxTools command with progress monitoring.
         Similar to the WBT for QGIS plugin's execute() function.
@@ -216,7 +215,7 @@ class TopoDrainCore:
                 feedback.reportError(f"Error executing WhiteboxTools: {e}")
             return 1
 
-    def stitch_multilinestring(self, geom, preserve_original=False):
+    def _stitch_multilinestring(self, geom, preserve_original=False):
         """
         Turn a MultiLineString (or a multipart LineString) into a single LineString
         by concatenating segments end-to-end at their nearest endpoints.
@@ -280,7 +279,7 @@ class TopoDrainCore:
 
         return LineString(base_coords)
 
-    def smooth_linestring(self, geom, sigma: float = 1.0):
+    def _smooth_linestring(self, geom, sigma: float = 1.0):
         """
         Smooth a LineString or MultiLineString geometry using a Gaussian filter.
 
@@ -293,7 +292,7 @@ class TopoDrainCore:
         """
         # Handle MultiLineString by smoothing each part
         if isinstance(geom, MultiLineString):
-            smoothed_parts = [self.smooth_linestring(part, sigma) for part in geom.geoms]
+            smoothed_parts = [self._smooth_linestring(part, sigma) for part in geom.geoms]
             return MultiLineString(smoothed_parts)
 
         # Must be a LineString from here on
@@ -313,7 +312,7 @@ class TopoDrainCore:
         smoothed = LineString(np.column_stack([x_smooth, y_smooth]))
         return smoothed
 
-    def mask_raster(self, raster_path: str, mask: gpd.GeoDataFrame, out_path: str) -> str:
+    def _mask_raster(self, raster_path: str, mask: gpd.GeoDataFrame, out_path: str) -> str:
         """
         Mask (clip) a raster file using a polygon mask.
 
@@ -352,7 +351,7 @@ class TopoDrainCore:
             raise RuntimeError(f"Unexpected error during raster masking: {e}")
 
 
-    def vector_to_mask(
+    def _vector_to_mask(
         self,
         features: list[gpd.GeoDataFrame],
         reference_raster_path: str
@@ -389,7 +388,7 @@ class TopoDrainCore:
 
         return mask
 
-    def invert_dtm(self, dtm_path: str, output_path: str) -> str:
+    def _invert_dtm(self, dtm_path: str, output_path: str) -> str:
         """
         Create an inverted DTM (multiply by -1) to extract ridges.
 
@@ -406,7 +405,7 @@ class TopoDrainCore:
 
         return output_path
 
-    def line_to_raster(
+    def _line_to_raster(
         self,
         gdf: gpd.GeoDataFrame,
         reference_raster: str,
@@ -428,7 +427,6 @@ class TopoDrainCore:
         with rasterio.open(reference_raster) as src:
             out_shape = (src.height, src.width)
             transform = src.transform
-            crs = src.crs
 
         if value_field and value_field in gdf.columns:
             shapes = [(geom, val) for geom, val in zip(gdf.geometry, gdf[value_field])]
@@ -452,14 +450,14 @@ class TopoDrainCore:
                 width=out_shape[1],
                 count=1,
                 dtype='int32',
-                crs=crs,
+                crs=self.crs,
                 transform=transform
             ) as dst:
                 dst.write(raster, 1)
 
         return raster
 
-    def boundary_to_raster(
+    def _boundary_to_raster(
         self,
         gdf: gpd.GeoDataFrame,
         reference_raster: str,
@@ -479,7 +477,6 @@ class TopoDrainCore:
         with rasterio.open(reference_raster) as src:
             meta = src.meta.copy()
             transform = src.transform
-            crs = src.crs
             out_shape = (src.height, src.width)
 
         # Extract the outer boundary as a single LineString or MultiLineString
@@ -504,14 +501,14 @@ class TopoDrainCore:
                 width=out_shape[1],
                 count=1,
                 dtype='uint8',
-                crs=crs,
+                crs=self.crs,
                 transform=transform
             ) as dst:
                 dst.write(mask, 1)
 
         return mask
 
-    def log_raster(
+    def _log_raster(
         self,
         input_raster: str,
         output_path: str,
@@ -567,7 +564,7 @@ class TopoDrainCore:
         return output_path
 
 
-    def modify_dtm_with_mask(
+    def _modify_dtm_with_mask(
         self,
         dtm_path: str,
         mask: np.ndarray,
@@ -600,49 +597,47 @@ class TopoDrainCore:
 
         return output_path
 
+    def _raster_to_linestring_wbt(self, raster_path: str) -> LineString:
+        """
+        Uses WhiteboxTools to vectorize a raster and return a merged LineString or MultiLineString.
 
+        Args:
+            raster_path (str): Path to a raster where 1-valued pixels form your keyline.
 
-        def raster_to_linestring_wbt(raster_path: str) -> LineString:
-            """
-            Uses WhiteboxTools to vectorize a raster and return a merged LineString or MultiLineString.
+        Returns:
+            LineString or MultiLineString, or None if empty.
+        """
+        if self.wbt is None:
+            raise RuntimeError("WhiteboxTools not initialized.")
 
-            Args:
-                raster_path (str): Path to a raster where 1-valued pixels form your keyline.
+        vector_path = raster_path.replace(".tif", ".shp")
+        self.wbt.raster_to_vector_lines(i=raster_path, output=vector_path)
 
-            Returns:
-                LineString or MultiLineString, or None if empty.
-            """
-            if wbt is None:
-                raise RuntimeError("WhiteboxTools not initialized.")
+        gdf = gpd.read_file(vector_path)
+        if gdf.empty:
+            warnings.warn(f"No vector features found in {vector_path}.")
+            return None
 
-            vector_path = raster_path.replace(".tif", ".shp")
-            wbt.raster_to_vector_lines(i=raster_path, output=vector_path)
+        # 1) union all pieces
+        all_union = unary_union(list(gdf.geometry))
 
-            gdf = gpd.read_file(vector_path)
-            if gdf.empty:
-                warnings.warn(f"No vector features found in {vector_path}.")
-                return None
+        # 2) if that's already a single LineString, return it
+        if isinstance(all_union, LineString):
+            return all_union
 
-            # 1) union all pieces
-            all_union = unary_union(list(gdf.geometry))
+        # 3) if it's a MultiLineString (or GeometryCollection), merge touching parts
+        try:
+            merged = linemerge(all_union)
+        except ValueError:
+            # fallback: try merging the raw list of geometries
+            merged = linemerge(list(gdf.geometry))
 
-            # 2) if that's already a single LineString, return it
-            if isinstance(all_union, LineString):
-                return all_union
-
-            # 3) if it's a MultiLineString (or GeometryCollection), merge touching parts
-            try:
-                merged = linemerge(all_union)
-            except ValueError:
-                # fallback: try merging the raw list of geometries
-                merged = linemerge(list(gdf.geometry))
-
-            # 4) warn if still multipart
-            if isinstance(merged, MultiLineString):
-                warnings.warn(
-                    f"Raster vectorized to {len(merged.geoms)} disjoint parts; returning a MultiLineString."
-                )
-            return merged
+        # 4) warn if still multipart
+        if isinstance(merged, MultiLineString):
+            warnings.warn(
+                f"Raster vectorized to {len(merged.geoms)} disjoint parts; returning a MultiLineString."
+            )
+        return merged
         
     def extract_valleys(
         self,
@@ -739,7 +734,7 @@ class TopoDrainCore:
             else:
                 print(f"[ExtractValleys] Filling depressions → {filled_output_path}")
             try:
-                ret = self.execute_wbt(
+                ret = self._execute_wbt(
                     'breach_depressions_least_cost',
                     feedback=feedback,
                     dem=dtm_path,
@@ -758,7 +753,7 @@ class TopoDrainCore:
             else:
                 print(f"[ExtractValleys] Flow direction → {fdir_output_path}")
             try:
-                ret = self.execute_wbt(
+                ret = self._execute_wbt(
                     'd8_pointer',
                     feedback=feedback,
                     dem=filled_output_path,
@@ -774,7 +769,7 @@ class TopoDrainCore:
             else:
                 print(f"[ExtractValleys] Flow accumulation → {facc_output_path}")
             try:
-                ret = self.execute_wbt(
+                ret = self._execute_wbt(
                     'd8_flow_accumulation',
                     feedback=feedback,
                     i=filled_output_path,
@@ -791,7 +786,7 @@ class TopoDrainCore:
             else:
                 print(f"[ExtractValleys] Log-scaled accumulation → {facc_log_output_path}")
             try:
-                self.log_raster(input_raster=facc_output_path, output_path=facc_log_output_path, nodata=float(self.nodata))
+                self._log_raster(input_raster=facc_output_path, output_path=facc_log_output_path, nodata=float(self.nodata))
                 if not os.path.exists(facc_log_output_path):
                     raise RuntimeError(f"[ExtractValleys] Log-scaled accumulation output not found at {facc_log_output_path}")
             except Exception as e:
@@ -802,7 +797,7 @@ class TopoDrainCore:
             else:
                 print(f"[ExtractValleys] Extracting streams (threshold={accumulation_threshold})")
             try:
-                ret = self.execute_wbt(
+                ret = self._execute_wbt(
                     'extract_streams',
                     feedback=feedback,
                     flow_accum=facc_output_path,
@@ -819,7 +814,7 @@ class TopoDrainCore:
             else:
                 print("[ExtractValleys] Vectorizing streams")
             try:
-                ret = self.execute_wbt(
+                ret = self._execute_wbt(
                     'raster_streams_to_vector',
                     feedback=feedback,
                     streams=streams_output_path,
@@ -837,7 +832,7 @@ class TopoDrainCore:
                     feedback.pushInfo("[ExtractValleys] Identifying stream links")
                 else:
                     print("[ExtractValleys] Identifying stream links")
-                ret = self.execute_wbt(
+                ret = self._execute_wbt(
                     'stream_link_identifier',
                     feedback=feedback,
                     d8_pntr=fdir_output_path,
@@ -854,7 +849,7 @@ class TopoDrainCore:
                     feedback.pushInfo("[ExtractValleys] Converting linked streams")
                 else:
                     print("[ExtractValleys] Converting linked streams")
-                ret = self.execute_wbt(
+                ret = self._execute_wbt(
                     'raster_streams_to_vector',
                     feedback=feedback,
                     streams=streams_vec_id,
@@ -871,7 +866,7 @@ class TopoDrainCore:
                     feedback.pushInfo("[ExtractValleys] Network analysis")
                 else:
                     print("[ExtractValleys] Network analysis")
-                ret = self.execute_wbt(
+                ret = self._execute_wbt(
                     'VectorStreamNetworkAnalysis',
                     feedback=feedback,
                     streams=streams_linked_output_path,
@@ -916,7 +911,8 @@ class TopoDrainCore:
         inverted_streams_output_path: str = None,
         accumulation_threshold: int = 1000,
         dist_facc: float = 50,
-        postfix: str = "inverted"
+        postfix: str = "inverted",
+        feedback=None
     ) -> gpd.GeoDataFrame:
         """
         Extract ridge lines (watershed divides) from a DTM by inverting the terrain
@@ -952,7 +948,7 @@ class TopoDrainCore:
         # 1) Invert the DTM
         print("[ExtractRidges] Inverting DTM…")
         inverted_dtm = os.path.join(self.temp_directory, f"inverted_dtm_{postfix}.tif")
-        inverted_dtm = self.invert_dtm(dtm_path, inverted_dtm)
+        inverted_dtm = self._invert_dtm(dtm_path, inverted_dtm)
         print(f"[ExtractRidges] Inversion complete: {inverted_dtm}")
 
         # 2) Compute defaults for the four inverted outputs
@@ -976,7 +972,8 @@ class TopoDrainCore:
             streams_output_path=inv_streams,
             accumulation_threshold=accumulation_threshold,
             dist_facc=dist_facc,
-            postfix=postfix
+            postfix=postfix,
+            feedback=feedback
         )
 
         print(f"[ExtractRidges] Ridge extraction complete: {len(ridges)} features")
@@ -984,6 +981,7 @@ class TopoDrainCore:
 
 
     def extract_main_valleys(
+        self,
         valley_lines: gpd.GeoDataFrame,
         facc_path: str,
         perimeter: gpd.GeoDataFrame,
@@ -1000,14 +998,13 @@ class TopoDrainCore:
         with rasterio.open(facc_path) as src:
             facc = src.read(1)
             transform = src.transform
-            facc_crs = src.crs
 
         print("[ExtractMainValleys] Clipping valley lines to perimeter...")
         valley_clipped = gpd.overlay(valley_lines, perimeter, how="intersection")
 
         print("[ExtractMainValleys] Rasterizing valley lines...")
-        valley_raster_path = os.path.join(temp_directory, "valley_mask.tif")
-        valley_mask = line_to_raster(
+        valley_raster_path = os.path.join(self.temp_directory, "valley_mask.tif")
+        valley_mask = self._line_to_raster(
             gdf=valley_clipped.geometry,
             reference_raster=facc_path,
             output_path=valley_raster_path
@@ -1020,7 +1017,7 @@ class TopoDrainCore:
             raise RuntimeError("[ExtractMainValleys] No valley cells with flow accumulation > 0 found inside perimeter.")
 
         coords = [rasterio.transform.xy(transform, row, col) for row, col in zip(rows, cols)]
-        points = gpd.GeoDataFrame(geometry=gpd.points_from_xy(*zip(*coords)), crs=facc_crs)
+        points = gpd.GeoDataFrame(geometry=gpd.points_from_xy(*zip(*coords)), crs=self.crs)
         points["facc"] = facc[rows, cols]
 
         print("[ExtractMainValleys] Performing spatial join with valley lines...")
@@ -1076,10 +1073,7 @@ class TopoDrainCore:
                 except Exception as e:
                     raise RuntimeError(f"[ExtractMainValleys] Failed to merge lines for TRIB_ID={trib_id}: {e}")
 
-        if valley_lines.crs:
-            gdf = gpd.GeoDataFrame(merged_records, crs=valley_lines.crs)
-        else:
-            gdf = gpd.GeoDataFrame(merged_records, crs=facc_crs)
+        gdf = gpd.GeoDataFrame(merged_records, crs=self.crs)
 
         if clip_to_perimeter:
             print("[ExtractMainValleys] Clipping final valley lines to perimeter...")
@@ -1090,6 +1084,7 @@ class TopoDrainCore:
 
 
     def extract_main_ridges(
+        self,
         ridge_lines: gpd.GeoDataFrame,
         facc_path: str,
         perimeter: gpd.GeoDataFrame,
@@ -1111,7 +1106,7 @@ class TopoDrainCore:
         """
         print("[ExtractMainRidges] Starting main ExtractMainValleys with extract main ridges input...")
 
-        gdf = extract_main_valleys(
+        gdf = self.extract_main_valleys(
             valley_lines=ridge_lines,
             facc_path=facc_path,
             perimeter=perimeter,
@@ -1122,7 +1117,7 @@ class TopoDrainCore:
         return gdf
 
 
-    def find_inflection_candidates(curvature: np.ndarray, window: int) -> list:
+    def _find_inflection_candidates(curvature: np.ndarray, window: int) -> list:
         """
         Detect inflection points where the curvature changes from concave to convex,
         using a moving average window. If none found, return point of strongest convexity.
@@ -1163,6 +1158,7 @@ class TopoDrainCore:
 
 
     def get_keypoints(
+        self,
         valley_lines: gpd.GeoDataFrame,
         dtm_path: str,
         sampling_distance: float = 2.0,
@@ -1205,7 +1201,6 @@ class TopoDrainCore:
 
         with rasterio.open(dtm_path) as src:
             pixel_size = src.res[0]
-            dtm_crs = src.crs
             for idx, row in valley_lines.iterrows():
                 line = row.geometry
                 line_id = row.FID
@@ -1228,7 +1223,7 @@ class TopoDrainCore:
 
                 # Find concave→convex transitions
                 find_window = max(3, int(round(find_window_distance / pixel_size)))  # mindestens 3 Zellen
-                candidates = find_inflection_candidates(curvature, window=find_window)
+                candidates = self._find_inflection_candidates(curvature, window=find_window)
 
                 # Sort and select strongest candidates
                 sorted_candidates = sorted(candidates, key=lambda x: x[1], reverse=True)
@@ -1276,14 +1271,11 @@ class TopoDrainCore:
                     plt.tight_layout()
                     plt.show()
 
-        if dtm_crs:
-            gdf = gpd.GeoDataFrame(results, geometry="geometry", crs=dtm_crs)
-        else:
-            gdf = gpd.GeoDataFrame(results, geometry="geometry", crs=valley_lines.crs)
+        gdf = gpd.GeoDataFrame(results, geometry="geometry", crs=self.crs)
 
         return gdf
 
-    def get_orthogonal_directions_start_points(
+    def _get_orthogonal_directions_start_points(
         barrier_raster_path: str,
         point: Point,
         line_geom: LineString,
@@ -1358,7 +1350,7 @@ class TopoDrainCore:
             return left_pt, right_pt
         
         
-    def create_slope_cost_raster(
+    def _create_slope_cost_raster(
         dtm_path: str,
         start_point: Point,
         output_cost_raster_path: str,
@@ -1421,7 +1413,7 @@ class TopoDrainCore:
         return output_cost_raster_path
 
 
-    def create_source_raster(
+    def _create_source_raster(
         reference_raster_path: str,
         source_point: Point,
         output_source_raster_path: str,
@@ -1459,7 +1451,7 @@ class TopoDrainCore:
 
         return output_source_raster_path
 
-    def select_best_destination_cell(
+    def _select_best_destination_cell(
         accum_raster_path: str,
         destination_raster_path: str,
         output_best_destination_raster_path: str
@@ -1502,7 +1494,8 @@ class TopoDrainCore:
 
             return output_best_destination_raster_path
         
-    def get_constant_slope_line(
+    def _get_constant_slope_line(
+        self,
         dtm_path: str,
         start_point: Point,
         destination_mask: np.ndarray,
@@ -1525,20 +1518,20 @@ class TopoDrainCore:
         Returns:
             LineString: Least-cost slope path as a Shapely LineString, or None if no path found.
         """
-        if wbt is None:
+        if self.wbt is None:
             raise RuntimeError("WhiteboxTools not initialized.")
 
         # --- File paths ---
-        cost_raster_path = os.path.join(temp_directory, "cost.tif")
-        source_raster_path = os.path.join(temp_directory, "source.tif")
-        destination_raster_path = os.path.join(temp_directory, "destination.tif")
-        accum_raster_path = os.path.join(temp_directory, "accum.tif")
-        backlink_raster_path = os.path.join(temp_directory, "backlink.tif")
-        best_destination_path = os.path.join(temp_directory, "destination_best.tif")
-        pathway_raster_path = os.path.join(temp_directory, "pathway.tif")
+        cost_raster_path = os.path.join(self.temp_directory, "cost.tif")
+        source_raster_path = os.path.join(self.temp_directory, "source.tif")
+        destination_raster_path = os.path.join(self.temp_directory, "destination.tif")
+        accum_raster_path = os.path.join(self.temp_directory, "accum.tif")
+        backlink_raster_path = os.path.join(self.temp_directory, "backlink.tif")
+        best_destination_path = os.path.join(self.temp_directory, "destination_best.tif")
+        pathway_raster_path = os.path.join(self.temp_directory, "pathway.tif")
 
         # --- Create cost raster ---
-        cost_raster_path = create_slope_cost_raster(
+        cost_raster_path = self._create_slope_cost_raster(
             dtm_path=dtm_path,
             start_point=start_point,
             output_cost_raster_path=cost_raster_path,
@@ -1547,7 +1540,7 @@ class TopoDrainCore:
         )
 
         # --- Create source raster ---
-        source_raster_path = create_source_raster(
+        source_raster_path = self._create_source_raster(
             reference_raster_path=dtm_path,
             source_point=start_point,
             output_source_raster_path=source_raster_path
@@ -1563,7 +1556,7 @@ class TopoDrainCore:
                 dst.write(data, 1)
 
         # --- Run cost-distance analysis ---
-        wbt.cost_distance(
+        self.wbt.cost_distance(
             source=source_raster_path,
             cost=cost_raster_path,
             out_accum=accum_raster_path,
@@ -1571,14 +1564,14 @@ class TopoDrainCore:
         )
 
         # --- Select best destination cell ---
-        best_destination_path = select_best_destination_cell(
+        best_destination_path = self._select_best_destination_cell(
             accum_raster_path=accum_raster_path,
             destination_raster_path=destination_raster_path,
             output_best_destination_raster_path=best_destination_path
         )
 
         # --- Trace least-cost pathway ---
-        wbt.cost_pathway(
+        self.wbt.cost_pathway(
             destination=best_destination_path,
             backlink=backlink_raster_path,
             output=pathway_raster_path
@@ -1591,17 +1584,18 @@ class TopoDrainCore:
             dst.nodata = nodata_value
 
         # --- Convert to LineString ---
-        line = raster_to_linestring_wbt(pathway_raster_path)
+        line = self._raster_to_linestring_wbt(pathway_raster_path)
         if line is None:
             print("[SlopeLine] No valid line could be extracted from pathway raster.")
             return None
 
         # --- Optional smoothing ---
-        line = smooth_linestring(line, sigma=1.0)
+        line = self._smooth_linestring(line, sigma=1.0)
 
         return line
 
     def get_constant_slope_lines(
+        self,
         dtm_path: str,
         start_points: gpd.GeoDataFrame,
         destination_features: list[gpd.GeoDataFrame],
@@ -1627,14 +1621,13 @@ class TopoDrainCore:
                 destination_processed.append(g)
             else:
                 destination_processed.append(gdf)
-        destination_mask = vector_to_mask(destination_processed, dtm_path)
+        destination_mask = self._vector_to_mask(destination_processed, dtm_path)
         print("[ConstantSlopeLines] Destination mask ready")
 
         # Raster metadata
         with rasterio.open(dtm_path) as src:
             profile = src.profile.copy()
             res = src.res[0]
-            dtm_crs = src.crs
 
         # --- Barrier handling ---
         if barrier_features:
@@ -1657,14 +1650,14 @@ class TopoDrainCore:
 
             # 2) buffer *all* barriers for mask: buffer lines slightly, leave others as-is
             print("[ConstantSlopeLines] Buffering lines and preparing mask layers")
-            buf_dist = res + 0.01 ################ Später vielleicht ohne Buffer und nur mit all_touched in Rasterio Rasterize in vector_to_mask (funktioniert nicht wie erwartet. wbt Versuche noch VectorPolygonsToRaster)
+            buf_dist = res + 0.01 ################ Später vielleicht ohne Buffer und nur mit all_touched in Rasterio Rasterize in _vector_to_mask (funktioniert nicht wie erwartet. wbt Versuche noch VectorPolygonsToRaster)
             buffered_line_gdf = gpd.GeoDataFrame(geometry=[ln.buffer(buf_dist) for ln in line_geoms],
-                                                crs=start_points.crs)
+                                                crs=self.crs)
             mask_layers = [buffered_line_gdf] + non_line_gdfs
 
             print("[ConstantSlopeLines] Rasterizing all barrier features into mask")
-            barrier_mask = vector_to_mask(mask_layers, dtm_path)
-            barrier_raster = os.path.join(temp_directory, "barrier_mask.tif")
+            barrier_mask = self._vector_to_mask(mask_layers, dtm_path)
+            barrier_raster = os.path.join(self.temp_directory, "barrier_mask.tif")
             with rasterio.open(barrier_raster, "w", **profile) as dst:
                 dst.write(barrier_mask.astype("uint8"), 1)
             print(f"[ConstantSlopeLines] Barrier raster saved to {barrier_raster}")
@@ -1696,7 +1689,7 @@ class TopoDrainCore:
                     for line in line_geoms:
                         if pt.distance(line) < tol:
                             print(f"[ConstantSlopeLines]  Point {orig_idx} on a barrier line → offsetting")
-                            left_pt, right_pt = get_orthogonal_directions_start_points(
+                            left_pt, right_pt = self._get_orthogonal_directions_start_points(
                                 barrier_raster_path=barrier_raster,
                                 point=pt,
                                 line_geom=line
@@ -1713,20 +1706,20 @@ class TopoDrainCore:
                         non_overlapping = non_overlapping.append(row)
 
                 print(f"[ConstantSlopeLines] Created {len(adjusted_records)} adjusted start points")
-                adj_gdf = gpd.GeoDataFrame(adjusted_records, crs=start_points.crs).reset_index(drop=True)
+                adj_gdf = gpd.GeoDataFrame(adjusted_records, crs=self.crs).reset_index(drop=True)
                 # build mapping if needed
                 orig_to_adjusted = defaultdict(list)
                 for adj_idx, rec in adj_gdf.iterrows():
                     orig_to_adjusted[rec.orig_index].append(adj_idx)
             else:
                 print("[ConstantSlopeLines] No overlapping start points → skipping adjustment step")
-                adj_gdf = gpd.GeoDataFrame(columns=["geometry","orig_index"], crs=start_points.crs)
+                adj_gdf = gpd.GeoDataFrame(columns=["geometry","orig_index"], crs=self.crs)
                 orig_to_adjusted = {}
 
         else:
             print("[ConstantSlopeLines] No barrier features provided")
             barrier_mask = None
-            adj_gdf = gpd.GeoDataFrame(columns=["geometry","orig_index"], crs=start_points.crs)
+            adj_gdf = gpd.GeoDataFrame(columns=["geometry","orig_index"], crs=self.crs)
             non_overlapping = original_pts.copy()
             orig_to_adjusted = {}
 
@@ -1745,7 +1738,7 @@ class TopoDrainCore:
                     if barrier_mask[r, c] == 1:
                         warnings.warn(f"[ConstantSlopeLines] Adjusted pt {adj_idx} on barrier cell")
 
-                raw_line = get_constant_slope_line(
+                raw_line = self._get_constant_slope_line(
                     dtm_path=dtm_path,
                     start_point=pt,
                     destination_mask=destination_mask,
@@ -1758,7 +1751,7 @@ class TopoDrainCore:
 
                 # if we got a MultiLineString, stitch it into one LineString
                 if isinstance(raw_line, MultiLineString):
-                    raw_line = stitch_multilinestring(raw_line)
+                    raw_line = self._stitch_multilinestring(raw_line)
                 # snap original at start
                 coords = list(raw_line.coords)
                 s_pt, e_pt = Point(coords[0]), Point(coords[-1])
@@ -1789,7 +1782,7 @@ class TopoDrainCore:
                 orig_attrs = original_pts.loc[orig_idx].drop(labels="geometry").to_dict()
                 print(f"[ConstantSlopeLines]  Orig pt {orig_idx} (no barrier)…")
 
-                raw_line = get_constant_slope_line(
+                raw_line = self._get_constant_slope_line(
                     dtm_path=dtm_path,
                     start_point=orig_pt,
                     destination_mask=destination_mask,
@@ -1800,7 +1793,7 @@ class TopoDrainCore:
                 if raw_line:
                     # if we got a MultiLineString, stitch it into one LineString
                     if isinstance(raw_line, MultiLineString):
-                        raw_line = stitch_multilinestring(raw_line)
+                        raw_line = self._stitch_multilinestring(raw_line)
 
                     coords = list(raw_line.coords)
                     s_pt, e_pt = Point(coords[0]), Point(coords[-1])
@@ -1830,7 +1823,7 @@ class TopoDrainCore:
         print(f"[ConstantSlopeLines] Done: generated {len(results)} lines")
 
         # build GeoDataFrame including all original attributes
-        out_gdf = gpd.GeoDataFrame(results, crs=dtm_crs)
+        out_gdf = gpd.GeoDataFrame(results, crs=self.crs)
         if barrier_features and line_geoms:
             out_gdf.orig_to_adjusted = dict(orig_to_adjusted)
         return out_gdf

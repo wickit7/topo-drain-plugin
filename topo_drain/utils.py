@@ -8,10 +8,16 @@
 
 import os
 import re
+from qgis.PyQt.QtGui import QColor
 from qgis.core import (
     QgsProject,
     QgsRasterLayer,
-    QgsVectorLayer
+    QgsVectorLayer,
+    QgsLineSymbol,
+    QgsMarkerLineSymbolLayer,
+    QgsSimpleMarkerSymbolLayer,
+    QgsSingleSymbolRenderer,
+    QgsMarkerSymbol
 )
 
 def get_crs_from_project():
@@ -209,4 +215,65 @@ def get_crs_from_layer(layer_source):
     
     print("[TopoDrain Utils] Returning None for CRS.")
     return None
+
+
+def apply_line_arrow_symbology(vlayer, linecolor, markercolor, linewidth=0.4, markersize=4, feedback=None):
+    """
+    Apply line symbology with flow direction arrows to a vector layer.
+    
+    Args:
+        vlayer: QgsVectorLayer to apply symbology to
+        linecolor: Color string for the line (e.g., '#0066CC')
+        markercolor: Color string for the arrow markers (e.g., '#003366')
+        linewidth: Width of the line in map units (default: 0.4)
+        markersize: Size of the arrow markers (default: 4)
+        feedback: Optional feedback object for error reporting
+    """
+    try:
+        # Create a line symbol with specified color
+        line_symbol = QgsLineSymbol.createSimple({
+            'color': linecolor,
+            'width': str(linewidth),
+            'capstyle': 'round',
+            'joinstyle': 'round'
+        })
+        
+        # Create marker line symbol layer for flow direction arrows
+        marker_line = QgsMarkerLineSymbolLayer()
+        marker_line.setPlacement(QgsMarkerLineSymbolLayer.Interval)
+        marker_line.setInterval(20)  # Place markers every 20 map units
+        marker_line.setRotateMarker(True)  # Rotate markers along line direction
+        
+        # Create marker symbol for arrows
+        marker_symbol = QgsMarkerSymbol()
+        marker_symbol.deleteSymbolLayer(0)  # Remove default layer
+        
+        # Create arrow marker layer
+        arrow_marker = QgsSimpleMarkerSymbolLayer()
+        arrow_marker.setShape(QgsSimpleMarkerSymbolLayer.ArrowHead)
+        arrow_marker.setSize(markersize)  # Arrow size
+        arrow_marker.setColor(QColor(markercolor))  # Marker color
+        arrow_marker.setStrokeColor(QColor(linecolor))  # Stroke color matches line
+        arrow_marker.setStrokeWidth(0.2)
+        arrow_marker.setAngle(0)  # Don't add extra rotation, let the marker line handle it
+        
+        # Add arrow to marker symbol
+        marker_symbol.appendSymbolLayer(arrow_marker)
+        
+        # Set the marker symbol to the marker line
+        marker_line.setSubSymbol(marker_symbol)
+        
+        # Add marker line to the main line symbol
+        line_symbol.appendSymbolLayer(marker_line)
+        
+        # Apply the symbol to the layer
+        renderer = QgsSingleSymbolRenderer(line_symbol)
+        vlayer.setRenderer(renderer)
+        vlayer.triggerRepaint()
+        
+    except Exception as e:
+        # If symbology fails, just continue without it
+        if feedback:
+            feedback.reportError(f"Failed to apply symbology: {str(e)}")
+        pass
 
