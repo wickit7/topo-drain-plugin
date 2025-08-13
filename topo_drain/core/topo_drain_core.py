@@ -1265,10 +1265,8 @@ class TopoDrainCore:
         sampling_distance: float = 2.0,
         smoothing_window: int = 9,
         polyorder: int = 2,
-        top_n: int = 100,
         min_distance: float = 10.0,
-        find_window_distance: float = 10.0,
-        plot_debug: bool = False,
+        max_keypoints: int = 5,
         feedback=None
         ) -> gpd.GeoDataFrame:
         """
@@ -1278,12 +1276,7 @@ class TopoDrainCore:
 
         The elevation profile is extracted along each valley line using the DTM and
         smoothed using a Savitzky-Golay filter. The second derivative is then computed,
-        and the top N points with the strongest convex curvature (i.e., highest values
-        of the second derivative) are selected as keypoints.
-
-        Threfore, the function does not require an actual sign change in curvature. It returns
-        the top N most convex locations regardless of whether an inflection point
-        (from concave to convex) is present.
+        and the top N points with the strongest convex curvature are selected as keypoints.
 
         Args:
             valley_lines (GeoDataFrame): Valley centerlines with geometries and unique FID.
@@ -1291,21 +1284,30 @@ class TopoDrainCore:
             sampling_distance (float): Distance between elevation samples along each line (in meters).
             smoothing_window (int): Window size for Savitzky-Golay filter (must be odd).
             polyorder (int): Polynomial order for Savitzky-Golay smoothing.
-            top_n (int): Maximum number of keypoints to retain per valley line. Use large values to get points about every min_distance meters.
             min_distance (float): Minimum distance between selected keypoints (in meters).
-            find_window_distance (float): Distance used for the prominence window to find concave and convex transitions or almost transitions (curvature) ordered according to the second derivative (in meters).
-            plot_debug (bool): If True, plot elevation profiles and keypoints for visual inspection.
-            feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting/logging (for QGIS Plugin).
+            max_keypoints (int): Maximum number of keypoints to retain per valley line.
+            feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting/logging.
 
         Returns:
             GeoDataFrame: Detected keypoints as point geometries with metadata.
         """
         results = []
 
+        # Validate smoothing window (must be odd)
+        if smoothing_window % 2 == 0:
+            smoothing_window += 1
+            if feedback:
+                feedback.pushInfo(f"[GetKeypoints] Smoothing window adjusted to {smoothing_window} (must be odd)")
+
+        # Auto-calculate find_window_distance based on sampling_distance
+        find_window_distance = max(10.0, sampling_distance * 3)  # At least 3 samples
+
         if feedback:
             feedback.pushInfo(f"[GetKeypoints] Starting keypoint detection on {len(valley_lines)} valley lines...")
+            feedback.pushInfo(f"[GetKeypoints] Using smoothing window: {smoothing_window}, polyorder: {polyorder}, window distance: {find_window_distance:.1f}m")
         else:
             print(f"[GetKeypoints] Starting keypoint detection on {len(valley_lines)} valley lines...")
+            print(f"[GetKeypoints] Using smoothing window: {smoothing_window}, polyorder: {polyorder}, window distance: {find_window_distance:.1f}m")
 
         with rasterio.open(dtm_path) as src:
             pixel_size = src.res[0]
@@ -1359,7 +1361,7 @@ class TopoDrainCore:
                     pt = sample_points[i]
                     if all(pt.distance(p[0]) >= min_distance for p in accepted):
                         accepted.append((pt, strength, i))
-                    if len(accepted) >= top_n:
+                    if len(accepted) >= max_keypoints:
                         break
 
                 for rank, (pt, _, idx_pt) in enumerate(accepted, start=1):
@@ -1380,31 +1382,6 @@ class TopoDrainCore:
                         feedback.pushInfo(f"[GetKeypoints] Line {line_id}: found {line_keypoints} keypoints (total: {total_keypoints})")
                     else:
                         feedback.pushInfo(f"[GetKeypoints] Line {line_id}: no keypoints found")
-
-                # Optional Plot
-                if plot_debug:
-                    plt.figure(figsize=(10, 4))
-                    plt.plot(distances, elevations, label="Raw Elevation", linewidth=2)
-                    plt.plot(distances, elev_smooth, label="Smoothed Elevation", linewidth=2)
-                    for pt, _, i in accepted:
-                        plt.axvline(x=distances[i], color='red', linestyle='--', alpha=0.7)
-
-                    for rank, (pt, _, i) in enumerate(accepted, start=1):
-                        x = distances[i]
-                        if rank == 1:
-                            plt.axvline(x=x, color='red', linestyle='--', alpha=0.7, label="Keypoints (Nr=rank)")
-                        else:
-                            plt.axvline(x=x, color='red', linestyle='--', alpha=0.7)
-                        plt.axvline(x=x, color='red', linestyle='--', alpha=0.7)
-                        plt.text(x, elev_smooth[i], str(rank), color='red', fontsize=10, ha='left', va='bottom')
-
-                    plt.title(f"Valley Line '{line_id}': Inflection Points (Concave → Convex)")
-                    plt.xlabel("Distance along line (m)")
-                    plt.ylabel("Elevation")
-                    plt.legend()
-                    plt.grid(True)
-                    plt.tight_layout()
-                    plt.show()
 
         gdf = gpd.GeoDataFrame(results, geometry="geometry", crs=self.crs)
 

@@ -51,10 +51,8 @@ class GetKeypointsAlgorithm(QgsProcessingAlgorithm):
     SAMPLING_DISTANCE = 'SAMPLING_DISTANCE'
     SMOOTHING_WINDOW = 'SMOOTHING_WINDOW'
     POLYORDER = 'POLYORDER'
-    TOP_N = 'TOP_N'
     MIN_DISTANCE = 'MIN_DISTANCE'
-    FIND_WINDOW_DISTANCE = 'FIND_WINDOW_DISTANCE'
-    PLOT_DEBUG = 'PLOT_DEBUG'
+    MAX_KEYPOINTS = 'MAX_KEYPOINTS'
     OUTPUT = 'OUTPUT'
 
     def __init__(self, core=None):
@@ -114,17 +112,17 @@ class GetKeypointsAlgorithm(QgsProcessingAlgorithm):
         parameters and outputs associated with it.
         """
         return self.tr(
-            """QGIS Processing Algorithm for detecting keypoints along valley lines based on curvature analysis of elevation profiles.
+            """Detect keypoints along valley lines based on curvature analysis of elevation profiles.
             
-This algorithm identifies keypoints (points of high convexity) along valley lines by analyzing the curvature of elevation profiles extracted from a DTM. The elevation profile is extracted along each valley line and smoothed using a Savitzky-Golay filter. The second derivative (curvature) is then computed, and locations with the strongest convex curvature are selected as keypoints.
+This algorithm identifies keypoints (points of high convexity) along valley lines by analyzing the curvature of elevation profiles extracted from a DTM. 
 
 The algorithm:
-- Extracts elevation profiles along each valley line using the DTM
-- Applies Savitzky-Golay smoothing to reduce noise
+- Extracts elevation profiles along each valley line using the DTM. Extracts elevation value every x meters along the line ("Sampling distance along lines (m)")
+- Applies smoothing to reduce noise depending on the parameters "smoothing window" and "polyorder"
 - Computes the second derivative (curvature) of the elevation profile
 - Identifies inflection points where curvature changes from concave to convex
-- Selects the top N keypoints per valley line based on curvature strength
-- Ensures minimum distance between selected keypoints
+- Selects the top N keypoints ("Number of keypoints per valley line") per valley line based on curvature strength
+- Ensures minimum distance between selected keypoints ("Minimum distance between keypoints (m)")
 
 This is useful for identifying significant morphological features along drainage channels, such as knickpoints, channel transitions, or locations suitable for water retention structures in keyline design applications.
 
@@ -133,7 +131,12 @@ Input Requirements:
 - DTM: Digital Terrain Model for elevation profile extraction
 
 Output:
-Point layer containing detected keypoints with attributes: valley_id, elev_index, rank, curvature"""
+Point layer containing detected keypoints with attributes: valley_id, elev_index, rank, curvature
+
+Simplified Parameters:
+- Maximum keypoints: Limits output per valley line
+- Minimum distance: Ensures spatial separation between keypoints
+- Sampling distance: Controls resolution of elevation profile analysis"""
         )
 
     def initAlgorithm(self, config=None):
@@ -157,47 +160,44 @@ Point layer containing detected keypoints with attributes: valley_id, elev_index
             )
         )
 
-        # Top N keypoints
+        # Maximum keypoints per valley line
         self.addParameter(
             QgsProcessingParameterNumber(
-                self.TOP_N,
-                self.tr('(Maximum) Number of keypoints per valley line'),
+                self.MAX_KEYPOINTS,
+                self.tr('(Max.) Number of keypoints per valley line'),
                 type=QgsProcessingParameterNumber.Integer,
                 defaultValue=2,
-                minValue=1,
-                maxValue=9999
-            )
+                minValue=1
+           )
         )
 
-        # Minimum distance
+        # Minimum distance between keypoints
         self.addParameter(
             QgsProcessingParameterNumber(
                 self.MIN_DISTANCE,
-                self.tr('Minimum distance between keypoints (m) (if Number of keypoints > 1)'),
+                self.tr('Minimum distance between keypoints (m)'),
                 type=QgsProcessingParameterNumber.Double,
                 defaultValue=10.0,
-                minValue=1.0,
-                maxValue=1000.0
+                minValue=1.0
             )
         )
 
-        # Sampling distance
+        # Sampling distance along lines
         self.addParameter(
             QgsProcessingParameterNumber(
                 self.SAMPLING_DISTANCE,
-                self.tr('Sampling distance along lines (m) (samples dtm values every x meters)'),
+                self.tr('Sampling distance along lines (m))'),
                 type=QgsProcessingParameterNumber.Double,
                 defaultValue=2.0,
-                minValue=0.1,
-                maxValue=100.0
-            )
+                minValue=0.1
+          )
         )
 
         # Smoothing window
         self.addParameter(
             QgsProcessingParameterNumber(
                 self.SMOOTHING_WINDOW,
-                self.tr('Smoothing window size (m) (smoothes elevation profile using Savitzky-Golay filter)'),
+                self.tr('Smoothing window size (must be odd and larger than polyorder)'),
                 type=QgsProcessingParameterNumber.Integer,
                 defaultValue=9,
                 minValue=3,
@@ -209,32 +209,11 @@ Point layer containing detected keypoints with attributes: valley_id, elev_index
         self.addParameter(
             QgsProcessingParameterNumber(
                 self.POLYORDER,
-                self.tr('Polynomial order for smoothing (for Savitzky-Golay filter)'),
+                self.tr('Polynomial order for smoothing'),
                 type=QgsProcessingParameterNumber.Integer,
                 defaultValue=2,
                 minValue=1,
                 maxValue=5
-            )
-        )
-
-        # Find window distance
-        self.addParameter(
-            QgsProcessingParameterNumber(
-                self.FIND_WINDOW_DISTANCE,
-                self.tr('Curvature analysis window distance (m)'),
-                type=QgsProcessingParameterNumber.Double,
-                defaultValue=10.0,
-                minValue=1.0,
-                maxValue=100.0
-            )
-        )
-
-        # Plot debug
-        self.addParameter(
-            QgsProcessingParameterBoolean(
-                self.PLOT_DEBUG,
-                self.tr('Show elevation profile plots for debugging'),
-                defaultValue=False
             )
         )
 
@@ -257,13 +236,18 @@ Point layer containing detected keypoints with attributes: valley_id, elev_index
             sampling_distance = self.parameterAsDouble(parameters, self.SAMPLING_DISTANCE, context)
             smoothing_window = self.parameterAsInt(parameters, self.SMOOTHING_WINDOW, context)
             polyorder = self.parameterAsInt(parameters, self.POLYORDER, context)
-            top_n = self.parameterAsInt(parameters, self.TOP_N, context)
             min_distance = self.parameterAsDouble(parameters, self.MIN_DISTANCE, context)
-            find_window_distance = self.parameterAsDouble(parameters, self.FIND_WINDOW_DISTANCE, context)
-            plot_debug = self.parameterAsBool(parameters, self.PLOT_DEBUG, context)
+            max_keypoints = self.parameterAsInt(parameters, self.MAX_KEYPOINTS, context)
 
             if feedback is None:
                 raise QgsProcessingException("Feedback object is None")
+
+            # Validate smoothing parameters
+            if smoothing_window <= polyorder:
+                raise QgsProcessingException(f"Smoothing window ({smoothing_window}) must be larger than polynomial order ({polyorder})")
+            
+            if smoothing_window % 2 == 0:
+                raise QgsProcessingException(f"Smoothing window ({smoothing_window}) must be odd")
 
             # Get file paths
             dtm_path = dtm_layer.source()
@@ -271,11 +255,6 @@ Point layer containing detected keypoints with attributes: valley_id, elev_index
             # Validate file existence
             if not dtm_path or not os.path.exists(dtm_path):
                 raise FileNotFoundError(f"[Input Error] DTM file not found: {dtm_path}")
-
-            # Validate smoothing window (must be odd)
-            if smoothing_window % 2 == 0:
-                smoothing_window += 1
-                feedback.pushInfo(f"Smoothing window adjusted to {smoothing_window} (must be odd)")
 
             # Get output file path using parameterAsOutputLayer
             keypoints_output_layer = self.parameterAsOutputLayer(parameters, self.OUTPUT, context)
@@ -299,15 +278,17 @@ Point layer containing detected keypoints with attributes: valley_id, elev_index
                 self.core = TopoDrainCore()  # fallback: create default instance (not recommended for plugin use)
 
             # Convert QGIS features to GeoDataFrame
-            feedback.pushInfo("Converting main valley lines to GeoDataFrame...")
+            feedback.pushInfo("Loading valley lines...")
             valley_lines_gdf = gpd.GeoDataFrame.from_features(valley_lines_source.getFeatures())
+            
+            if valley_lines_gdf.empty:
+                raise QgsProcessingException("No features found in valley lines input")
+
+            # Check for FID attribute
+            if 'FID' not in valley_lines_gdf.columns:
+                raise QgsProcessingException("Valley lines must have an 'FID' attribute")
+
             feedback.pushInfo(f"Loaded {len(valley_lines_gdf)} valley lines")
-    
-            # Check for required attributes
-            required_attrs = ['FID']
-            missing_attrs = [attr for attr in required_attrs if attr not in valley_lines_gdf.columns]
-            if missing_attrs:
-                raise ValueError(f"[Input Error] Main valley lines missing required attributes: {missing_attrs}. Please use output from Extract Main Valleys algorithm.")
 
 
             # Run keypoint detection
@@ -318,10 +299,8 @@ Point layer containing detected keypoints with attributes: valley_id, elev_index
                 sampling_distance=sampling_distance,
                 smoothing_window=smoothing_window,
                 polyorder=polyorder,
-                top_n=top_n,
                 min_distance=min_distance,
-                find_window_distance=find_window_distance,
-                plot_debug=plot_debug,
+                max_keypoints=max_keypoints,
                 feedback=feedback
             )
 
