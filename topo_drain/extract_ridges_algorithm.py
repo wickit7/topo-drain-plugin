@@ -7,10 +7,10 @@
 # -----------------------------------------------------------------------------
 
 from qgis.PyQt.QtCore import QCoreApplication
-from qgis.PyQt.QtGui import QColor
-from qgis.core import (QgsRasterLayer, QgsProcessingAlgorithm, QgsProcessingParameterRasterLayer,
-                       QgsProcessingParameterFileDestination, QgsProcessingParameterNumber,
-                       QgsVectorLayer, QgsProject, QgsProcessingParameterBoolean)
+from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterRasterLayer,
+                       QgsProcessingParameterRasterDestination,
+                       QgsProcessingParameterVectorDestination, QgsProcessingParameterNumber,
+                       QgsProcessing, QgsProject)
 import os
 import geopandas as gpd
 from .utils import get_crs_from_layer, apply_line_arrow_symbology
@@ -40,13 +40,6 @@ class ExtractRidgesAlgorithm(QgsProcessingAlgorithm):
     OUTPUT_STREAMS_INVERTED = 'OUTPUT_STREAMS_INVERTED'
     ACCUM_THRESHOLD = 'ACCUM_THRESHOLD'
     DIST_FACC = 'DIST_FACC'
-
-    ADD_RIDGES_TO_MAP = 'ADD_RIDGES_TO_MAP'
-    ADD_FILLED_INVERTED_TO_MAP = 'ADD_FILLED_INVERTED_TO_MAP'
-    ADD_FDIR_INVERTED_TO_MAP = 'ADD_FDIR_INVERTED_TO_MAP'
-    ADD_FACC_INVERTED_TO_MAP = 'ADD_FACC_INVERTED_TO_MAP'
-    ADD_FACC_LOG_INVERTED_TO_MAP = 'ADD_FACC_LOG_INVERTED_TO_MAP'
-    ADD_STREAMS_INVERTED_TO_MAP = 'ADD_STREAMS_INVERTED_TO_MAP'
 
     def __init__(self, core=None):
         super().__init__()
@@ -99,7 +92,7 @@ class ExtractRidgesAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(
             QgsProcessingParameterNumber(
                 self.DIST_FACC,
-                self.tr('Maximum search distance for breach paths in cells (for WBT algorithm `BreachDepressionsLeastCost`)'),
+                self.tr('Maximum search distance for breach paths in cells (see WBT `BreachDepressionsLeastCost`)'),
                 type=QgsProcessingParameterNumber.Integer,
                 defaultValue=0
             )
@@ -107,101 +100,59 @@ class ExtractRidgesAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(
             QgsProcessingParameterNumber(
                 self.ACCUM_THRESHOLD,
-                self.tr('Accumulation Threshold (for ridge processing)'),
+                self.tr('Accumulation Threshold (see WBT `ExtractStreams`)'),
                 type=QgsProcessingParameterNumber.Integer,
                 defaultValue=1000
             )
         )
-        # Output parameters with "Add to Map" options
-        self.addParameter(
-            QgsProcessingParameterFileDestination(
-                self.OUTPUT_RIDGES,
-                self.tr('Output Ridge Lines'),
-                fileFilter='Shapefile (*.shp);;GeoPackage (*.gpkg)'
-            )
+        # Output parameters
+        ridges_param = QgsProcessingParameterVectorDestination(
+            self.OUTPUT_RIDGES,
+            self.tr('Output Ridge Lines'),
+            type=QgsProcessing.TypeVectorLine,
+            defaultValue=None
         )
-        self.addParameter(
-            QgsProcessingParameterBoolean(
-                self.ADD_RIDGES_TO_MAP,
-                self.tr('Add Ridge Lines to QGIS map'),
-                defaultValue=True
-            )
+        self.addParameter(ridges_param)
+        
+        filled_inverted_param = QgsProcessingParameterRasterDestination(
+            self.OUTPUT_FILLED_INVERTED,
+            self.tr('Output Inverted Filled DTM'),
+            defaultValue=None,
+            optional=True
         )
-        self.addParameter(
-            QgsProcessingParameterFileDestination(
-                self.OUTPUT_FILLED_INVERTED,
-                self.tr('Output Inverted Filled DTM (output of WBT `BreachDepressionsLeastCost` on inverted DTM)'),
-                fileFilter='GeoTIFF (*.tif)',
-                optional=True
-            )
+        self.addParameter(filled_inverted_param)
+        
+        fdir_inverted_param = QgsProcessingParameterRasterDestination(
+            self.OUTPUT_FDIR_INVERTED,
+            self.tr('Output Inverted Flow Direction Raster'),
+            defaultValue=None,
+            optional=True
         )
-        self.addParameter(
-            QgsProcessingParameterBoolean(
-                self.ADD_FILLED_INVERTED_TO_MAP,
-                self.tr('Add Inverted Filled DTM to QGIS map'),
-                defaultValue=False
-            )
+        self.addParameter(fdir_inverted_param)
+        
+        facc_inverted_param = QgsProcessingParameterRasterDestination(
+            self.OUTPUT_FACC_INVERTED,
+            self.tr('Output Inverted Flow Accumulation Raster'),
+            defaultValue=None,
+            optional=True
         )
-        self.addParameter(
-            QgsProcessingParameterFileDestination(
-                self.OUTPUT_FDIR_INVERTED,
-                self.tr('Output Inverted Flow Direction Raster (output of WBT `D8Pointer` on inverted DTM)'),
-                fileFilter='GeoTIFF (*.tif)',
-                optional=True
-            )
+        self.addParameter(facc_inverted_param)
+        
+        facc_log_inverted_param = QgsProcessingParameterRasterDestination(
+            self.OUTPUT_FACC_LOG_INVERTED,
+            self.tr('Output Inverted Log Accumulation Raster'),
+            defaultValue=None,
+            optional=True
         )
-        self.addParameter(
-            QgsProcessingParameterBoolean(
-                self.ADD_FDIR_INVERTED_TO_MAP,
-                self.tr('Add Inverted Flow Direction to QGIS map'),
-                defaultValue=False
-            )
+        self.addParameter(facc_log_inverted_param)
+        
+        streams_inverted_param = QgsProcessingParameterRasterDestination(
+            self.OUTPUT_STREAMS_INVERTED,
+            self.tr('Output Inverted Stream Raster'),
+            defaultValue=None,
+            optional=True
         )
-        self.addParameter(
-            QgsProcessingParameterFileDestination(
-                self.OUTPUT_FACC_INVERTED,
-                self.tr('Output Inverted Flow Accumulation Raster (output of WBT `D8FlowAccumulation` on inverted DTM)'),
-                fileFilter='GeoTIFF (*.tif)',
-                optional=True
-            )
-        )
-        self.addParameter(
-            QgsProcessingParameterBoolean(
-                self.ADD_FACC_INVERTED_TO_MAP,
-                self.tr('Add Inverted Flow Accumulation to QGIS map'),
-                defaultValue=False
-            )
-        )
-        self.addParameter(
-            QgsProcessingParameterFileDestination(
-                self.OUTPUT_FACC_LOG_INVERTED,
-                self.tr('Output Inverted Log-Scaled Accumulation Raster'),
-                fileFilter='GeoTIFF (*.tif)',
-                optional=True
-            )
-        )
-        self.addParameter(
-            QgsProcessingParameterBoolean(
-                self.ADD_FACC_LOG_INVERTED_TO_MAP,
-                self.tr('Add Inverted Log-Scaled Accumulation to QGIS map'),
-                defaultValue=False
-            )
-        )
-        self.addParameter(
-            QgsProcessingParameterFileDestination(
-                self.OUTPUT_STREAMS_INVERTED,
-                self.tr('Output Inverted Stream Raster'),
-                fileFilter='GeoTIFF (*.tif)',
-                optional=True
-            )
-        )
-        self.addParameter(
-            QgsProcessingParameterBoolean(
-                self.ADD_STREAMS_INVERTED_TO_MAP,
-                self.tr('Add Inverted Stream Raster to QGIS map'),
-                defaultValue=False
-            )
-        )
+        self.addParameter(streams_inverted_param)
 
     def processAlgorithm(self, parameters, context, feedback):
         # Validate and read input parameters
@@ -209,57 +160,26 @@ class ExtractRidgesAlgorithm(QgsProcessingAlgorithm):
         dtm_path = dtm_layer.source()
         if not dtm_path or not os.path.exists(dtm_path):
             raise FileNotFoundError(f"[Input Error] DTM file not found: {dtm_path}")
-        ridge_output_path = self.parameterAsFileOutput(parameters, self.OUTPUT_RIDGES, context)
-        filled_output_path = self.parameterAsFileOutput(parameters, self.OUTPUT_FILLED_INVERTED, context)
-        fdir_output_path = self.parameterAsFileOutput(parameters, self.OUTPUT_FDIR_INVERTED, context)
-        facc_output_path = self.parameterAsFileOutput(parameters, self.OUTPUT_FACC_INVERTED, context)
-        facc_log_output_path = self.parameterAsFileOutput(parameters, self.OUTPUT_FACC_LOG_INVERTED, context)
-        streams_output_path = self.parameterAsFileOutput(parameters, self.OUTPUT_STREAMS_INVERTED, context)
+        
+        # Use parameterAsOutputLayer to preserve checkbox state information
+        ridge_output_layer = self.parameterAsOutputLayer(parameters, self.OUTPUT_RIDGES, context)
+        filled_output_layer = self.parameterAsOutputLayer(parameters, self.OUTPUT_FILLED_INVERTED, context)
+        fdir_output_layer = self.parameterAsOutputLayer(parameters, self.OUTPUT_FDIR_INVERTED, context)
+        facc_output_layer = self.parameterAsOutputLayer(parameters, self.OUTPUT_FACC_INVERTED, context)
+        facc_log_output_layer = self.parameterAsOutputLayer(parameters, self.OUTPUT_FACC_LOG_INVERTED, context)
+        streams_output_layer = self.parameterAsOutputLayer(parameters, self.OUTPUT_STREAMS_INVERTED, context)
+        
         accumulation_threshold = self.parameterAsInt(parameters, self.ACCUM_THRESHOLD, context)
         dist_facc = self.parameterAsDouble(parameters, self.DIST_FACC, context)
-        # Read boolean parameters for adding layers to the map
-        add_ridges = self.parameterAsBool(parameters, self.ADD_RIDGES_TO_MAP, context)
-        add_filled = self.parameterAsBool(parameters, self.ADD_FILLED_INVERTED_TO_MAP, context)
-        add_fdir = self.parameterAsBool(parameters, self.ADD_FDIR_INVERTED_TO_MAP, context)
-        add_facc = self.parameterAsBool(parameters, self.ADD_FACC_INVERTED_TO_MAP, context)
-        add_facc_log = self.parameterAsBool(parameters, self.ADD_FACC_LOG_INVERTED_TO_MAP, context)
-        add_streams = self.parameterAsBool(parameters, self.ADD_STREAMS_INVERTED_TO_MAP, context)
 
-        feedback.pushInfo("Input:")
-        feedback.pushInfo(f"DTM Input: {dtm_path}")
-        feedback.pushInfo(f"Ridge Output: {ridge_output_path}")
-        if filled_output_path:
-            feedback.pushInfo(f"Inverted Filled DTM Output: {filled_output_path}")
-        if fdir_output_path:
-            feedback.pushInfo(f"Inverted Flow Direction Output: {fdir_output_path}")
-        if facc_output_path:
-            feedback.pushInfo(f"Inverted Flow Accumulation Output: {facc_output_path}")
-        if facc_log_output_path:
-            feedback.pushInfo(f"Inverted Log-Scaled Accumulation Output: {facc_log_output_path}") 
-        if streams_output_path:
-            feedback.pushInfo(f"Inverted Stream Raster Output: {streams_output_path}")
-        feedback.pushInfo(f"Accumulation Threshold: {accumulation_threshold}")
-        feedback.pushInfo(f"Max Search Distance for Breach Paths: {dist_facc}")
+        # Extract actual file paths from layer objects for processing
+        ridge_file_path = ridge_output_layer if isinstance(ridge_output_layer, str) else ridge_output_layer
+        filled_file_path = filled_output_layer if isinstance(filled_output_layer, str) else filled_output_layer if filled_output_layer else None
+        fdir_file_path = fdir_output_layer if isinstance(fdir_output_layer, str) else fdir_output_layer if fdir_output_layer else None
+        facc_file_path = facc_output_layer if isinstance(facc_output_layer, str) else facc_output_layer if facc_output_layer else None
+        facc_log_file_path = facc_log_output_layer if isinstance(facc_log_output_layer, str) else facc_log_output_layer if facc_log_output_layer else None
+        streams_file_path = streams_output_layer if isinstance(streams_output_layer, str) else streams_output_layer if streams_output_layer else None
 
-        feedback.pushInfo("Validating input DTM...")
-        if not os.path.exists(dtm_path):
-            raise FileNotFoundError(f"[Input Error] DTM file not found: {dtm_path}")
-        if not dtm_path.lower().endswith(('.tif', '.tiff')):
-            raise ValueError(f"[Input Error] DTM must be a GeoTIFF file: {dtm_path}")
-        feedback.pushInfo("Validating output paths...")
-        if not os.path.isdir(os.path.dirname(ridge_output_path)):
-            raise FileNotFoundError(f"[Input Error] directory not found: {os.path.dirname(ridge_output_path)}")
-        if filled_output_path and not os.path.isdir(os.path.dirname(filled_output_path)):
-            raise FileNotFoundError(f"[Input Error] directory not found: {os.path.dirname(filled_output_path)}")
-        if fdir_output_path and not os.path.isdir(os.path.dirname(fdir_output_path)):
-            raise FileNotFoundError(f"[Input Error] directory not found: {os.path.dirname(fdir_output_path)}")
-        if facc_output_path and not os.path.isdir(os.path.dirname(facc_output_path)):
-            raise FileNotFoundError(f"[Input Error] directory not found: {os.path.dirname(facc_output_path)}")
-        if facc_log_output_path and not os.path.isdir(os.path.dirname(facc_log_output_path)):
-            raise FileNotFoundError(f"[Input Error] directory not found: {os.path.dirname(facc_log_output_path)}")
-        if streams_output_path and not os.path.isdir(os.path.dirname(streams_output_path)):
-            raise FileNotFoundError(f"[Input Error] directory not found: {os.path.dirname(streams_output_path)}")
-        
         feedback.pushInfo("Reading CRS from DTM...")
         # Read CRS from the DTM using QGIS layer
         dtm_crs = get_crs_from_layer(dtm_layer)
@@ -270,115 +190,45 @@ class ExtractRidgesAlgorithm(QgsProcessingAlgorithm):
             if self.core.crs != dtm_crs:
                 feedback.reportError(f"Warning: TopoDrainCore CRS ({self.core.crs}) does not match DTM CRS ({dtm_crs}). Updating TopoDrainCore CRS to match DTM.")
                 self.core.crs = dtm_crs
-                
+
         feedback.pushInfo("Processing extract_ridges via TopoDrainCore...")
         if not self.core:
             from topo_drain.core.topo_drain_core import TopoDrainCore
-            print("TopoDrainCore not set, creating default instance.")
+            feedback.reportError("TopoDrainCore not set, creating default instance.")
             self.core = TopoDrainCore()  # fallback: create default instance (not recommended for plugin use)
 
         gdf_ridges = self.core.extract_ridges(
             dtm_path=dtm_path,
-            inverted_filled_output_path=filled_output_path,
-            inverted_fdir_output_path=fdir_output_path,
-            inverted_facc_output_path=facc_output_path,
-            inverted_facc_log_output_path=facc_log_output_path,
-            inverted_streams_output_path=streams_output_path,
-            accumulation_threshold=float(accumulation_threshold),
+            inverted_filled_output_path=filled_file_path,
+            inverted_fdir_output_path=fdir_file_path,
+            inverted_facc_output_path=facc_file_path,
+            inverted_facc_log_output_path=facc_log_file_path,
+            inverted_streams_output_path=streams_file_path,
+            accumulation_threshold=accumulation_threshold,
             dist_facc=dist_facc,
             feedback=feedback
         )
 
+        # Ensure the ridges GeoDataFrame has the correct CRS
+        gdf_ridges = gdf_ridges.set_crs(self.core.crs, allow_override=True)
         feedback.pushInfo(f"Ridge lines CRS: {gdf_ridges.crs}")
-
         # Save result
         try:
-            gdf_ridges.to_file(ridge_output_path)
-            feedback.pushInfo(f"Ridge lines saved to: {ridge_output_path}")
+            gdf_ridges.to_file(ridge_file_path)
+            feedback.pushInfo(f"Ridge lines saved to: {ridge_file_path}")
         except Exception as e:
             raise RuntimeError(f"[ExtractRidgesAlgorithm] failed to save ridge output: {e}")
 
-        # Optionally add each output to QGIS project
-        # Add ridge lines
-        if add_ridges:
-            try:
-                feedback.pushInfo("Add Ridge lines layer to QGIS Map...")  
-                vlayer = QgsVectorLayer(ridge_output_path, "Ridge Lines", "ogr")
-                if not vlayer.isValid():
-                    feedback.reportError(f"Failed to load ridge lines layer: {ridge_output_path}")
-                else:
-                    # Apply red line symbology with flow direction arrows
-                    apply_line_arrow_symbology(vlayer, '#CC3300', '#660000', linewidth=0.5, markersize=5, feedback=feedback)
-                    QgsProject.instance().addMapLayer(vlayer)
-                    feedback.pushInfo("Ridge lines layer added to QGIS project with red symbology and flow direction arrows.")
-            except Exception as e:
-                feedback.reportError(f"Could not add ridge lines to QGIS project: {e}")
-        # Add inverted filled DTM
-        if add_filled and filled_output_path and os.path.exists(filled_output_path):
-            try:
-                rlayer = QgsRasterLayer(filled_output_path, "Inverted Filled DTM")
-                if rlayer.isValid():
-                    QgsProject.instance().addMapLayer(rlayer)
-                    feedback.pushInfo("Inverted Filled DTM layer added to QGIS project.")
-                else:
-                    feedback.reportError(f"Failed to load inverted filled DTM: {filled_output_path}")
-            except Exception as e:
-                feedback.reportError(f"Could not add inverted filled DTM to QGIS project: {e}")
-        # Add inverted flow direction
-        if add_fdir and fdir_output_path and os.path.exists(fdir_output_path):
-            try:
-                rlayer = QgsRasterLayer(fdir_output_path, "Inverted Flow Direction")
-                if rlayer.isValid():
-                    QgsProject.instance().addMapLayer(rlayer)
-                    feedback.pushInfo("Inverted Flow Direction layer added to QGIS project.")
-                else:
-                    feedback.reportError(f"Failed to load inverted flow direction: {fdir_output_path}")
-            except Exception as e:
-                feedback.reportError(f"Could not add inverted flow direction to QGIS project: {e}")
-        # Add inverted flow accumulation
-        if add_facc and facc_output_path and os.path.exists(facc_output_path):
-            try:
-                rlayer = QgsRasterLayer(facc_output_path, "Inverted Flow Accumulation")
-                if rlayer.isValid():
-                    QgsProject.instance().addMapLayer(rlayer)
-                    feedback.pushInfo("Inverted Flow Accumulation layer added to QGIS project.")
-                else:
-                    feedback.reportError(f"Failed to load inverted flow accumulation: {facc_output_path}")
-            except Exception as e:
-                feedback.reportError(f"Could not add inverted flow accumulation to QGIS project: {e}")
-        # Add inverted log-scaled accumulation
-        if add_facc_log and facc_log_output_path and os.path.exists(facc_log_output_path):
-            try:
-                rlayer = QgsRasterLayer(facc_log_output_path, "Inverted Log-Scaled Accumulation")
-                if rlayer.isValid():
-                    QgsProject.instance().addMapLayer(rlayer)
-                    feedback.pushInfo("Inverted Log-Scaled Accumulation layer added to QGIS project.")
-                else:
-                    feedback.reportError(f"Failed to load inverted log-scaled accumulation: {facc_log_output_path}")
-            except Exception as e:
-                feedback.reportError(f"Could not add inverted log-scaled accumulation to QGIS project: {e}")
-        # Add inverted streams
-        if add_streams and streams_output_path and os.path.exists(streams_output_path):
-            try:
-                rlayer = QgsRasterLayer(streams_output_path, "Inverted Streams")
-                if rlayer.isValid():
-                    QgsProject.instance().addMapLayer(rlayer)
-                    feedback.pushInfo("Inverted Streams layer added to QGIS project.")
-                else:
-                    feedback.reportError(f"Failed to load inverted streams: {streams_output_path}")
-            except Exception as e:
-                feedback.reportError(f"Could not add inverted streams to QGIS project: {e}")
+        # Optional outputs will be automatically added by QGIS based on checkbox state
+        # No need to manually add them here - QGIS Processing framework handles this
 
-        results = {self.OUTPUT_RIDGES: ridge_output_path}
-        if filled_output_path:
-            results[self.OUTPUT_FILLED_INVERTED] = filled_output_path
-        if fdir_output_path:
-            results[self.OUTPUT_FDIR_INVERTED] = fdir_output_path
-        if facc_output_path:
-            results[self.OUTPUT_FACC_INVERTED] = facc_output_path
-        if facc_log_output_path:
-            results[self.OUTPUT_FACC_LOG_INVERTED] = facc_log_output_path
-        if streams_output_path:
-            results[self.OUTPUT_STREAMS_INVERTED] = streams_output_path
+        # Return the original parameter objects
+        results = {}
+        
+        # Add output parameters to results
+        for output in self.outputDefinitions():
+            outputName = output.name()
+            if outputName in parameters:
+                results[outputName] = parameters[outputName]
 
         return results

@@ -33,6 +33,9 @@ __revision__ = '$Format:%H$'
 from qgis.core import QgsProcessingProvider
 from .extract_valleys_algorithm import ExtractValleysAlgorithm
 from .extract_ridges_algorithm import ExtractRidgesAlgorithm
+from .extract_main_valleys_algorithm import ExtractMainValleysAlgorithm
+from .extract_main_ridges_algorithm import ExtractMainRidgesAlgorithm
+from .get_keypoints_algorithm import GetKeypointsAlgorithm
 
 class TopoDrainProvider(QgsProcessingProvider):
     def __init__(self, core=None):
@@ -59,6 +62,15 @@ class TopoDrainProvider(QgsProcessingProvider):
         
         extract_ridges_alg = ExtractRidgesAlgorithm(core=self.core)
         self.addAlgorithm(extract_ridges_alg)
+        
+        extract_main_valleys_alg = ExtractMainValleysAlgorithm(core=self.core)
+        self.addAlgorithm(extract_main_valleys_alg)
+        
+        extract_main_ridges_alg = ExtractMainRidgesAlgorithm(core=self.core)
+        self.addAlgorithm(extract_main_ridges_alg)
+        
+        get_keypoints_alg = GetKeypointsAlgorithm(core=self.core)
+        self.addAlgorithm(get_keypoints_alg)
         # add additional algorithms here
         # self.addAlgorithm(MyOtherAlgorithm())
 

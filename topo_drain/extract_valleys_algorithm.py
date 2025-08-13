@@ -7,10 +7,10 @@
 # -----------------------------------------------------------------------------
 
 from qgis.PyQt.QtCore import QCoreApplication
-from qgis.PyQt.QtGui import QColor
-from qgis.core import (QgsRasterLayer, QgsProcessingAlgorithm, QgsProcessingParameterRasterLayer,
-                       QgsProcessingParameterFileDestination, QgsProcessingParameterNumber,
-                       QgsVectorLayer, QgsProject, QgsProcessingParameterBoolean)
+from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterRasterLayer,
+                       QgsProcessingParameterRasterDestination,
+                       QgsProcessingParameterVectorDestination, QgsProcessingParameterNumber,
+                       QgsProcessing)
 import os
 import geopandas as gpd
 from .utils import get_crs_from_layer, apply_line_arrow_symbology
@@ -40,13 +40,6 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
     OUTPUT_STREAMS = 'OUTPUT_STREAMS'
     ACCUM_THRESHOLD = 'ACCUM_THRESHOLD'
     DIST_FACC = 'DIST_FACC'
-
-    ADD_VALLEYS_TO_MAP = 'ADD_VALLEYS_TO_MAP'
-    ADD_FILLED_TO_MAP = 'ADD_FILLED_TO_MAP'
-    ADD_FDIR_TO_MAP = 'ADD_FDIR_TO_MAP'
-    ADD_FACC_TO_MAP = 'ADD_FACC_TO_MAP'
-    ADD_FACC_LOG_TO_MAP = 'ADD_FACC_LOG_TO_MAP'
-    ADD_STREAMS_TO_MAP = 'ADD_STREAMS_TO_MAP'
 
     def __init__(self, core=None):
         super().__init__()
@@ -98,7 +91,7 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(
             QgsProcessingParameterNumber(
                 self.DIST_FACC,
-                self.tr('Maximum search distance for breach paths in cells (for WBT algorithm `BreachDepressionsLeastCost`)'),
+                self.tr('Maximum search distance for breach paths in cells (see WBT `BreachDepressionsLeastCost`)'),
                 type=QgsProcessingParameterNumber.Integer,
                 defaultValue=0
             )
@@ -106,101 +99,59 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(
             QgsProcessingParameterNumber(
                 self.ACCUM_THRESHOLD,
-                self.tr('Accumulation Threshold (for WBT algorithm `ExtractStreams`)'),
+                self.tr('Accumulation Threshold (see WBT `ExtractStreams`)'),
                 type=QgsProcessingParameterNumber.Integer,
                 defaultValue=1000
             )
         )
-        # Output parameters with "Add to Map" options
-        self.addParameter(
-            QgsProcessingParameterFileDestination(
-                self.OUTPUT_VALLEYS,
-                self.tr('Output Valley Lines'),
-                fileFilter='Shapefile (*.shp);;GeoPackage (*.gpkg)'
-            )
+        # Output parameters
+        valleys_param = QgsProcessingParameterVectorDestination(
+            self.OUTPUT_VALLEYS,
+            self.tr('Output Valley Lines'),
+            type=QgsProcessing.TypeVectorLine,
+            defaultValue=None
         )
-        self.addParameter(
-            QgsProcessingParameterBoolean(
-                self.ADD_VALLEYS_TO_MAP,
-                self.tr('Add Valley Lines to QGIS map'),
-                defaultValue=True
-            )
+        self.addParameter(valleys_param)
+        
+        filled_param = QgsProcessingParameterRasterDestination(
+            self.OUTPUT_FILLED,
+            self.tr('Output Filled DTM'),
+            defaultValue=None,
+            optional=True
         )
-        self.addParameter(
-            QgsProcessingParameterFileDestination(
-                self.OUTPUT_FILLED,
-                self.tr('Output Filled DTM (output of WBT `BreachDepressionsLeastCost`)'),
-                fileFilter='GeoTIFF (*.tif)',
-                optional=True
-            )
+        self.addParameter(filled_param)
+        
+        fdir_param = QgsProcessingParameterRasterDestination(
+            self.OUTPUT_FDIR,
+            self.tr('Output Flow Direction Raster'),
+            defaultValue=None,
+            optional=True
         )
-        self.addParameter(
-            QgsProcessingParameterBoolean(
-                self.ADD_FILLED_TO_MAP,
-                self.tr('Add Filled DTM to QGIS map'),
-                defaultValue=False
-            )
+        self.addParameter(fdir_param)
+        
+        facc_param = QgsProcessingParameterRasterDestination(
+            self.OUTPUT_FACC,
+            self.tr('Output Flow Accumulation Raster'),
+            defaultValue=None,
+            optional=True
         )
-        self.addParameter(
-            QgsProcessingParameterFileDestination(
-                self.OUTPUT_FDIR,
-                self.tr('Output Flow Direction Raster (output of WBT `D8Pointer`)'),
-                fileFilter='GeoTIFF (*.tif)',
-                optional=True
-            )
+        self.addParameter(facc_param)
+        
+        facc_log_param = QgsProcessingParameterRasterDestination(
+            self.OUTPUT_FACC_LOG,
+            self.tr('Output Log Accumulation Raster'),
+            defaultValue=None,
+            optional=True
         )
-        self.addParameter(
-            QgsProcessingParameterBoolean(
-                self.ADD_FDIR_TO_MAP,
-                self.tr('Add Flow Direction to QGIS map'),
-                defaultValue=False
-            )
+        self.addParameter(facc_log_param)
+        
+        streams_param = QgsProcessingParameterRasterDestination(
+            self.OUTPUT_STREAMS,
+            self.tr('Output Stream Raster'),
+            defaultValue=None,
+            optional=True
         )
-        self.addParameter(
-            QgsProcessingParameterFileDestination(
-                self.OUTPUT_FACC,
-                self.tr('Output Flow Accumulation Raster (output of WBT `D8FlowAccumulation`)'),
-                fileFilter='GeoTIFF (*.tif)',
-                optional=True
-            )
-        )
-        self.addParameter(
-            QgsProcessingParameterBoolean(
-                self.ADD_FACC_TO_MAP,
-                self.tr('Add Flow Accumulation to QGIS map'),
-                defaultValue=False
-            )
-        )
-        self.addParameter(
-            QgsProcessingParameterFileDestination(
-                self.OUTPUT_FACC_LOG,
-                self.tr('Output Log-Scaled Accumulation Raster'),
-                fileFilter='GeoTIFF (*.tif)',
-                optional=True
-            )
-        )
-        self.addParameter(
-            QgsProcessingParameterBoolean(
-                self.ADD_FACC_LOG_TO_MAP,
-                self.tr('Add Log-Scaled Accumulation to QGIS map'),
-                defaultValue=False
-            )
-        )
-        self.addParameter(
-            QgsProcessingParameterFileDestination(
-                self.OUTPUT_STREAMS,
-                self.tr('Output Stream Raster'),
-                fileFilter='GeoTIFF (*.tif)',
-                optional=True
-            )
-        )
-        self.addParameter(
-            QgsProcessingParameterBoolean(
-                self.ADD_STREAMS_TO_MAP,
-                self.tr('Add Stream Raster to QGIS map'),
-                defaultValue=False
-            )
-        )
+        self.addParameter(streams_param)
 
     def processAlgorithm(self, parameters, context, feedback):
         # Validate and read input parameters
@@ -208,57 +159,26 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
         dtm_path = dtm_layer.source()
         if not dtm_path or not os.path.exists(dtm_path):
             raise FileNotFoundError(f"[Input Error] DTM file not found: {dtm_path}")
-        valley_output_path = self.parameterAsFileOutput(parameters, self.OUTPUT_VALLEYS, context)
-        filled_output_path = self.parameterAsFileOutput(parameters, self.OUTPUT_FILLED, context)
-        fdir_output_path = self.parameterAsFileOutput(parameters, self.OUTPUT_FDIR, context)
-        facc_output_path = self.parameterAsFileOutput(parameters, self.OUTPUT_FACC, context)
-        facc_log_output_path = self.parameterAsFileOutput(parameters, self.OUTPUT_FACC_LOG, context)
-        streams_output_path = self.parameterAsFileOutput(parameters, self.OUTPUT_STREAMS, context)
+        
+        # Use parameterAsOutputLayer to preserve checkbox state information
+        valley_output_layer = self.parameterAsOutputLayer(parameters, self.OUTPUT_VALLEYS, context)
+        filled_output_layer = self.parameterAsOutputLayer(parameters, self.OUTPUT_FILLED, context)
+        fdir_output_layer = self.parameterAsOutputLayer(parameters, self.OUTPUT_FDIR, context)
+        facc_output_layer = self.parameterAsOutputLayer(parameters, self.OUTPUT_FACC, context)
+        facc_log_output_layer = self.parameterAsOutputLayer(parameters, self.OUTPUT_FACC_LOG, context)
+        streams_output_layer = self.parameterAsOutputLayer(parameters, self.OUTPUT_STREAMS, context)
+        
         accumulation_threshold = self.parameterAsInt(parameters, self.ACCUM_THRESHOLD, context)
         dist_facc = self.parameterAsDouble(parameters, self.DIST_FACC, context)
-        # Read boolean parameters for adding layers to the map
-        add_valleys = self.parameterAsBool(parameters, self.ADD_VALLEYS_TO_MAP, context)
-        add_filled = self.parameterAsBool(parameters, self.ADD_FILLED_TO_MAP, context)
-        add_fdir = self.parameterAsBool(parameters, self.ADD_FDIR_TO_MAP, context)
-        add_facc = self.parameterAsBool(parameters, self.ADD_FACC_TO_MAP, context)
-        add_facc_log = self.parameterAsBool(parameters, self.ADD_FACC_LOG_TO_MAP, context)
-        add_streams = self.parameterAsBool(parameters, self.ADD_STREAMS_TO_MAP, context)
 
-        feedback.pushInfo("Input:")
-        feedback.pushInfo(f"DTM Input: {dtm_path}")
-        feedback.pushInfo(f"Valley Output: {valley_output_path}")
-        if filled_output_path:
-            feedback.pushInfo(f"Filled DTM Output: {filled_output_path}")
-        if fdir_output_path:
-            feedback.pushInfo(f"Flow Direction Output: {fdir_output_path}")
-        if facc_output_path:
-            feedback.pushInfo(f"Flow Accumulation Output: {facc_output_path}")
-        if facc_log_output_path:
-            feedback.pushInfo(f"Log-Scaled Accumulation Output: {facc_log_output_path}") 
-        if streams_output_path:
-            feedback.pushInfo(f"Stream Raster Output: {streams_output_path}")
-        feedback.pushInfo(f"Accumulation Threshold: {accumulation_threshold}")
-        feedback.pushInfo(f"Max Search Distance for Breach Paths: {dist_facc}")
+        # Extract actual file paths from layer objects for processing
+        valley_file_path = valley_output_layer if isinstance(valley_output_layer, str) else valley_output_layer
+        filled_file_path = filled_output_layer if isinstance(filled_output_layer, str) else filled_output_layer if filled_output_layer else None
+        fdir_file_path = fdir_output_layer if isinstance(fdir_output_layer, str) else fdir_output_layer if fdir_output_layer else None
+        facc_file_path = facc_output_layer if isinstance(facc_output_layer, str) else facc_output_layer if facc_output_layer else None
+        facc_log_file_path = facc_log_output_layer if isinstance(facc_log_output_layer, str) else facc_log_output_layer if facc_log_output_layer else None
+        streams_file_path = streams_output_layer if isinstance(streams_output_layer, str) else streams_output_layer if streams_output_layer else None
 
-        feedback.pushInfo("Validating input DTM...")
-        if not os.path.exists(dtm_path):
-            raise FileNotFoundError(f"[Input Error] DTM file not found: {dtm_path}")
-        if not dtm_path.lower().endswith(('.tif', '.tiff')):
-            raise ValueError(f"[Input Error] DTM must be a GeoTIFF file: {dtm_path}")
-        feedback.pushInfo("Validating output paths...")
-        if not os.path.isdir(os.path.dirname(valley_output_path)):
-            raise FileNotFoundError(f"[Input Error] directory not found: {os.path.dirname(valley_output_path)}")
-        if filled_output_path and not os.path.isdir(os.path.dirname(filled_output_path)):
-            raise FileNotFoundError(f"[Input Error] directory not found: {os.path.dirname(filled_output_path)}")
-        if fdir_output_path and not os.path.isdir(os.path.dirname(fdir_output_path)):
-            raise FileNotFoundError(f"[Input Error] directory not found: {os.path.dirname(fdir_output_path)}")
-        if facc_output_path and not os.path.isdir(os.path.dirname(facc_output_path)):
-            raise FileNotFoundError(f"[Input Error] directory not found: {os.path.dirname(facc_output_path)}")
-        if facc_log_output_path and not os.path.isdir(os.path.dirname(facc_log_output_path)):
-            raise FileNotFoundError(f"[Input Error] directory not found: {os.path.dirname(facc_log_output_path)}")
-        if streams_output_path and not os.path.isdir(os.path.dirname(streams_output_path)):
-            raise FileNotFoundError(f"[Input Error] directory not found: {os.path.dirname(streams_output_path)}")
-        
         feedback.pushInfo("Reading CRS from DTM...")
         # Read CRS from the DTM using QGIS layer
         dtm_crs = get_crs_from_layer(dtm_layer)
@@ -269,115 +189,45 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
             if self.core.crs != dtm_crs:
                 feedback.reportError(f"Warning: TopoDrainCore CRS ({self.core.crs}) does not match DTM CRS ({dtm_crs}). Updating TopoDrainCore CRS to match DTM.")
                 self.core.crs = dtm_crs
-                
+
         feedback.pushInfo("Processing extract_valleys via TopoDrainCore...")
         if not self.core:
             from topo_drain.core.topo_drain_core import TopoDrainCore
-            print("TopoDrainCore not set, creating default instance.")
+            feedback.reportError("TopoDrainCore not set, creating default instance.")
             self.core = TopoDrainCore()  # fallback: create default instance (not recommended for plugin use)
 
         gdf_valleys = self.core.extract_valleys(
             dtm_path=dtm_path,
-            filled_output_path=filled_output_path,
-            fdir_output_path=fdir_output_path,
-            facc_output_path=facc_output_path,
-            facc_log_output_path=facc_log_output_path,
-            streams_output_path=streams_output_path,
-            accumulation_threshold=float(accumulation_threshold),
+            filled_output_path=filled_file_path,
+            fdir_output_path=fdir_file_path,
+            facc_output_path=facc_file_path,
+            facc_log_output_path=facc_log_file_path,
+            streams_output_path=streams_file_path,
+            accumulation_threshold=accumulation_threshold,
             dist_facc=dist_facc,
             feedback=feedback
         )
 
+        # Ensure the valleys GeoDataFrame has the correct CRS
+        gdf_valleys = gdf_valleys.set_crs(self.core.crs, allow_override=True)
         feedback.pushInfo(f"Valley lines CRS: {gdf_valleys.crs}")
-
         # Save result
         try:
-            gdf_valleys.to_file(valley_output_path)
-            feedback.pushInfo(f"Valley lines saved to: {valley_output_path}")
+            gdf_valleys.to_file(valley_file_path)
+            feedback.pushInfo(f"Valley lines saved to: {valley_file_path}")
         except Exception as e:
             raise RuntimeError(f"[ExtractValleysAlgorithm] failed to save valley output: {e}")
 
-        # Optionally add each output to QGIS project
-        # Add valley lines
-        if add_valleys:
-            try:
-                feedback.pushInfo("Add Valley lines layer to QGIS Map...")  
-                vlayer = QgsVectorLayer(valley_output_path, "Valley Lines", "ogr")
-                if not vlayer.isValid():
-                    feedback.reportError(f"Failed to load valley lines layer: {valley_output_path}")
-                else:
-                    # Apply blue line symbology with flow direction markers
-                    apply_line_arrow_symbology(vlayer, '#0066CC', '#003366', linewidth=0.4, markersize=4, feedback=feedback)
-                    QgsProject.instance().addMapLayer(vlayer)
-                    feedback.pushInfo("Valley lines layer added to QGIS project with flow direction symbology.")
-            except Exception as e:
-                feedback.reportError(f"Could not add valley lines to QGIS project: {e}")
-        # Add filled DTM
-        if add_filled and filled_output_path and os.path.exists(filled_output_path):
-            try:
-                rlayer = QgsRasterLayer(filled_output_path, "Filled DTM")
-                if rlayer.isValid():
-                    QgsProject.instance().addMapLayer(rlayer)
-                    feedback.pushInfo("Filled DTM layer added to QGIS project.")
-                else:
-                    feedback.reportError(f"Failed to load filled DTM: {filled_output_path}")
-            except Exception as e:
-                feedback.reportError(f"Could not add filled DTM to QGIS project: {e}")
-        # Add flow direction
-        if add_fdir and fdir_output_path and os.path.exists(fdir_output_path):
-            try:
-                rlayer = QgsRasterLayer(fdir_output_path, "Flow Direction")
-                if rlayer.isValid():
-                    QgsProject.instance().addMapLayer(rlayer)
-                    feedback.pushInfo("Flow Direction layer added to QGIS project.")
-                else:
-                    feedback.reportError(f"Failed to load flow direction: {fdir_output_path}")
-            except Exception as e:
-                feedback.reportError(f"Could not add flow direction to QGIS project: {e}")
-        # Add flow accumulation
-        if add_facc and facc_output_path and os.path.exists(facc_output_path):
-            try:
-                rlayer = QgsRasterLayer(facc_output_path, "Flow Accumulation")
-                if rlayer.isValid():
-                    QgsProject.instance().addMapLayer(rlayer)
-                    feedback.pushInfo("Flow Accumulation layer added to QGIS project.")
-                else:
-                    feedback.reportError(f"Failed to load flow accumulation: {facc_output_path}")
-            except Exception as e:
-                feedback.reportError(f"Could not add flow accumulation to QGIS project: {e}")
-        # Add log-scaled accumulation
-        if add_facc_log and facc_log_output_path and os.path.exists(facc_log_output_path):
-            try:
-                rlayer = QgsRasterLayer(facc_log_output_path, "Log-Scaled Accumulation")
-                if rlayer.isValid():
-                    QgsProject.instance().addMapLayer(rlayer)
-                    feedback.pushInfo("Log-Scaled Accumulation layer added to QGIS project.")
-                else:
-                    feedback.reportError(f"Failed to load log-scaled accumulation: {facc_log_output_path}")
-            except Exception as e:
-                feedback.reportError(f"Could not add log-scaled accumulation to QGIS project: {e}")
-        # Add streams
-        if add_streams and streams_output_path and os.path.exists(streams_output_path):
-            try:
-                rlayer = QgsRasterLayer(streams_output_path, "Streams")
-                if rlayer.isValid():
-                    QgsProject.instance().addMapLayer(rlayer)
-                    feedback.pushInfo("Streams layer added to QGIS project.")
-                else:
-                    feedback.reportError(f"Failed to load streams: {streams_output_path}")
-            except Exception as e:
-                feedback.reportError(f"Could not add streams to QGIS project: {e}")
+        # Optional outputs will be automatically added by QGIS based on checkbox state
+        # No need to manually add them here - QGIS Processing framework handles this
 
-        results = {self.OUTPUT_VALLEYS: valley_output_path}
-        if filled_output_path:
-            results[self.OUTPUT_FILLED] = filled_output_path
-        if fdir_output_path:
-            results[self.OUTPUT_FDIR] = fdir_output_path
-        if facc_output_path:
-            results[self.OUTPUT_FACC] = facc_output_path
-        if facc_log_output_path:
-            results[self.OUTPUT_FACC_LOG] = facc_log_output_path
-        if streams_output_path:
-            results[self.OUTPUT_STREAMS] = streams_output_path
-
+        # Return the original parameter objects
+        results = {}
+        
+        # Add ouput parameters to results
+        for output in self.outputDefinitions():
+            outputName = output.name()
+            if outputName in parameters: 
+                results[outputName] = parameters[outputName]
+                
         return results

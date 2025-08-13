@@ -984,102 +984,197 @@ class TopoDrainCore:
         self,
         valley_lines: gpd.GeoDataFrame,
         facc_path: str,
-        perimeter: gpd.GeoDataFrame,
+        perimeter: gpd.GeoDataFrame = None,
         nr_main: int = 2,
-        clip_to_perimeter: bool = True
+        clip_to_perimeter: bool = True,
+        feedback=None
     ) -> gpd.GeoDataFrame:
         """
         Identify and merge main valley lines based on the highest flow accumulation,
         using only points uniquely associated with one TRIB_ID (to avoid confluent points).
+        Now processes each polygon in the perimeter separately, selecting nr_main features for each.
+        If perimeter is not provided, uses the extent of valley_lines as perimeter.
         """
-        print("[ExtractMainValleys] Starting main valley extraction...")
+        if feedback:
+            feedback.pushInfo("[ExtractMainValleys] Starting main valley extraction...")
+        else:
+            print("[ExtractMainValleys] Starting main valley extraction...")
 
-        print("[ExtractMainValleys] Reading flow accumulation raster...")
+        # Create perimeter from valley_lines extent if not provided
+        if perimeter is None:
+            if feedback:
+                feedback.pushInfo("[ExtractMainValleys] No perimeter provided, using valley lines extent...")
+            else:
+                print("[ExtractMainValleys] No perimeter provided, using valley lines extent...")
+            
+            # Get the bounding box of valley_lines and create a polygon
+            bounds = valley_lines.total_bounds  # [minx, miny, maxx, maxy]
+            from shapely.geometry import Polygon
+            bbox_polygon = Polygon([
+                (bounds[0], bounds[1]),  # bottom-left
+                (bounds[2], bounds[1]),  # bottom-right
+                (bounds[2], bounds[3]),  # top-right
+                (bounds[0], bounds[3]),  # top-left
+                (bounds[0], bounds[1])   # close polygon
+            ])
+            perimeter = gpd.GeoDataFrame([{'geometry': bbox_polygon}], crs=valley_lines.crs)
+
+        if feedback:
+            feedback.pushInfo("[ExtractMainValleys] Reading flow accumulation raster...")
+        else:
+            print("[ExtractMainValleys] Reading flow accumulation raster...")
         with rasterio.open(facc_path) as src:
             facc = src.read(1)
             transform = src.transform
 
-        print("[ExtractMainValleys] Clipping valley lines to perimeter...")
-        valley_clipped = gpd.overlay(valley_lines, perimeter, how="intersection")
+        # Process each polygon in the perimeter separately
+        all_merged_records = []
+        global_fid_counter = 1
+        
+        for poly_idx, poly_row in perimeter.iterrows():
+            single_polygon = gpd.GeoDataFrame([poly_row], crs=perimeter.crs)
+            
+            if feedback:
+                feedback.pushInfo(f"[ExtractMainValleys] Processing polygon {poly_idx + 1}/{len(perimeter)}...")
+            else:
+                print(f"[ExtractMainValleys] Processing polygon {poly_idx + 1}/{len(perimeter)}...")
 
-        print("[ExtractMainValleys] Rasterizing valley lines...")
-        valley_raster_path = os.path.join(self.temp_directory, "valley_mask.tif")
-        valley_mask = self._line_to_raster(
-            gdf=valley_clipped.geometry,
-            reference_raster=facc_path,
-            output_path=valley_raster_path
-        )
+            if feedback:
+                feedback.pushInfo(f"[ExtractMainValleys] Clipping valley lines to polygon {poly_idx + 1}...")
+            else:
+                print(f"[ExtractMainValleys] Clipping valley lines to polygon {poly_idx + 1}...")
+            valley_clipped = gpd.overlay(valley_lines, single_polygon, how="intersection")
+            
+            if valley_clipped.empty:
+                if feedback:
+                    feedback.pushInfo(f"[ExtractMainValleys] No valley lines found in polygon {poly_idx + 1}, skipping...")
+                else:
+                    print(f"[ExtractMainValleys] No valley lines found in polygon {poly_idx + 1}, skipping...")
+                continue
 
-        print("[ExtractMainValleys] Extracting facc > 0 points on valley lines...")
-        mask = (valley_mask == 1) & (facc > 0)
-        rows, cols = np.where(mask)
-        if len(rows) == 0:
-            raise RuntimeError("[ExtractMainValleys] No valley cells with flow accumulation > 0 found inside perimeter.")
+            if feedback:
+                feedback.pushInfo(f"[ExtractMainValleys] Rasterizing valley lines for polygon {poly_idx + 1}...")
+            else:
+                print(f"[ExtractMainValleys] Rasterizing valley lines for polygon {poly_idx + 1}...")
+            valley_raster_path = os.path.join(self.temp_directory, f"valley_mask_poly_{poly_idx}.tif")
+            valley_mask = self._line_to_raster(
+                gdf=valley_clipped.geometry,
+                reference_raster=facc_path,
+                output_path=valley_raster_path
+            )
 
-        coords = [rasterio.transform.xy(transform, row, col) for row, col in zip(rows, cols)]
-        points = gpd.GeoDataFrame(geometry=gpd.points_from_xy(*zip(*coords)), crs=self.crs)
-        points["facc"] = facc[rows, cols]
+            if feedback:
+                feedback.pushInfo(f"[ExtractMainValleys] Extracting facc > 0 points for polygon {poly_idx + 1}...")
+            else:
+                print(f"[ExtractMainValleys] Extracting facc > 0 points for polygon {poly_idx + 1}...")
+            mask = (valley_mask == 1) & (facc > 0)
+            rows, cols = np.where(mask)
+            if len(rows) == 0:
+                if feedback:
+                    feedback.pushInfo(f"[ExtractMainValleys] No valley cells with flow accumulation > 0 found in polygon {poly_idx + 1}, skipping...")
+                else:
+                    print(f"[ExtractMainValleys] No valley cells with flow accumulation > 0 found in polygon {poly_idx + 1}, skipping...")
+                continue
 
-        print("[ExtractMainValleys] Performing spatial join with valley lines...")
-        points_joined = gpd.sjoin(
-            points,
-            valley_clipped[["geometry", "FID", "TRIB_ID", "DS_LINK_ID"]],
-            how="inner",
-            predicate="intersects"
-        ).drop(columns="index_right")
+            coords = [rasterio.transform.xy(transform, row, col) for row, col in zip(rows, cols)]
+            points = gpd.GeoDataFrame(geometry=gpd.points_from_xy(*zip(*coords)), crs=self.crs)
+            points["facc"] = facc[rows, cols]
 
-        print("[ExtractMainValleys] Filtering ambiguous facc points...")
-        points_joined["geom_wkt"] = points_joined.geometry.to_wkt()
-        geom_counts = points_joined.groupby("geom_wkt")["TRIB_ID"].nunique()
-        valid_geoms = geom_counts[geom_counts == 1].index
-        points_unique = points_joined[points_joined["geom_wkt"].isin(valid_geoms)].copy()
+            if feedback:
+                feedback.pushInfo(f"[ExtractMainValleys] Performing spatial join for polygon {poly_idx + 1}...")
+            else:
+                print(f"[ExtractMainValleys] Performing spatial join for polygon {poly_idx + 1}...")
+            points_joined = gpd.sjoin(
+                points,
+                valley_clipped[["geometry", "FID", "TRIB_ID", "DS_LINK_ID"]],
+                how="inner"
+            ).drop(columns="index_right")
 
-        if points_unique.empty:
-            raise RuntimeError("[ExtractMainValleys] No unique valley points (with single TRIB_ID) found.")
+            if feedback:
+                feedback.pushInfo(f"[ExtractMainValleys] Filtering ambiguous facc points for polygon {poly_idx + 1}...")
+            else:
+                print(f"[ExtractMainValleys] Filtering ambiguous facc points for polygon {poly_idx + 1}...")
+            points_joined["geom_wkt"] = points_joined.geometry.apply(lambda geom: geom.wkt)
+            geom_counts = points_joined.groupby("geom_wkt")["TRIB_ID"].nunique()
+            valid_geoms = geom_counts[geom_counts == 1].index
+            points_unique = points_joined[points_joined["geom_wkt"].isin(valid_geoms)].copy()
 
-        print("[ExtractMainValleys] Selecting top TRIB_IDs by max flow accumulation...")
-        points_sorted = points_unique.sort_values("facc", ascending=False)
-        points_top = points_sorted.drop_duplicates(subset="TRIB_ID").head(nr_main)
+            if points_unique.empty:
+                if feedback:
+                    feedback.pushInfo(f"[ExtractMainValleys] No unique valley points found in polygon {poly_idx + 1}, skipping...")
+                else:
+                    print(f"[ExtractMainValleys] No unique valley points found in polygon {poly_idx + 1}, skipping...")
+                continue
 
-        if points_top.empty:
-            raise RuntimeError("[ExtractMainValleys] No main valley lines could be selected.")
+            if feedback:
+                feedback.pushInfo(f"[ExtractMainValleys] Selecting top {nr_main} TRIB_IDs for polygon {poly_idx + 1}...")
+            else:
+                print(f"[ExtractMainValleys] Selecting top {nr_main} TRIB_IDs for polygon {poly_idx + 1}...")
+            points_sorted = points_unique.sort_values("facc", ascending=False)
+            points_top = points_sorted.drop_duplicates(subset="TRIB_ID").head(nr_main)
 
-        selected_trib_ids = points_top["TRIB_ID"].unique()
-        print(f"[ExtractMainValleys] Selected TRIB_IDs: {list(selected_trib_ids)}")
+            if points_top.empty:
+                if feedback:
+                    feedback.pushInfo(f"[ExtractMainValleys] No main valley lines could be selected for polygon {poly_idx + 1}, skipping...")
+                else:
+                    print(f"[ExtractMainValleys] No main valley lines could be selected for polygon {poly_idx + 1}, skipping...")
+                continue
 
-        print("[ExtractMainValleys] Merging valley line segments per TRIB_ID...")
-        merged_records = []
-        for i, trib_id in enumerate(selected_trib_ids):
-            lines = valley_lines[valley_lines["TRIB_ID"] == trib_id]
+            selected_trib_ids = points_top["TRIB_ID"].unique()
+            if feedback:
+                feedback.pushInfo(f"[ExtractMainValleys] Selected TRIB_IDs for polygon {poly_idx + 1}: {list(selected_trib_ids)}")
+            else:
+                print(f"[ExtractMainValleys] Selected TRIB_IDs for polygon {poly_idx + 1}: {list(selected_trib_ids)}")
 
-            cleaned = []
-            for geom in lines.geometry:
-                if geom.is_empty:
-                    continue
-                if isinstance(geom, LineString):
-                    cleaned.append(geom)
-                elif isinstance(geom, MultiLineString):
-                    cleaned.extend([g for g in geom.geoms if isinstance(g, LineString)])
+            if feedback:
+                feedback.pushInfo(f"[ExtractMainValleys] Merging valley line segments for polygon {poly_idx + 1}...")
+            else:
+                print(f"[ExtractMainValleys] Merging valley line segments for polygon {poly_idx + 1}...")
+            for trib_id in selected_trib_ids:
+                lines = valley_lines[valley_lines["TRIB_ID"] == trib_id]
 
-            if cleaned:
-                try:
-                    merged_line = linemerge(cleaned)
-                    merged_records.append({
-                        "geometry": merged_line,
-                        "TRIB_ID": trib_id,
-                        "FID": i + 1
-                    })
-                    print(f"[ExtractMainValleys] Merged TRIB_ID={trib_id}, segments={len(cleaned)}")
-                except Exception as e:
-                    raise RuntimeError(f"[ExtractMainValleys] Failed to merge lines for TRIB_ID={trib_id}: {e}")
+                cleaned = []
+                for geom in lines.geometry:
+                    if geom.is_empty:
+                        continue
+                    if isinstance(geom, LineString):
+                        cleaned.append(geom)
+                    elif isinstance(geom, MultiLineString):
+                        cleaned.extend([g for g in geom.geoms if isinstance(g, LineString)])
 
-        gdf = gpd.GeoDataFrame(merged_records, crs=self.crs)
+                if cleaned:
+                    try:
+                        merged_line = linemerge(cleaned)
+                        all_merged_records.append({
+                            "geometry": merged_line,
+                            "TRIB_ID": trib_id,
+                            "FID": global_fid_counter,
+                            "polygon_id": poly_idx + 1
+                        })
+                        global_fid_counter += 1
+                        if feedback:
+                            feedback.pushInfo(f"[ExtractMainValleys] Merged TRIB_ID={trib_id} for polygon {poly_idx + 1}, segments={len(cleaned)}")
+                        else:
+                            print(f"[ExtractMainValleys] Merged TRIB_ID={trib_id} for polygon {poly_idx + 1}, segments={len(cleaned)}")
+                    except Exception as e:
+                        raise RuntimeError(f"[ExtractMainValleys] Failed to merge lines for TRIB_ID={trib_id} in polygon {poly_idx + 1}: {e}")
+
+        if not all_merged_records:
+            raise RuntimeError("[ExtractMainValleys] No main valley lines could be extracted from any polygon.")
+
+        gdf = gpd.GeoDataFrame(all_merged_records, crs=self.crs)
 
         if clip_to_perimeter:
-            print("[ExtractMainValleys] Clipping final valley lines to perimeter...")
+            if feedback:
+                feedback.pushInfo("[ExtractMainValleys] Clipping final valley lines to perimeter...")
+            else:
+                print("[ExtractMainValleys] Clipping final valley lines to perimeter...")
             gdf = gpd.overlay(gdf, perimeter, how="intersection")
 
-        print(f"[ExtractMainValleys] Main valley extraction complete. {len(gdf)} valleys extracted.")
+        if feedback:
+            feedback.pushInfo(f"[ExtractMainValleys] Main valley extraction complete. {len(gdf)} valleys extracted from {len(perimeter)} polygons.")
+        else:
+            print(f"[ExtractMainValleys] Main valley extraction complete. {len(gdf)} valleys extracted from {len(perimeter)} polygons.")
         return gdf
 
 
@@ -1087,9 +1182,10 @@ class TopoDrainCore:
         self,
         ridge_lines: gpd.GeoDataFrame,
         facc_path: str,
-        perimeter: gpd.GeoDataFrame,
+        perimeter: gpd.GeoDataFrame = None,
         nr_main: int = 2,
-        clip_to_perimeter: bool = True
+        clip_to_perimeter: bool = True,
+        feedback=None
     ) -> gpd.GeoDataFrame:
         """
         Identify and trace the main ridge lines (watershed divides) using the same logic as main valley detection.
@@ -1097,27 +1193,32 @@ class TopoDrainCore:
         Args:
             ridge_lines (GeoDataFrame): Ridge line network with 'FID', 'TRIB_ID', and 'DS_LINK_ID' attributes.
             facc_path (str): Path to the flow accumulation raster (based on inverted DTM).
-            perimeter (GeoDataFrame): Polygon defining the area boundary.
+            perimeter (GeoDataFrame, optional): Polygon defining the area boundary. If None, uses ridge_lines extent.
             nr_main (int): Number of main ridges to select.
             clip_to_perimeter (bool): If True, clips output to boundary polygon of perimeter.
+            feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting/logging.
 
         Returns:
             GeoDataFrame: Traced main ridge lines.
         """
-        print("[ExtractMainRidges] Starting main ExtractMainValleys with extract main ridges input...")
+        if feedback:
+            feedback.pushInfo("[ExtractMainRidges] Starting main ridge extraction using main valleys logic...")
+        else:
+            print("[ExtractMainRidges] Starting main ridge extraction using main valleys logic...")
 
         gdf = self.extract_main_valleys(
             valley_lines=ridge_lines,
             facc_path=facc_path,
             perimeter=perimeter,
             nr_main=nr_main,
-            clip_to_perimeter=clip_to_perimeter
+            clip_to_perimeter=clip_to_perimeter,
+            feedback=feedback
         )
 
         return gdf
 
 
-    def _find_inflection_candidates(curvature: np.ndarray, window: int) -> list:
+    def _find_inflection_candidates(self, curvature: np.ndarray, window: int) -> list:
         """
         Detect inflection points where the curvature changes from concave to convex,
         using a moving average window. If none found, return point of strongest convexity.
@@ -1167,7 +1268,8 @@ class TopoDrainCore:
         top_n: int = 100,
         min_distance: float = 10.0,
         find_window_distance: float = 10.0,
-        plot_debug: bool = False
+        plot_debug: bool = False,
+        feedback=None
         ) -> gpd.GeoDataFrame:
         """
         Detect keypoints along valley lines based on curvature of elevation profiles
@@ -1193,22 +1295,45 @@ class TopoDrainCore:
             min_distance (float): Minimum distance between selected keypoints (in meters).
             find_window_distance (float): Distance used for the prominence window to find concave and convex transitions or almost transitions (curvature) ordered according to the second derivative (in meters).
             plot_debug (bool): If True, plot elevation profiles and keypoints for visual inspection.
+            feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting/logging (for QGIS Plugin).
 
         Returns:
             GeoDataFrame: Detected keypoints as point geometries with metadata.
         """
         results = []
 
+        if feedback:
+            feedback.pushInfo(f"[GetKeypoints] Starting keypoint detection on {len(valley_lines)} valley lines...")
+        else:
+            print(f"[GetKeypoints] Starting keypoint detection on {len(valley_lines)} valley lines...")
+
         with rasterio.open(dtm_path) as src:
             pixel_size = src.res[0]
+            processed_lines = 0
+            skipped_lines = 0
+            total_lines = len(valley_lines)
+            total_keypoints = 0
+            
             for idx, row in valley_lines.iterrows():
                 line = row.geometry
                 line_id = row.FID
                 length = line.length
                 num_samples = int(length // sampling_distance)
 
+                # Progress reporting for every line (or every 5 lines for large datasets)
+                current_line = idx + 1
+                if feedback:
+                    if total_lines <= 20 or current_line % 5 == 0 or current_line == total_lines:
+                        progress_pct = int((current_line / total_lines) * 100)
+                        feedback.pushInfo(f"[GetKeypoints] Processing line {current_line}/{total_lines} ({progress_pct}%) - Line ID: {line_id}, Length: {length:.1f}m")
+
                 if num_samples < smoothing_window or num_samples < 10:
+                    skipped_lines += 1
+                    if feedback:
+                        feedback.pushInfo(f"[GetKeypoints] Skipping valley line {line_id}: insufficient samples ({num_samples}, need ≥{max(smoothing_window, 10)})")
                     continue
+
+                processed_lines += 1
 
                 distances = np.linspace(0, length, num=num_samples)
                 sample_points = [line.interpolate(d) for d in distances]
@@ -1246,6 +1371,16 @@ class TopoDrainCore:
                         "curvature": curvature[idx_pt]
                     })
 
+                # Update keypoint count and provide feedback
+                line_keypoints = len(accepted)
+                total_keypoints += line_keypoints
+                
+                if feedback:
+                    if line_keypoints > 0:
+                        feedback.pushInfo(f"[GetKeypoints] Line {line_id}: found {line_keypoints} keypoints (total: {total_keypoints})")
+                    else:
+                        feedback.pushInfo(f"[GetKeypoints] Line {line_id}: no keypoints found")
+
                 # Optional Plot
                 if plot_debug:
                     plt.figure(figsize=(10, 4))
@@ -1272,6 +1407,15 @@ class TopoDrainCore:
                     plt.show()
 
         gdf = gpd.GeoDataFrame(results, geometry="geometry", crs=self.crs)
+
+        if feedback:
+            feedback.pushInfo(f"[GetKeypoints] Keypoint detection complete:")
+            feedback.pushInfo(f"[GetKeypoints] - Total valley lines: {total_lines}")
+            feedback.pushInfo(f"[GetKeypoints] - Processed lines: {processed_lines}")
+            feedback.pushInfo(f"[GetKeypoints] - Skipped lines: {skipped_lines}")
+            feedback.pushInfo(f"[GetKeypoints] - Total keypoints found: {len(gdf)}")
+        else:
+            print(f"[GetKeypoints] Keypoint detection complete: {len(gdf)} keypoints found from {processed_lines}/{total_lines} valley lines (skipped: {skipped_lines})")
 
         return gdf
 
