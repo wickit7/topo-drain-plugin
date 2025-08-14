@@ -41,7 +41,7 @@ tags=keyline-design, sponge-scape, schwammland, permaculture, dem, topo-drain, h
 
 homepage=https://github.com/wickit7/topo-drain-plugin
 category=Analysis
-icon=icon.png
+icon=icons/topo_drain.svg
 # experimental flag
 experimental=True
 

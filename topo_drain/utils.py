@@ -17,7 +17,8 @@ from qgis.core import (
     QgsMarkerLineSymbolLayer,
     QgsSimpleMarkerSymbolLayer,
     QgsSingleSymbolRenderer,
-    QgsMarkerSymbol
+    QgsMarkerSymbol,
+    QgsProcessingFeatureSource
 )
 
 def get_crs_from_project():
@@ -214,6 +215,75 @@ def get_crs_from_layer(layer_source):
         print(f"[TopoDrain Utils] Could not get CRS from layer {layer_source}: {e}")
     
     print("[TopoDrain Utils] Returning None for CRS.")
+    return None
+
+
+def get_crs_from_source(source):
+    """
+    Get CRS from a QgsProcessingFeatureSource, QgsVectorLayer, QgsRasterLayer, or file path
+    
+    This function provides a unified way to extract CRS information from different QGIS
+    data source types commonly used in processing algorithms.
+    
+    Args:
+        source: Can be:
+            - QgsProcessingFeatureSource (from parameterAsSource())
+            - QgsVectorLayer or QgsRasterLayer
+            - File path string
+    
+    Returns:
+        str: CRS authid (e.g., 'EPSG:4326') or None if not found
+    """
+    try:
+        # Handle QgsProcessingFeatureSource (common in processing algorithms)
+        if isinstance(source, QgsProcessingFeatureSource):
+            print(f"[TopoDrain Utils] source is QgsProcessingFeatureSource")
+            if source.sourceCrs().isValid():
+                crs = source.sourceCrs()
+                crs_authid = crs.authid()
+                print(f"[TopoDrain Utils] Source CRS authid: '{crs_authid}'")
+                
+                # If authid is empty, try alternative methods
+                if not crs_authid or crs_authid.strip() == "":
+                    print("[TopoDrain Utils] authid() returned empty for source, trying alternatives...")
+                    # Try to get from description
+                    description = crs.description()
+                    print(f"[TopoDrain Utils] CRS description: {description}")
+                    
+                    # Try to extract EPSG from description
+                    epsg_from_desc = parse_epsg_from_wkt_or_description(description)
+                    if epsg_from_desc:
+                        print(f"[TopoDrain Utils] Extracted EPSG from description: {epsg_from_desc}")
+                        return epsg_from_desc
+                    
+                    # Try to get WKT and parse it
+                    wkt = crs.toWkt()
+                    print(f"[TopoDrain Utils] CRS WKT: {wkt}")
+                    epsg_from_wkt = parse_epsg_from_wkt_or_description(wkt)
+                    if epsg_from_wkt:
+                        print(f"[TopoDrain Utils] Extracted EPSG from WKT: {epsg_from_wkt}")
+                        return epsg_from_wkt
+                    
+                    # If still no EPSG, return the WKT as fallback
+                    if wkt:
+                        print(f"[TopoDrain Utils] Using WKT as fallback: {wkt[:100]}...")
+                        return wkt
+                else:
+                    print(f"[TopoDrain Utils] Returning source authid: {crs_authid}")
+                    return crs_authid
+            else:
+                print("[TopoDrain Utils] Source CRS is not valid.")
+                return None
+        
+        # For other types, delegate to the existing get_crs_from_layer function
+        else:
+            print(f"[TopoDrain Utils] Delegating to get_crs_from_layer for type: {type(source)}")
+            return get_crs_from_layer(source)
+            
+    except Exception as e:
+        print(f"[TopoDrain Utils] Could not get CRS from source {source}: {e}")
+    
+    print("[TopoDrain Utils] Returning None for source CRS.")
     return None
 
 

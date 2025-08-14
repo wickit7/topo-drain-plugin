@@ -1,23 +1,26 @@
 # -*- coding: utf-8 -*-
 # -----------------------------------------------------------------------------
-# Name: extract_valleys_algorithm.py
+# Name: create_valleys_algorithm.py
 #
 # Purpose: QGIS Processing Algorithm to create valley lines (river network) based on WhiteboxTools
 #
 # -----------------------------------------------------------------------------
 
 from qgis.PyQt.QtCore import QCoreApplication
+from qgis.PyQt.QtGui import QIcon
 from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterRasterLayer,
                        QgsProcessingParameterRasterDestination,
                        QgsProcessingParameterVectorDestination, QgsProcessingParameterNumber,
-                       QgsProcessing)
+                       QgsProcessing, QgsProcessingException)
 import os
 import geopandas as gpd
-from .utils import get_crs_from_layer, apply_line_arrow_symbology
+from .utils import get_crs_from_layer
 
-class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
+pluginPath = os.path.dirname(__file__)
+
+class CreateValleysAlgorithm(QgsProcessingAlgorithm):
     """
-    QGIS Processing Algorithm for extracting valley lines (stream network) from a DEM resp. DTM.
+    QGIS Processing Algorithm for creating valley lines (stream network) from a DEM resp. DTM.
 
     This algorithm leverages several WhiteboxTools (WBT) processes:
     - BreachDepressionsLeastCost: Optimally breaches depressions in the DEM to prepare it for hydrological analysis, providing a lower-impact alternative to depression filling.
@@ -51,23 +54,23 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
         return QCoreApplication.translate('Processing', string)
 
     def createInstance(self):
-        return ExtractValleysAlgorithm(core=self.core)
+        return CreateValleysAlgorithm(core=self.core)
 
     def name(self):
-        return 'extract_valleys'
+        return 'create_valleys'
 
     def displayName(self):
-        return self.tr('Extract Valleys (stream network)')
+        return self.tr('Create Valleys (stream network)')
 
     def group(self):
-        return self.tr('Basic Hydrological Analysis')
+        return self.tr('Basic Watershed Analysis')
 
     def groupId(self):
-        return 'basic_hydrological_analysis'
+        return 'basic_watershed_analysis'
 
     def shortHelpString(self):
         return self.tr(
-            """QGIS Processing Algorithm for extracting valley lines (stream network) from a DEM resp. DTM
+            """QGIS Processing Algorithm for creating valley lines (stream network) from a DEM resp. DTM
                 This algorithm leverages several WhiteboxTools (WBT) processes:
                 - BreachDepressionsLeastCost: Optimally breaches depressions in the DEM to prepare it for hydrological analysis, providing a lower-impact alternative to depression filling.
                 - D8Pointer: Generates a flow direction raster using the D8 algorithm, assigning flow from each cell to its steepest downslope neighbor.
@@ -79,12 +82,15 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
                 For more customization, you can use individual WhiteboxTools algorithms directly in the QGIS Processing Toolbox (WhiteBox Plugin) step by step."""
         )
 
+    def icon(self):
+        return QIcon(os.path.join(pluginPath, 'icons', 'topo_drain.svg'))
+
     def initAlgorithm(self, config=None):        
         # Input parameters
         self.addParameter(
             QgsProcessingParameterRasterLayer(
                 self.INPUT_DTM,
-                self.tr('Input DTM (GeoTIFF)')
+                self.tr('Input DTM (Digital Terrain Model)')
             )
         )
         # Algorithm parameters
@@ -156,9 +162,10 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
     def processAlgorithm(self, parameters, context, feedback):
         # Validate and read input parameters
         dtm_layer = self.parameterAsRasterLayer(parameters, self.INPUT_DTM, context)
+
         dtm_path = dtm_layer.source()
         if not dtm_path or not os.path.exists(dtm_path):
-            raise FileNotFoundError(f"[Input Error] DTM file not found: {dtm_path}")
+            raise QgsProcessingException(f"DTM file not found: {dtm_path}")
         
         # Use parameterAsOutputLayer to preserve checkbox state information
         valley_output_layer = self.parameterAsOutputLayer(parameters, self.OUTPUT_VALLEYS, context)
@@ -185,10 +192,11 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
         feedback.pushInfo(f"DTM Layer crs: {dtm_crs}")
 
         # Check if self.core.crs matches dtm_crs, warn and update if not
-        if self.core and hasattr(self.core, "crs"):
-            if self.core.crs != dtm_crs:
-                feedback.reportError(f"Warning: TopoDrainCore CRS ({self.core.crs}) does not match DTM CRS ({dtm_crs}). Updating TopoDrainCore CRS to match DTM.")
-                self.core.crs = dtm_crs
+        if dtm_crs:
+            if self.core and hasattr(self.core, "crs"):
+                if self.core.crs != dtm_crs:
+                    feedback.reportError(f"Warning: TopoDrainCore CRS ({self.core.crs}) does not match DTM CRS ({dtm_crs}). Updating TopoDrainCore CRS to match DTM.")
+                    self.core.crs = dtm_crs
 
         feedback.pushInfo("Processing extract_valleys via TopoDrainCore...")
         if not self.core:
@@ -196,7 +204,8 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
             feedback.reportError("TopoDrainCore not set, creating default instance.")
             self.core = TopoDrainCore()  # fallback: create default instance (not recommended for plugin use)
 
-        gdf_valleys = self.core.extract_valleys(
+        feedback.pushInfo("Running extract valleys...")
+        valleys_gdf = self.core.extract_valleys(
             dtm_path=dtm_path,
             filled_output_path=filled_file_path,
             fdir_output_path=fdir_file_path,
@@ -208,22 +217,21 @@ class ExtractValleysAlgorithm(QgsProcessingAlgorithm):
             feedback=feedback
         )
 
+        if valleys_gdf.empty:
+            raise QgsProcessingException("No valleys were created")
+
         # Ensure the valleys GeoDataFrame has the correct CRS
-        gdf_valleys = gdf_valleys.set_crs(self.core.crs, allow_override=True)
-        feedback.pushInfo(f"Valley lines CRS: {gdf_valleys.crs}")
+        valleys_gdf = valleys_gdf.set_crs(self.core.crs, allow_override=True)
+        feedback.pushInfo(f"Valley lines CRS: {valleys_gdf.crs}")
+
         # Save result
         try:
-            gdf_valleys.to_file(valley_file_path)
+            valleys_gdf.to_file(valley_file_path)
             feedback.pushInfo(f"Valley lines saved to: {valley_file_path}")
         except Exception as e:
-            raise RuntimeError(f"[ExtractValleysAlgorithm] failed to save valley output: {e}")
+            raise QgsProcessingException(f"Failed to save valley output: {e}")
 
-        # Optional outputs will be automatically added by QGIS based on checkbox state
-        # No need to manually add them here - QGIS Processing framework handles this
-
-        # Return the original parameter objects
         results = {}
-        
         # Add ouput parameters to results
         for output in self.outputDefinitions():
             outputName = output.name()

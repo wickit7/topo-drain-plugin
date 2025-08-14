@@ -8,19 +8,19 @@
 # -----------------------------------------------------------------------------
 
 from qgis.PyQt.QtCore import QCoreApplication
+from qgis.PyQt.QtGui import QIcon
 from qgis.core import (QgsProcessing,
                        QgsProcessingException,
                        QgsProcessingAlgorithm,
                        QgsProcessingParameterFeatureSource,
                        QgsProcessingParameterRasterLayer,
                        QgsProcessingParameterVectorDestination,
-                       QgsProcessingParameterNumber,
-                       QgsProcessingParameterBoolean)
-from qgis import processing
+                       QgsProcessingParameterNumber)
 import geopandas as gpd
-import tempfile
 import os
-from .utils import get_crs_from_layer
+from .utils import get_crs_from_source
+
+pluginPath = os.path.dirname(__file__)
 
 class GetKeypointsAlgorithm(QgsProcessingAlgorithm):
     """
@@ -53,7 +53,7 @@ class GetKeypointsAlgorithm(QgsProcessingAlgorithm):
     POLYORDER = 'POLYORDER'
     MIN_DISTANCE = 'MIN_DISTANCE'
     MAX_KEYPOINTS = 'MAX_KEYPOINTS'
-    OUTPUT = 'OUTPUT'
+    OUTPUT_KEYPOINTS = 'OUTPUT_KEYPOINTS'
 
     def __init__(self, core=None):
         super().__init__()
@@ -63,54 +63,24 @@ class GetKeypointsAlgorithm(QgsProcessingAlgorithm):
         self.core = core
 
     def tr(self, string):
-        """
-        Returns a translatable string with the self.tr() function.
-        """
         return QCoreApplication.translate('Processing', string)
 
     def createInstance(self):
         return GetKeypointsAlgorithm(core=self.core)
 
     def name(self):
-        """
-        Returns the algorithm name, used for identifying the algorithm. This
-        string should be fixed for the algorithm, and must not be localised.
-        The name should be unique within each provider. Names should contain
-        lowercase alphanumeric characters only and no spaces or other
-        formatting characters.
-        """
         return 'get_keypoints'
 
     def displayName(self):
-        """
-        Returns the translated algorithm name, which should be used for any
-        user-visible display of the algorithm name.
-        """
-        return self.tr('Get Keypoints along Valley Lines')
+        return self.tr('Get Keypoints (along Main Valley Lines)')
 
     def group(self):
-        """
-        Returns the name of the group this algorithm belongs to. This string
-        should be localised.
-        """
-        return self.tr('Basic Hydrological Analysis')
+        return self.tr('Basic Watershed Analysis')
 
     def groupId(self):
-        """
-        Returns the unique ID of the group this algorithm belongs to. This
-        string should be fixed for the algorithm, and must not be localised.
-        The group id should be unique within each provider. Group id should
-        contain lowercase alphanumeric characters only and no spaces or other
-        formatting characters.
-        """
-        return 'basic_hydrological_analysis'
+        return 'basic_watershed_analysis'
 
     def shortHelpString(self):
-        """
-        Returns a localised short helper string for the algorithm. This string
-        should provide a basic description about what the algorithm does and the
-        parameters and outputs associated with it.
-        """
         return self.tr(
             """Detect keypoints along valley lines based on curvature analysis of elevation profiles.
             
@@ -127,10 +97,10 @@ The algorithm:
 This is useful for identifying significant morphological features along drainage channels, such as knickpoints, channel transitions, or locations suitable for water retention structures in keyline design applications.
 
 Input Requirements:
-- Valley Lines: Should have 'FID' attribute (e.g., from Extract Valleys algorithm)
+- Valley Lines: Should have 'FID' attribute (e.g., from Create Valleys algorithm)
 - DTM: Digital Terrain Model for elevation profile extraction
 
-Output:
+OUTPUT_KEYPOINTS:
 Point layer containing detected keypoints with attributes: valley_id, elev_index, rank, curvature
 
 Simplified Parameters:
@@ -138,6 +108,9 @@ Simplified Parameters:
 - Minimum distance: Ensures spatial separation between keypoints
 - Sampling distance: Controls resolution of elevation profile analysis"""
         )
+
+    def icon(self):
+        return QIcon(os.path.join(pluginPath, 'icons', 'topo_drain.svg'))
 
     def initAlgorithm(self, config=None):
         """
@@ -186,23 +159,11 @@ Simplified Parameters:
         self.addParameter(
             QgsProcessingParameterNumber(
                 self.SAMPLING_DISTANCE,
-                self.tr('Sampling distance along lines (m))'),
+                self.tr('Sampling distance along lines (m)'),
                 type=QgsProcessingParameterNumber.Double,
                 defaultValue=2.0,
                 minValue=0.1
           )
-        )
-
-        # Smoothing window
-        self.addParameter(
-            QgsProcessingParameterNumber(
-                self.SMOOTHING_WINDOW,
-                self.tr('Smoothing window size (must be odd and larger than polyorder)'),
-                type=QgsProcessingParameterNumber.Integer,
-                defaultValue=9,
-                minValue=3,
-                maxValue=51
-            )
         )
 
         # Polynomial order
@@ -216,112 +177,120 @@ Simplified Parameters:
                 maxValue=5
             )
         )
+        
+        # Smoothing window
+        self.addParameter(
+            QgsProcessingParameterNumber(
+                self.SMOOTHING_WINDOW,
+                self.tr('Smoothing window size (must be odd and larger than Polynomial order)'),
+                type=QgsProcessingParameterNumber.Integer,
+                defaultValue=9,
+                minValue=3,
+                maxValue=51
+            )
+        )
 
         # Output keypoints
         self.addParameter(
             QgsProcessingParameterVectorDestination(
-                self.OUTPUT,
+                self.OUTPUT_KEYPOINTS,
                 self.tr('Output Keypoints')
             )
         )
 
     def processAlgorithm(self, parameters, context, feedback):
-        """
-        Here is where the processing itself takes place.
-        """
-        try:
-            # Validate and read input parameters
-            valley_lines_source = self.parameterAsSource(parameters, self.INPUT_VALLEY_LINES, context)
-            dtm_layer = self.parameterAsRasterLayer(parameters, self.INPUT_DTM, context)
-            sampling_distance = self.parameterAsDouble(parameters, self.SAMPLING_DISTANCE, context)
-            smoothing_window = self.parameterAsInt(parameters, self.SMOOTHING_WINDOW, context)
-            polyorder = self.parameterAsInt(parameters, self.POLYORDER, context)
-            min_distance = self.parameterAsDouble(parameters, self.MIN_DISTANCE, context)
-            max_keypoints = self.parameterAsInt(parameters, self.MAX_KEYPOINTS, context)
+        # Validate and read input parameters
+        valley_lines_source = self.parameterAsSource(parameters, self.INPUT_VALLEY_LINES, context)
+        dtm_layer = self.parameterAsRasterLayer(parameters, self.INPUT_DTM, context)
+        sampling_distance = self.parameterAsDouble(parameters, self.SAMPLING_DISTANCE, context)
+        smoothing_window = self.parameterAsInt(parameters, self.SMOOTHING_WINDOW, context)
+        polyorder = self.parameterAsInt(parameters, self.POLYORDER, context)
+        min_distance = self.parameterAsDouble(parameters, self.MIN_DISTANCE, context)
+        max_keypoints = self.parameterAsInt(parameters, self.MAX_KEYPOINTS, context)
 
-            if feedback is None:
-                raise QgsProcessingException("Feedback object is None")
+        # Validate smoothing parameters
+        if smoothing_window <= polyorder:
+            raise QgsProcessingException(f"Smoothing window ({smoothing_window}) must be larger than polynomial order ({polyorder})")
+        
+        if smoothing_window % 2 == 0:
+            new_window = smoothing_window - 1
+            feedback.reportError(f"Smoothing window ({smoothing_window}) must be odd. Adjusting to {new_window}.")
+            smoothing_window = new_window
 
-            # Validate smoothing parameters
-            if smoothing_window <= polyorder:
-                raise QgsProcessingException(f"Smoothing window ({smoothing_window}) must be larger than polynomial order ({polyorder})")
-            
-            if smoothing_window % 2 == 0:
-                raise QgsProcessingException(f"Smoothing window ({smoothing_window}) must be odd")
+        # Get file paths
+        dtm_path = dtm_layer.source()
+        
+        # Validate file existence
+        if not dtm_path or not os.path.exists(dtm_path):
+            raise QgsProcessingException(f"DTM file not found: {dtm_path}")
 
-            # Get file paths
-            dtm_path = dtm_layer.source()
-            
-            # Validate file existence
-            if not dtm_path or not os.path.exists(dtm_path):
-                raise FileNotFoundError(f"[Input Error] DTM file not found: {dtm_path}")
+        # Get output file path using parameterAsOutputLayer
+        keypoints_output_layer = self.parameterAsOutputLayer(parameters, self.OUTPUT_KEYPOINTS, context)
+        keypoints_file_path = keypoints_output_layer if isinstance(keypoints_output_layer, str) else keypoints_output_layer
 
-            # Get output file path using parameterAsOutputLayer
-            keypoints_output_layer = self.parameterAsOutputLayer(parameters, self.OUTPUT, context)
-            keypoints_file_path = keypoints_output_layer if isinstance(keypoints_output_layer, str) else keypoints_output_layer
+        feedback.pushInfo("Reading CRS from valley source...")
+        # Read CRS from the valley lines source using unified function
+        valley_crs = get_crs_from_source(valley_lines_source)
+        feedback.pushInfo(f"Valley lines CRS: {valley_crs}")
 
-            feedback.pushInfo("Reading CRS from valley lines...")
-            # Read CRS from the valley lines layer
-            valley_crs = valley_lines_source.sourceCrs().authid()
-            feedback.pushInfo(f"Valley lines CRS: {valley_crs}")
-
-            # Check if self.core.crs matches valley_crs, warn and update if not
+        # Check if self.core.crs matches valley_crs, warn and update if not
+        if valley_crs:
             if self.core and hasattr(self.core, "crs"):
-                if self.core.crs != valley_crs:
+                if self.core.crs != valley_crs and valley_crs != "":
                     feedback.reportError(f"Warning: TopoDrainCore CRS ({self.core.crs}) does not match valley lines CRS ({valley_crs}). Updating TopoDrainCore CRS to match valley lines.")
                     self.core.crs = valley_crs
 
-            feedback.pushInfo("Processing get_keypoints via TopoDrainCore...")
-            if not self.core:
-                from .core.topo_drain_core import TopoDrainCore
-                feedback.reportError("TopoDrainCore not set, creating default instance.")
-                self.core = TopoDrainCore()  # fallback: create default instance (not recommended for plugin use)
+        feedback.pushInfo("Processing get_keypoints via TopoDrainCore...")
+        if not self.core:
+            from .core.topo_drain_core import TopoDrainCore
+            feedback.reportError("TopoDrainCore not set, creating default instance.")
+            self.core = TopoDrainCore()  # fallback: create default instance (not recommended for plugin use)
 
-            # Convert QGIS features to GeoDataFrame
-            feedback.pushInfo("Loading valley lines...")
-            valley_lines_gdf = gpd.GeoDataFrame.from_features(valley_lines_source.getFeatures())
-            
-            if valley_lines_gdf.empty:
-                raise QgsProcessingException("No features found in valley lines input")
+        # Load input data as GeoDataFrame
+        feedback.pushInfo("Loading valley lines...")
+        valley_lines_gdf = gpd.GeoDataFrame.from_features(valley_lines_source.getFeatures())
+        
+        if valley_lines_gdf.empty:
+            raise QgsProcessingException("No features found in valley lines input")
 
-            # Check for FID attribute
-            if 'FID' not in valley_lines_gdf.columns:
-                raise QgsProcessingException("Valley lines must have an 'FID' attribute")
+        # Check for FID attribute
+        if 'FID' not in valley_lines_gdf.columns:
+            raise QgsProcessingException("Valley lines must have an 'FID' attribute")
 
-            feedback.pushInfo(f"Loaded {len(valley_lines_gdf)} valley lines")
+        # Run keypoint detection
+        feedback.pushInfo("Running keypoint detection...")
+        keypoints_gdf = self.core.get_keypoints(
+            valley_lines=valley_lines_gdf,
+            dtm_path=dtm_path,
+            sampling_distance=sampling_distance,
+            smoothing_window=smoothing_window,
+            polyorder=polyorder,
+            min_distance=min_distance,
+            max_keypoints=max_keypoints,
+            feedback=feedback
+        )
 
+        if keypoints_gdf.empty:
+            raise QgsProcessingException("No keypoints were detected")
 
-            # Run keypoint detection
-            feedback.pushInfo("Running keypoint detection...")
-            keypoints_gdf = self.core.get_keypoints(
-                valley_lines=valley_lines_gdf,
-                dtm_path=dtm_path,
-                sampling_distance=sampling_distance,
-                smoothing_window=smoothing_window,
-                polyorder=polyorder,
-                min_distance=min_distance,
-                max_keypoints=max_keypoints,
-                feedback=feedback
-            )
+        feedback.pushInfo(f"Detected {len(keypoints_gdf)} keypoints")
 
-            if keypoints_gdf.empty:
-                raise QgsProcessingException("No keypoints were detected")
+        # Ensure the keypoints GeoDataFrame has the correct CRS
+        keypoints_gdf = keypoints_gdf.set_crs(self.core.crs, allow_override=True)
+        feedback.pushInfo(f"Keypoints CRS: {keypoints_gdf.crs}")
 
-            feedback.pushInfo(f"Detected {len(keypoints_gdf)} keypoints")
-
-            # Ensure the keypoints GeoDataFrame has the correct CRS
-            keypoints_gdf = keypoints_gdf.set_crs(self.core.crs, allow_override=True)
-            feedback.pushInfo(f"Keypoints CRS: {keypoints_gdf.crs}")
-
-            # Save result
-            try:
-                keypoints_gdf.to_file(keypoints_file_path)
-                feedback.pushInfo(f"Keypoints saved to: {keypoints_file_path}")
-            except Exception as e:
-                raise RuntimeError(f"[GetKeypointsAlgorithm] failed to save keypoints output: {e}")
-
-            return {self.OUTPUT: keypoints_output_layer}
-
+        # Save result
+        try:
+            keypoints_gdf.to_file(keypoints_file_path)
+            feedback.pushInfo(f"Keypoints saved to: {keypoints_file_path}")
         except Exception as e:
-            feedback.reportError(f"Error in keypoint detection: {str(e)}", fatalError=True)
-            raise QgsProcessingException(f"Keypoint detection failed: {str(e)}")
+            raise QgsProcessingException(f"Failed to save keypoints output: {e}")
+
+        results = {}
+        # Add output parameters to results
+        for output in self.outputDefinitions():
+            outputName = output.name()
+            if outputName in parameters:
+                results[outputName] = parameters[outputName]
+
+        return results

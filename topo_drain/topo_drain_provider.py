@@ -30,12 +30,18 @@ __copyright__ = '(C) 2025 by Timo Wicki'
 
 __revision__ = '$Format:%H$'
 
+import os
+from qgis.PyQt.QtGui import QIcon
 from qgis.core import QgsProcessingProvider
-from .extract_valleys_algorithm import ExtractValleysAlgorithm
-from .extract_ridges_algorithm import ExtractRidgesAlgorithm
+from .create_valleys_algorithm import CreateValleysAlgorithm
+from .create_ridges_algorithm import CreateRidgesAlgorithm
+from .create_constant_slope_lines_algorithm import CreateConstantSlopeLinesAlgorithm
+from .create_keylines_algorithm import CreateKeylinesAlgorithm
 from .extract_main_valleys_algorithm import ExtractMainValleysAlgorithm
 from .extract_main_ridges_algorithm import ExtractMainRidgesAlgorithm
 from .get_keypoints_algorithm import GetKeypointsAlgorithm
+
+pluginPath = os.path.dirname(__file__)
 
 class TopoDrainProvider(QgsProcessingProvider):
     def __init__(self, core=None):
@@ -57,11 +63,17 @@ class TopoDrainProvider(QgsProcessingProvider):
         Loads all algorithms belonging to this provider.
         """
         # Use the shared core instance
-        extract_valleys_alg = ExtractValleysAlgorithm(core=self.core)
-        self.addAlgorithm(extract_valleys_alg)
+        create_valleys_alg = CreateValleysAlgorithm(core=self.core)
+        self.addAlgorithm(create_valleys_alg)
         
-        extract_ridges_alg = ExtractRidgesAlgorithm(core=self.core)
-        self.addAlgorithm(extract_ridges_alg)
+        create_ridges_alg = CreateRidgesAlgorithm(core=self.core)
+        self.addAlgorithm(create_ridges_alg)
+        
+        create_constant_slope_lines_alg = CreateConstantSlopeLinesAlgorithm(core=self.core)
+        self.addAlgorithm(create_constant_slope_lines_alg)
+        
+        create_keylines_alg = CreateKeylinesAlgorithm(core=self.core)
+        self.addAlgorithm(create_keylines_alg)
         
         extract_main_valleys_alg = ExtractMainValleysAlgorithm(core=self.core)
         self.addAlgorithm(extract_main_valleys_alg)
@@ -96,7 +108,8 @@ class TopoDrainProvider(QgsProcessingProvider):
         Should return a QIcon which is used for your provider inside
         the Processing toolbox.
         """
-        return QgsProcessingProvider.icon(self)
+        return QIcon(os.path.join(pluginPath, 'icons', 'topo_drain.svg'))
+
 
     def longName(self):
         """

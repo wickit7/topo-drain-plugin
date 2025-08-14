@@ -4,3 +4,4 @@ topo_drain/Readme.txt
 topo_drain/Readme.html
 copy_to_plugin_directory.py
 .DS_Store
+topo_drain/core/__pycache__/
