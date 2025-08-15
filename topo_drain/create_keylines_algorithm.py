@@ -167,7 +167,7 @@ connections can be made."""
         self.addParameter(
             QgsProcessingParameterNumber(
                 self.MAX_ITERATIONS,
-                self.tr('Maximum Iterations (stages changeing heading from ridges to valleys and vice versa)'),
+                self.tr('Maximum Iterations (Max. Nr. of sections between valleys to ridges)'),
                 type=QgsProcessingParameterNumber.Integer,
                 defaultValue=10,
                 minValue=1,
