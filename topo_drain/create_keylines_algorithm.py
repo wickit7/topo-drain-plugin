@@ -46,7 +46,6 @@ class CreateKeylinesAlgorithm(QgsProcessingAlgorithm):
     INPUT_PERIMETER = 'INPUT_PERIMETER'
     OUTPUT_KEYLINES = 'OUTPUT_KEYLINES'
     SLOPE = 'SLOPE'
-    MAX_ITERATIONS = 'MAX_ITERATIONS'
 
     def __init__(self, core=None):
         super().__init__()
@@ -100,7 +99,6 @@ Parameters:
 - Ridge Lines: Ridge line features to use as barriers/destinations during tracing
 - Perimeter: Optional polygon features defining area of interest (always acts as destination)
 - Slope: Desired slope as a decimal (e.g., 0.01 for 1% downhill, -0.01 for 1% uphill)
-- Maximum Iterations: Maximum number of stages to prevent infinite loops (default: 10)
 
 The algorithm alternates between tracing to ridges and valleys, creating new start points
 beyond endpoints that intersect target features, and continues until no more valid
@@ -164,17 +162,6 @@ connections can be made."""
             )
         )
         
-        self.addParameter(
-            QgsProcessingParameterNumber(
-                self.MAX_ITERATIONS,
-                self.tr('Maximum Iterations (Max. Nr. of sections between valleys to ridges)'),
-                type=QgsProcessingParameterNumber.Integer,
-                defaultValue=10,
-                minValue=1,
-                maxValue=100
-            )
-        )
-        
         # Output parameters
         keylines_param = QgsProcessingParameterVectorDestination(
             self.OUTPUT_KEYLINES,
@@ -198,7 +185,6 @@ connections can be made."""
         
         keylines_output = self.parameterAsOutputLayer(parameters, self.OUTPUT_KEYLINES, context)
         slope = self.parameterAsDouble(parameters, self.SLOPE, context)
-        max_iterations = self.parameterAsInt(parameters, self.MAX_ITERATIONS, context)
 
         # Extract file paths
         keylines_path = keylines_output if isinstance(keylines_output, str) else keylines_output
@@ -275,7 +261,6 @@ connections can be made."""
             ridge_lines=ridge_lines_gdf,
             slope=slope,
             perimeter=perimeter_gdf,
-            max_iterations=max_iterations,
             feedback=feedback
         )
 
