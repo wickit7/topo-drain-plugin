@@ -2183,7 +2183,9 @@ class TopoDrainCore:
         2. Check if endpoints are on ridges, create new start points beyond ridges
         3. Trace from new start points to valleys (using ridges as barriers)
         4. Continue iteratively while endpoints reach target features
-        
+
+        All output keylines will be oriented from valley to ridge (valley → ridge direction).
+
         Parameters:
         -----------
         dtm_path : str
@@ -2200,11 +2202,11 @@ class TopoDrainCore:
             Area of interest (perimeter) that always acts as destination feature (e.g. watershed, parcel polygon)
         feedback : QgsProcessingFeedback
             Feedback object for progress reporting
-            
+
         Returns:
         --------
         GeoDataFrame
-            Combined keylines from all stages
+            Combined keylines from all stages, all oriented from valley to ridge.
         """
         if feedback:
             feedback.pushInfo("Starting iterative keyline creation process...")
@@ -2293,9 +2295,20 @@ class TopoDrainCore:
                     print(f"Stage {stage}: No lines generated, stopping...")
                 break
                 
-            # Add stage lines to results
+            # Add stage lines to results - ensure all lines go from valleys to ridges
             for _, row in stage_lines.iterrows():
-                all_keylines.append(row.geometry)
+                line_geom = row.geometry
+                
+                # For even stages, we traced from ridges to valleys (uphill)
+                # We need to reverse these lines so all keylines go valley → ridge
+                if stage % 2 == 0:  # Even stage: reverse direction to ensure valley → ridge
+                    if hasattr(line_geom, 'coords'):
+                        reversed_coords = list(line_geom.coords)[::-1]  # Reverse coordinate order
+                        line_geom = LineString(reversed_coords)
+                        if feedback:
+                            feedback.pushInfo(f"Stage {stage}: Reversed line direction (ridge→valley to valley→ridge)")
+                
+                all_keylines.append(line_geom)
                 
             if feedback:
                 feedback.pushInfo(f"Stage {stage} complete: {len(stage_lines)} lines to {target_type}")
@@ -2392,6 +2405,200 @@ class TopoDrainCore:
             
         return combined_gdf
 
+    def adjust_constant_slope_after(
+        self,
+        dtm_path: str,
+        input_lines: gpd.GeoDataFrame,
+        change_after: float,
+        slope_after: float,
+        destination_features: list[gpd.GeoDataFrame],
+        barrier_features: list[gpd.GeoDataFrame] = None,
+        feedback=None
+    ) -> gpd.GeoDataFrame:
+        """
+        Modify constant slope lines by changing to a secondary slope after a specified distance.
+        
+        This function splits each input line at a specified fraction of its length and continues 
+        with a new slope from that point using the get_constant_slope_lines function.
+        
+        Args:
+            dtm_path (str): Path to the digital terrain model (GeoTIFF).
+            input_lines (gpd.GeoDataFrame): Input constant slope lines to modify.
+            change_after (float): Fraction of line length where slope changes (0.0-1.0, e.g., 0.5 = from halfway).
+            slope_after (float): New slope to apply after the change point (e.g., 0.01 for 1% downhill).
+            destination_features (list[gpd.GeoDataFrame]): Destination features for the new slope sections, e.g. ridge lines in case of keylines.
+            barrier_features (list[gpd.GeoDataFrame], optional): Barrier features to avoid, e.g. valley lines in case of keylines.
+            feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting.
+            
+        Returns:
+            gpd.GeoDataFrame: Modified lines with secondary slopes applied.
+        """
+        if feedback:
+            feedback.pushInfo(f"[AdjustConstantSlopeAfter] Starting adjustment of {len(input_lines)} lines...")
+            feedback.setProgress(0)
+        else:
+            print(f"[AdjustConstantSlopeAfter] Starting adjustment of {len(input_lines)} lines...")
+        
+        # Validate change_after parameter
+        if not (0.0 <= change_after <= 1.0):
+            raise ValueError("change_after must be between 0.0 and 1.0")
+        
+        adjusted_lines = []
+        total_lines = len(input_lines)
+        processed_lines = 0
+        
+        for idx, row in input_lines.iterrows():
+            processed_lines += 1
+            line_geom = row.geometry
+            
+            # Progress reporting
+            if feedback:
+                progress = int((processed_lines / total_lines) * 100)
+                feedback.setProgress(progress)
+                feedback.pushInfo(f"[AdjustConstantSlopeAfter] Processing line {processed_lines}/{total_lines} ({progress}%)...")
+            else:
+                print(f"[AdjustConstantSlopeAfter] Processing line {processed_lines}/{total_lines}...")
+            
+            # Handle MultiLineString by stitching into a single LineString
+            if isinstance(line_geom, MultiLineString):
+                if feedback:
+                    feedback.pushInfo(f"[AdjustConstantSlopeAfter] Converting MultiLineString to LineString using _stitch_multilinestring")
+                line_geom = self._stitch_multilinestring(line_geom)
+            elif not isinstance(line_geom, LineString):
+                if feedback:
+                    feedback.pushInfo(f"[AdjustConstantSlopeAfter] Skipping unsupported geometry type: {type(line_geom)} at index {idx}")
+                continue
+            
+            # Calculate split point at specified fraction of line length
+            line_length = line_geom.length
+            split_distance = line_length * change_after
+            
+            if feedback:
+                feedback.pushInfo(f"[AdjustConstantSlopeAfter] Line length: {line_length:.2f}, split at: {split_distance:.2f}")
+            
+            # Check if split distance is valid
+            if split_distance <= 0 or split_distance >= line_length:
+                if feedback:
+                    feedback.pushInfo(f"[AdjustConstantSlopeAfter] Invalid split distance, keeping original line")
+                # Keep original line if split point is invalid
+                adjusted_lines.append(row)
+                continue
+            
+            # Create first part of line (from start to split point)
+            try:
+                split_point_geom = line_geom.interpolate(split_distance)
+                
+                # Get coordinates up to split point
+                coords = list(line_geom.coords)
+                first_part_coords = []
+                remaining_distance = split_distance
+                
+                for i in range(len(coords) - 1):
+                    start_pt = Point(coords[i])
+                    end_pt = Point(coords[i + 1])
+                    segment_length = start_pt.distance(end_pt)
+                    
+                    first_part_coords.append(coords[i])
+                    
+                    if remaining_distance <= segment_length:
+                        # Interpolate the exact split point on this segment
+                        if remaining_distance > 0:
+                            fraction = remaining_distance / segment_length
+                            split_x = coords[i][0] + fraction * (coords[i + 1][0] - coords[i][0])
+                            split_y = coords[i][1] + fraction * (coords[i + 1][1] - coords[i][1])
+                            first_part_coords.append((split_x, split_y))
+                        break
+                    else:
+                        remaining_distance -= segment_length
+                
+                # Create first part of the line
+                if len(first_part_coords) >= 2:
+                    first_part_line = LineString(first_part_coords)
+                else:
+                    # Fallback: use original line if we can't create valid first part
+                    if feedback:
+                        feedback.pushInfo(f"[AdjustConstantSlopeAfter] Could not create valid first part, keeping original line")
+                    adjusted_lines.append(row)
+                    continue
+                
+                # Create start point for second part (the split point)
+                start_point_second = Point(first_part_coords[-1])
+                start_points_gdf = gpd.GeoDataFrame(
+                    geometry=[start_point_second],
+                    crs=input_lines.crs
+                )
+                
+                if feedback:
+                    feedback.pushInfo(f"[AdjustConstantSlopeAfter] Tracing second part from {start_point_second.wkt}")
+                
+                # Trace second part with new slope
+                second_part_lines = self.get_constant_slope_lines(
+                    dtm_path=dtm_path,
+                    start_points=start_points_gdf,
+                    destination_features=destination_features,
+                    slope=slope_after,
+                    barrier_features=barrier_features,
+                    feedback=None  # Suppress detailed feedback for individual calls
+                )
+                
+                if not second_part_lines.empty:
+                    # Get the first (and should be only) line from the result
+                    second_part_line = second_part_lines.iloc[0].geometry
+                    
+                    # Combine first and second parts
+                    if isinstance(second_part_line, LineString):
+                        # Merge coordinates, avoiding duplication of the split point
+                        first_coords = list(first_part_line.coords)
+                        second_coords = list(second_part_line.coords)
+                        
+                        # Remove duplicate split point if it exists
+                        if len(second_coords) > 0 and first_coords[-1] == second_coords[0]:
+                            combined_coords = first_coords + second_coords[1:]
+                        else:
+                            combined_coords = first_coords + second_coords
+                        
+                        combined_line = LineString(combined_coords)
+                        
+                        # Create new row with combined geometry and original attributes
+                        new_row = row.copy()
+                        new_row['geometry'] = combined_line
+                        adjusted_lines.append(new_row)
+                        
+                        if feedback:
+                            feedback.pushInfo(f"[AdjustConstantSlopeAfter] Successfully combined line parts")
+                    else:
+                        if feedback:
+                            feedback.pushInfo(f"[AdjustConstantSlopeAfter] Second part is not LineString, keeping first part only")
+                        new_row = row.copy()
+                        new_row['geometry'] = first_part_line
+                        adjusted_lines.append(new_row)
+                else:
+                    if feedback:
+                        feedback.pushInfo(f"[AdjustConstantSlopeAfter] No second part generated, keeping first part only")
+                    new_row = row.copy()
+                    new_row['geometry'] = first_part_line
+                    adjusted_lines.append(new_row)
+                    
+            except Exception as e:
+                if feedback:
+                    feedback.pushInfo(f"[AdjustConstantSlopeAfter] Error processing line {idx}: {str(e)}, keeping original")
+                else:
+                    print(f"[AdjustConstantSlopeAfter] Error processing line {idx}: {str(e)}, keeping original")
+                adjusted_lines.append(row)
+        
+        # Create result GeoDataFrame
+        if adjusted_lines:
+            result_gdf = gpd.GeoDataFrame(adjusted_lines, crs=input_lines.crs).reset_index(drop=True)
+        else:
+            result_gdf = gpd.GeoDataFrame(crs=input_lines.crs)
+        
+        if feedback:
+            feedback.setProgress(100)
+            feedback.pushInfo(f"[AdjustConstantSlopeAfter] Adjustment complete: {len(result_gdf)} adjusted lines")
+        else:
+            print(f"[AdjustConstantSlopeAfter] Adjustment complete: {len(result_gdf)} adjusted lines")
+        
+        return result_gdf
 
 
 if __name__ == "__main__":

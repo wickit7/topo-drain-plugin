@@ -82,6 +82,8 @@ This algorithm creates comprehensive keyline networks by iteratively tracing con
 3. Continues iteratively while endpoints reach target features (ridges or valleys)
 4. Returns all traced keylines as a combined vector layer
 
+All output keylines will be oriented from valley to ridge (valley → ridge direction).
+
 The iterative approach ensures that keylines follow natural topographic flow patterns,
 creating comprehensive drainage and access line networks that respect the landscape's
 ridge-valley structure.
