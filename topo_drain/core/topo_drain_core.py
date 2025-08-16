@@ -129,18 +129,21 @@ class TopoDrainCore:
             if value is not None:
                 arguments.append(f'--{param}="{value}"')
 
+        fused_command = ' '.join(arguments)
         if feedback:
-            fused_command = ' '.join(arguments)
             feedback.pushInfo('WhiteboxTools command:')
             feedback.pushCommandInfo(fused_command)
             feedback.pushInfo('WhiteboxTools output:')
+        else:
+            print(f"[TopoDrainCore] Executing WhiteboxTools command: {fused_command}")
+            print("[TopoDrainCore] WhiteboxTools output: ")
 
         if QGIS_AVAILABLE and feedback:
             # Use QGIS process handling with progress monitoring
             return self._execute_with_qgis_process(arguments, feedback)
         else:
             # Fallback to subprocess
-            return self._execute_with_subprocess(arguments, feedback)
+            return self._execute_with_subprocess(arguments)
 
     ########## Maybe later show whitebox output only in python console (print statements)
     def _execute_with_qgis_process(self, arguments, feedback):
@@ -199,22 +202,19 @@ class TopoDrainCore:
 
         return res
 
-    ############ Here better print than feedback!!!!
-    def _execute_with_subprocess(self, arguments, feedback):
+    def _execute_with_subprocess(self, arguments):
         """Fallback execution using subprocess."""
         try:
             result = subprocess.run(arguments, capture_output=True, text=True, check=False)
             
-            if feedback:
-                if result.stdout:
-                    feedback.pushInfo(result.stdout)
-                if result.stderr:
-                    feedback.reportError(result.stderr)
+            if result.stdout:
+                print(result.stdout)
+            if result.stderr:
+                warnings.warn(result.stderr)
                     
             return result.returncode
         except Exception as e:
-            if feedback:
-                feedback.reportError(f"Error executing WhiteboxTools: {e}")
+            warnings.warn(f"Error executing WhiteboxTools: {e}")
             return 1
 
     def _stitch_multilinestring(self, geom, preserve_original=False):
@@ -402,12 +402,14 @@ class TopoDrainCore:
 
         return mask
 
-    def _invert_dtm(self, dtm_path: str, output_path: str) -> str:
+    def _invert_dtm(self, dtm_path: str, output_path: str, feedback=None) -> str:
         """
         Create an inverted DTM (multiply by -1) to extract ridges.
 
         Args:
             dtm_path (str): Path to original DTM.
+            output_path (str): Path to output inverted DTM.
+            feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting.
 
         Returns:
             str: Path to inverted DTM.
@@ -415,7 +417,16 @@ class TopoDrainCore:
         if self.wbt is None:
             raise RuntimeError("WhiteboxTools not initialized.")
 
-        self.wbt.multiply(input1=dtm_path, input2=-1.0, output=output_path)
+        ret = self._execute_wbt(
+            'multiply',
+            feedback=feedback,
+            input1=dtm_path,
+            input2=-1.0,
+            output=output_path
+        )
+        
+        if ret != 0 or not os.path.exists(output_path):
+            raise RuntimeError(f"DTM inversion failed: WhiteboxTools returned {ret}, output not found at {output_path}")
 
         return output_path
 
@@ -560,7 +571,7 @@ class TopoDrainCore:
 
         return output_path
 
-    def _raster_to_linestring_wbt(self, raster_path: str, snap_to_start_point: Point = None, snap_to_endpoint: Point = None) -> LineString:
+    def _raster_to_linestring_wbt(self, raster_path: str, snap_to_start_point: Point = None, snap_to_endpoint: Point = None, feedback=None) -> LineString:
         """
         Uses WhiteboxTools to vectorize a raster and return a merged LineString or MultiLineString.
         Optionally snaps the endpoint to the center of a destination cell.
@@ -569,6 +580,7 @@ class TopoDrainCore:
             raster_path (str): Path to a raster where 1-valued pixels form your keyline.
             snap_to_start_point (Point, optional): Point to snap the start of the line to.
             snap_to_endpoint (Point, optional): Point to snap the endpoint of the line to.
+            feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting.
 
         Returns:
             LineString or MultiLineString, or None if empty.
@@ -577,7 +589,15 @@ class TopoDrainCore:
             raise RuntimeError("WhiteboxTools not initialized.")
 
         vector_path = raster_path.replace(".tif", ".shp")
-        self.wbt.raster_to_vector_lines(i=raster_path, output=vector_path)
+        ret = self._execute_wbt(
+            'raster_to_vector_lines',
+            feedback=feedback,
+            i=raster_path,
+            output=vector_path
+        )
+        
+        if ret != 0 or not os.path.exists(vector_path):
+            raise RuntimeError(f"Raster to vector lines failed: WhiteboxTools returned {ret}, output not found at {vector_path}")
 
         gdf = gpd.read_file(vector_path)
         if gdf.empty:
@@ -958,7 +978,7 @@ class TopoDrainCore:
         # 1) Invert the DTM
         print("[ExtractRidges] Inverting DTM…")
         inverted_dtm = os.path.join(self.temp_directory, f"inverted_dtm_{postfix}.tif")
-        inverted_dtm = self._invert_dtm(dtm_path, inverted_dtm)
+        inverted_dtm = self._invert_dtm(dtm_path, inverted_dtm, feedback=feedback)
         print(f"[ExtractRidges] Inversion complete: {inverted_dtm}")
 
         # 2) Compute defaults for the four inverted outputs
@@ -1734,7 +1754,8 @@ class TopoDrainCore:
         start_point: Point,
         destination_raster_path: str,
         slope: float = 0.01,
-        barrier_raster_path: str = None
+        barrier_raster_path: str = None,
+        feedback=None
     ) -> LineString:
         """
         Trace lines with constant slope starting from a given point using a cost-distance approach based on slope deviation.
@@ -1748,6 +1769,7 @@ class TopoDrainCore:
             destination_raster_path (str): Path to the binary raster indicating destination cells (1 = destination).
             slope (float): Desired slope for the line (e.g., 0.01 for 1% downhill or -0.01 for uphill).
             barrier_raster_path (str): Optional path to a binary raster of cells that should not be crossed (1 = barrier).
+            feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting.
 
         Returns:
             LineString: Least-cost slope path as a Shapely LineString, or None if no path found.
@@ -1763,6 +1785,7 @@ class TopoDrainCore:
         best_destination_raster_path = os.path.join(self.temp_directory, "destination_best.tif")
         pathway_raster_path = os.path.join(self.temp_directory, "pathway.tif")
 
+        print(f"[TopoDrainCore] Create cost slope raster for start point {start_point} with slope {slope}")
         # --- Create cost raster ---
         cost_raster_path = TopoDrainCore._create_slope_cost_raster(
             dtm_path=dtm_path,
@@ -1772,6 +1795,7 @@ class TopoDrainCore:
             barrier_raster_path=barrier_raster_path
         )
 
+        print("[TopoDrainCore] Create source raster")
         # --- Create source raster ---
         source_raster_path = TopoDrainCore._create_source_raster(
             reference_raster_path=dtm_path,
@@ -1779,14 +1803,21 @@ class TopoDrainCore:
             output_source_raster_path=source_raster_path
         )
 
+        print("[TopoDrainCore] Starting cost-distance analysis")
         # --- Run cost-distance analysis ---
-        self.wbt.cost_distance(
+        ret = self._execute_wbt(
+            'cost_distance',
+            feedback=feedback,
             source=source_raster_path,
             cost=cost_raster_path,
             out_accum=accum_raster_path,
             out_backlink=backlink_raster_path
         )
+        
+        if ret != 0 or not os.path.exists(accum_raster_path) or not os.path.exists(backlink_raster_path):
+            raise RuntimeError(f"Cost distance analysis failed: WhiteboxTools returned {ret}, outputs not found")
 
+        print("[TopoDrainCore] Selecting best destination cell")
         # --- Select best destination cell ---
         best_destination_raster_path, best_destination_point = TopoDrainCore._select_best_destination_cell(
             accum_raster_path=accum_raster_path,
@@ -1794,12 +1825,22 @@ class TopoDrainCore:
             best_destination_raster_path=best_destination_raster_path # output path
         )
 
+        print(f"[TopoDrainCore] Tracing least-cost pathway to best destination {best_destination_point}")
         # --- Trace least-cost pathway ---
-        self.wbt.cost_pathway(
+        ret = self._execute_wbt(
+            'cost_pathway',
+            feedback=feedback,
             destination=best_destination_raster_path,
             backlink=backlink_raster_path,
             output=pathway_raster_path
         )
+        
+        if ret != 0 or not os.path.exists(pathway_raster_path):
+            if feedback:
+                feedback.pushError(f"[TopoDrainCore] Cost pathway analysis failed: WhiteboxTools returned {ret}, output not found at {pathway_raster_path}")
+            else:
+                print(f"[TopoDrainCore] Cost pathway analysis failed: WhiteboxTools returned {ret}, output not found at {pathway_raster_path}")
+            raise RuntimeError(f"Cost pathway analysis failed: WhiteboxTools returned {ret}, output not found at {pathway_raster_path}")
 
         # --- Set correct NoData value for pathway raster ---
         with rasterio.open(backlink_raster_path) as src:
@@ -1807,12 +1848,20 @@ class TopoDrainCore:
         with rasterio.open(pathway_raster_path, 'r+') as dst:
             dst.nodata = nodata_value
 
+        print("[TopoDrainCore] Converting pathway raster to LineString")
         # --- Convert to LineString ---
-        line = self._raster_to_linestring_wbt(pathway_raster_path, snap_to_start_point=start_point, snap_to_endpoint=best_destination_point)
+        line = self._raster_to_linestring_wbt(pathway_raster_path, snap_to_start_point=start_point, snap_to_endpoint=best_destination_point, feedback=feedback)
+
         if line is None:
             warnings.warn("[SlopeLine] No valid line could be extracted from pathway raster.")
             return None
 
+        # --- Ensure single LineString ---
+        if isinstance(line, MultiLineString):
+            print("[TopoDrainCore] Stitching MultiLineString")
+            line = self._stitch_multilinestring(line)
+
+        print("[TopoDrainCore] Smoothing the resulting line")
         # --- Optional smoothing ---
         line = self._smooth_linestring(line, sigma=2.0)
 
@@ -1899,11 +1948,51 @@ class TopoDrainCore:
                 print("[ConstantSlopeLines] Preparing mask layers...")
 
             if feedback:
+                feedback.pushInfo("[ConstantSlopeLines] Processing barrier features (converting polygon barriers to boundaries)...")
+            else:
+                print("[ConstantSlopeLines] Processing barrier features (converting polygon barriers to boundaries)...")
+            
+            # Process barrier features - convert polygons to boundaries like destinations
+            barrier_processed = []
+            for gdf in barrier_features:
+                if gdf.geom_type.isin(["Polygon", "MultiPolygon"]).any():
+                    g = gdf.copy()
+                    g["geometry"] = g.boundary  # Take boundary for polygon features as barrier
+                    barrier_processed.append(g)
+                else:
+                    barrier_processed.append(gdf)
+
+            if feedback:
                 feedback.pushInfo("[ConstantSlopeLines] Rasterizing all barrier features into mask")
             else:
                 print("[ConstantSlopeLines] Rasterizing all barrier features into mask")
-            barrier_mask = self._vector_to_mask(barrier_features, dtm_path)
-            # save barrier mask as raste
+            barrier_mask = self._vector_to_mask(barrier_processed, dtm_path)
+            
+            # Handle overlapping barrier and destination cells
+            # If barrier_mask and destination_mask have 1 in same cell, set destination cell to 0
+            overlap_cells = (barrier_mask == 1) & (destination_mask == 1)
+            if np.any(overlap_cells):
+                num_overlaps = np.sum(overlap_cells)
+                if feedback:
+                    feedback.pushInfo(f"[ConstantSlopeLines] Found {num_overlaps} overlapping barrier/destination cells, setting destination cells to 0")
+                else:
+                    print(f"[ConstantSlopeLines] Found {num_overlaps} overlapping barrier/destination cells, setting destination cells to 0")
+                destination_mask[overlap_cells] = 0
+                
+                # Re-save the updated destination raster
+                with rasterio.open(destination_raster_path, "w", **dest_profile) as dst:
+                    dst.write(destination_mask.astype("uint8"), 1)
+                if feedback:
+                    feedback.pushInfo(f"[ConstantSlopeLines] Updated destination raster saved to {destination_raster_path}")
+                else:
+                    print(f"[ConstantSlopeLines] Updated destination raster saved to {destination_raster_path}")
+            else:
+                if feedback:
+                    feedback.pushInfo("[ConstantSlopeLines] No overlapping barrier/destination cells found")
+                else:
+                    print("[ConstantSlopeLines] No overlapping barrier/destination cells found")
+            
+            # save barrier mask as raster
             barrier_raster_path = os.path.join(self.temp_directory, "barrier_mask.tif")
             barrier_profile = profile.copy()
             barrier_profile.update(dtype=rasterio.uint8, nodata=0)
@@ -1920,11 +2009,11 @@ class TopoDrainCore:
             else:
                 print("[ConstantSlopeLines] Separating line vs non-line barriers")
             barrier_line_geoms = []
-            for gdf in barrier_features:
+            for gdf in barrier_processed:  # Use processed barriers instead of original
                 # collect only the geometries themselves
                 lines = [geom for geom in gdf.geometry if geom.geom_type in ("LineString", "MultiLineString")]
-            if lines:
-                barrier_line_geoms.extend(lines)
+                if lines:
+                    barrier_line_geoms.extend(lines)
             if feedback:
                 feedback.pushInfo(f"[ConstantSlopeLines]  → {len(barrier_line_geoms)} total barrier line geometries")
             else:
@@ -2059,7 +2148,8 @@ class TopoDrainCore:
                     start_point=pt,
                     destination_raster_path=destination_raster_path,
                     slope=slope,
-                    barrier_raster_path=barrier_raster_path
+                    barrier_raster_path=barrier_raster_path,
+                    feedback=feedback  # Suppress detailed feedback for individual calls
                 )
                 if not raw_line:
                     if feedback:
@@ -2068,9 +2158,6 @@ class TopoDrainCore:
                         print(f"[ConstantSlopeLines]   → No line for adjusted point {adj_idx}")
                     continue
 
-                # if we got a MultiLineString, stitch it into one LineString
-                if isinstance(raw_line, MultiLineString):
-                    raw_line = self._stitch_multilinestring(raw_line)
                 # snap with original start point
                 coords = list(raw_line.coords)
                 s_pt, e_pt = Point(coords[0]), Point(coords[-1])
@@ -2121,43 +2208,46 @@ class TopoDrainCore:
                     start_point=orig_pt,
                     destination_raster_path=destination_raster_path,
                     slope=slope,
-                    barrier_raster_path=barrier_raster_path
+                    barrier_raster_path=barrier_raster_path,
+                    feedback=feedback  # Suppress detailed feedback for individual calls
                 )
 
-                if raw_line:
-                    # if we got a MultiLineString, stitch it into one LineString
-                    if isinstance(raw_line, MultiLineString):
-                        raw_line = self._stitch_multilinestring(raw_line)
-
-                    coords = list(raw_line.coords)
-                    s_pt, e_pt = Point(coords[0]), Point(coords[-1])
-                    if orig_pt.distance(s_pt) <= orig_pt.distance(e_pt):
-                        if orig_pt != s_pt:
-                            new_coords = [orig_pt.coords[0]] + coords
-                        else:
-                            new_coords = coords
-                    else:
-                        if orig_pt != e_pt:
-                            new_coords = coords + [orig_pt.coords[0]]
-                        else:
-                            new_coords = coords
-                        # reverse line direction because we want start point to end point
-                        new_coords.reverse()
-
-                    results.append({
-                        "geometry": LineString(new_coords),
-                        "orig_index": orig_idx,
-                        **orig_attrs
-                    })
+                if not raw_line:
                     if feedback:
-                        feedback.pushInfo(f"[ConstantSlopeLines]   → Line created for orig {orig_idx} (snapped)")
+                        feedback.pushInfo(f"[ConstantSlopeLines]   → No line for point {orig_idx}")
                     else:
-                        print(f"[ConstantSlopeLines]   → Line created for orig {orig_idx} (snapped)")
+                        print(f"[ConstantSlopeLines]   → No line for point {orig_idx}")
+                    continue
+
+                coords = list(raw_line.coords)
+                s_pt, e_pt = Point(coords[0]), Point(coords[-1])
+                if orig_pt.distance(s_pt) <= orig_pt.distance(e_pt):
+                    if orig_pt != s_pt:
+                        new_coords = [orig_pt.coords[0]] + coords
+                    else:
+                        new_coords = coords
                 else:
-                    if feedback:
-                        feedback.pushInfo(f"[ConstantSlopeLines]   → No line for orig {orig_idx}")
+                    if orig_pt != e_pt:
+                        new_coords = coords + [orig_pt.coords[0]]
                     else:
-                        print(f"[ConstantSlopeLines]   → No line for orig {orig_idx}")
+                        new_coords = coords
+                    # reverse line direction because we want start point to end point
+                    new_coords.reverse()
+
+                results.append({
+                    "geometry": LineString(new_coords),
+                    "orig_index": orig_idx,
+                    **orig_attrs
+                })
+                if feedback:
+                    feedback.pushInfo(f"[ConstantSlopeLines]   → Line created for orig {orig_idx} (snapped)")
+                else:
+                    print(f"[ConstantSlopeLines]   → Line created for orig {orig_idx} (snapped)")
+            else:
+                if feedback:
+                    feedback.pushInfo(f"[ConstantSlopeLines]   → No line for orig {orig_idx}")
+                else:
+                    print(f"[ConstantSlopeLines]   → No line for orig {orig_idx}")
 
         if not results:
             if feedback:
@@ -2443,21 +2533,19 @@ class TopoDrainCore:
         if not (0.0 <= change_after <= 1.0):
             raise ValueError("change_after must be between 0.0 and 1.0")
         
-        adjusted_lines = []
-        total_lines = len(input_lines)
-        processed_lines = 0
+        # Phase 1: Process all lines to create first parts and collect start points for second parts
+        if feedback:
+            feedback.pushInfo(f"[AdjustConstantSlopeAfter] Phase 1: Processing {len(input_lines)} lines to create first parts...")
+            feedback.setProgress(10)
+        else:
+            print(f"[AdjustConstantSlopeAfter] Phase 1: Processing {len(input_lines)} lines to create first parts...")
+        
+        first_parts_data = []  # Store first part data with mapping info
+        all_start_points = []  # Collect all start points for second parts
+        line_mapping = {}      # Map start point index to original line index
         
         for idx, row in input_lines.iterrows():
-            processed_lines += 1
             line_geom = row.geometry
-            
-            # Progress reporting
-            if feedback:
-                progress = int((processed_lines / total_lines) * 100)
-                feedback.setProgress(progress)
-                feedback.pushInfo(f"[AdjustConstantSlopeAfter] Processing line {processed_lines}/{total_lines} ({progress}%)...")
-            else:
-                print(f"[AdjustConstantSlopeAfter] Processing line {processed_lines}/{total_lines}...")
             
             # Handle MultiLineString by stitching into a single LineString
             if isinstance(line_geom, MultiLineString):
@@ -2467,27 +2555,34 @@ class TopoDrainCore:
             elif not isinstance(line_geom, LineString):
                 if feedback:
                     feedback.pushInfo(f"[AdjustConstantSlopeAfter] Skipping unsupported geometry type: {type(line_geom)} at index {idx}")
+                # Keep original line for unsupported geometry types
+                first_parts_data.append({
+                    'original_row': row,
+                    'first_part_line': None,
+                    'needs_second_part': False,
+                    'start_point_index': None
+                })
                 continue
             
             # Calculate split point at specified fraction of line length
             line_length = line_geom.length
             split_distance = line_length * change_after
             
-            if feedback:
-                feedback.pushInfo(f"[AdjustConstantSlopeAfter] Line length: {line_length:.2f}, split at: {split_distance:.2f}")
-            
             # Check if split distance is valid
             if split_distance <= 0 or split_distance >= line_length:
                 if feedback:
-                    feedback.pushInfo(f"[AdjustConstantSlopeAfter] Invalid split distance, keeping original line")
+                    feedback.pushInfo(f"[AdjustConstantSlopeAfter] Invalid split distance for line {idx}, keeping original line")
                 # Keep original line if split point is invalid
-                adjusted_lines.append(row)
+                first_parts_data.append({
+                    'original_row': row,
+                    'first_part_line': None,
+                    'needs_second_part': False,
+                    'start_point_index': None
+                })
                 continue
             
             # Create first part of line (from start to split point)
             try:
-                split_point_geom = line_geom.interpolate(split_distance)
-                
                 # Get coordinates up to split point
                 coords = list(line_geom.coords)
                 first_part_coords = []
@@ -2514,36 +2609,106 @@ class TopoDrainCore:
                 # Create first part of the line
                 if len(first_part_coords) >= 2:
                     first_part_line = LineString(first_part_coords)
+                    
+                    # Create start point for second part (the split point)
+                    start_point_second = Point(first_part_coords[-1])
+                    start_point_index = len(all_start_points)
+                    all_start_points.append(start_point_second)
+                    line_mapping[start_point_index] = len(first_parts_data)
+                    
+                    first_parts_data.append({
+                        'original_row': row,
+                        'first_part_line': first_part_line,
+                        'needs_second_part': True,
+                        'start_point_index': start_point_index
+                    })
                 else:
                     # Fallback: use original line if we can't create valid first part
                     if feedback:
-                        feedback.pushInfo(f"[AdjustConstantSlopeAfter] Could not create valid first part, keeping original line")
-                    adjusted_lines.append(row)
-                    continue
-                
-                # Create start point for second part (the split point)
-                start_point_second = Point(first_part_coords[-1])
-                start_points_gdf = gpd.GeoDataFrame(
-                    geometry=[start_point_second],
-                    crs=input_lines.crs
-                )
-                
+                        feedback.pushInfo(f"[AdjustConstantSlopeAfter] Could not create valid first part for line {idx}, keeping original line")
+                    first_parts_data.append({
+                        'original_row': row,
+                        'first_part_line': None,
+                        'needs_second_part': False,
+                        'start_point_index': None
+                    })
+                    
+            except Exception as e:
                 if feedback:
-                    feedback.pushInfo(f"[AdjustConstantSlopeAfter] Tracing second part from {start_point_second.wkt}")
-                
-                # Trace second part with new slope
+                    feedback.pushInfo(f"[AdjustConstantSlopeAfter] Error processing line {idx}: {str(e)}, keeping original")
+                else:
+                    print(f"[AdjustConstantSlopeAfter] Error processing line {idx}: {str(e)}, keeping original")
+                first_parts_data.append({
+                    'original_row': row,
+                    'first_part_line': None,
+                    'needs_second_part': False,
+                    'start_point_index': None
+                })
+        
+        # Phase 2: Trace all second parts in a single call if we have start points
+        second_part_lines = gpd.GeoDataFrame(crs=input_lines.crs)
+        if all_start_points:
+            if feedback:
+                feedback.pushInfo(f"[AdjustConstantSlopeAfter] Phase 2: Tracing {len(all_start_points)} second parts in parallel...")
+                feedback.setProgress(50)
+            else:
+                print(f"[AdjustConstantSlopeAfter] Phase 2: Tracing {len(all_start_points)} second parts in parallel...")
+            
+            # Create GeoDataFrame with all start points and add mapping information
+            start_points_gdf = gpd.GeoDataFrame(geometry=all_start_points, crs=input_lines.crs)
+            start_points_gdf['original_line_idx'] = [line_mapping[i] for i in range(len(all_start_points))]
+            
+            try:
+                # Trace all second parts with new slope in a single call
                 second_part_lines = self.get_constant_slope_lines(
                     dtm_path=dtm_path,
                     start_points=start_points_gdf,
                     destination_features=destination_features,
                     slope=slope_after,
                     barrier_features=barrier_features,
-                    feedback=None  # Suppress detailed feedback for individual calls
+                    feedback=feedback  # Pass feedback to the main tracing call
                 )
                 
-                if not second_part_lines.empty:
-                    # Get the first (and should be only) line from the result
-                    second_part_line = second_part_lines.iloc[0].geometry
+                if feedback:
+                    feedback.pushInfo(f"[AdjustConstantSlopeAfter] Successfully traced {len(second_part_lines)} second parts")
+            except Exception as e:
+                if feedback:
+                    feedback.pushInfo(f"[AdjustConstantSlopeAfter] Error tracing second parts: {str(e)}")
+                else:
+                    print(f"[AdjustConstantSlopeAfter] Error tracing second parts: {str(e)}")
+                # Continue with empty second_part_lines
+        else:
+            if feedback:
+                feedback.pushInfo(f"[AdjustConstantSlopeAfter] No second parts to trace")
+        
+        # Phase 3: Combine first and second parts
+        if feedback:
+            feedback.pushInfo(f"[AdjustConstantSlopeAfter] Phase 3: Combining first and second parts...")
+            feedback.setProgress(80)
+        else:
+            print(f"[AdjustConstantSlopeAfter] Phase 3: Combining first and second parts...")
+        
+        adjusted_lines = []
+        
+        for data_idx, part_data in enumerate(first_parts_data):
+            original_row = part_data['original_row']
+            first_part_line = part_data['first_part_line']
+            needs_second_part = part_data['needs_second_part']
+            start_point_index = part_data['start_point_index']
+            
+            if not needs_second_part or first_part_line is None:
+                # Keep original line
+                adjusted_lines.append(original_row)
+                continue
+            
+            # Find corresponding second part line(s)
+            if not second_part_lines.empty and 'orig_index' in second_part_lines.columns:
+                # Filter second parts that belong to this original line
+                matching_second_parts = second_part_lines[second_part_lines['orig_index'] == start_point_index]
+                
+                if not matching_second_parts.empty:
+                    # Get the first (and should be only) matching second part
+                    second_part_line = matching_second_parts.iloc[0].geometry
                     
                     # Combine first and second parts
                     if isinstance(second_part_line, LineString):
@@ -2560,31 +2725,30 @@ class TopoDrainCore:
                         combined_line = LineString(combined_coords)
                         
                         # Create new row with combined geometry and original attributes
-                        new_row = row.copy()
+                        new_row = original_row.copy()
                         new_row['geometry'] = combined_line
                         adjusted_lines.append(new_row)
                         
                         if feedback:
-                            feedback.pushInfo(f"[AdjustConstantSlopeAfter] Successfully combined line parts")
+                            feedback.pushInfo(f"[AdjustConstantSlopeAfter] Successfully combined line parts for line {data_idx}")
                     else:
                         if feedback:
-                            feedback.pushInfo(f"[AdjustConstantSlopeAfter] Second part is not LineString, keeping first part only")
-                        new_row = row.copy()
+                            feedback.pushInfo(f"[AdjustConstantSlopeAfter] Second part is not LineString for line {data_idx}, keeping first part only")
+                        new_row = original_row.copy()
                         new_row['geometry'] = first_part_line
                         adjusted_lines.append(new_row)
                 else:
                     if feedback:
-                        feedback.pushInfo(f"[AdjustConstantSlopeAfter] No second part generated, keeping first part only")
-                    new_row = row.copy()
+                        feedback.pushInfo(f"[AdjustConstantSlopeAfter] No matching second part found for line {data_idx}, keeping first part only")
+                    new_row = original_row.copy()
                     new_row['geometry'] = first_part_line
                     adjusted_lines.append(new_row)
-                    
-            except Exception as e:
+            else:
                 if feedback:
-                    feedback.pushInfo(f"[AdjustConstantSlopeAfter] Error processing line {idx}: {str(e)}, keeping original")
-                else:
-                    print(f"[AdjustConstantSlopeAfter] Error processing line {idx}: {str(e)}, keeping original")
-                adjusted_lines.append(row)
+                    feedback.pushInfo(f"[AdjustConstantSlopeAfter] No second parts available for line {data_idx}, keeping first part only")
+                new_row = original_row.copy()
+                new_row['geometry'] = first_part_line
+                adjusted_lines.append(new_row)
         
         # Create result GeoDataFrame
         if adjusted_lines:

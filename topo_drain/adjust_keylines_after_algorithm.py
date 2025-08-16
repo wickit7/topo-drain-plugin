@@ -70,10 +70,10 @@ class AdjustKeylinesAfterAlgorithm(QgsProcessingAlgorithm):
         return self.tr('Adjust Keylines After Distance')
 
     def group(self):
-        return self.tr('Keyline Design')
+        return self.tr('Slope Analysis')
 
     def groupId(self):
-        return 'keyline_design'
+        return 'slope_analysis'
 
     def shortHelpString(self):
         return self.tr(
