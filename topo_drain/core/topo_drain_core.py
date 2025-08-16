@@ -142,6 +142,7 @@ class TopoDrainCore:
             # Fallback to subprocess
             return self._execute_with_subprocess(arguments, feedback)
 
+    ########## Maybe later show whitebox output only in python console (print statements)
     def _execute_with_qgis_process(self, arguments, feedback):
         """Execute using QGIS QgsBlockingProcess with progress monitoring."""
         
@@ -198,6 +199,7 @@ class TopoDrainCore:
 
         return res
 
+    ############ Here better print than feedback!!!!
     def _execute_with_subprocess(self, arguments, feedback):
         """Fallback execution using subprocess."""
         try:
@@ -558,15 +560,15 @@ class TopoDrainCore:
 
         return output_path
 
-    def _raster_to_linestring_wbt(self, raster_path: str, snap_endpoint_to_raster: str = None) -> LineString:
+    def _raster_to_linestring_wbt(self, raster_path: str, snap_to_start_point: Point = None, snap_to_endpoint: Point = None) -> LineString:
         """
         Uses WhiteboxTools to vectorize a raster and return a merged LineString or MultiLineString.
         Optionally snaps the endpoint to the center of a destination cell.
 
         Args:
             raster_path (str): Path to a raster where 1-valued pixels form your keyline.
-            snap_endpoint_to_raster (str, optional): Path to a raster where the endpoint should be snapped 
-                                                   to the center of cells with value 1 (e.g., best destination raster).
+            snap_to_start_point (Point, optional): Point to snap the start of the line to.
+            snap_to_endpoint (Point, optional): Point to snap the endpoint of the line to.
 
         Returns:
             LineString or MultiLineString, or None if empty.
@@ -602,83 +604,51 @@ class TopoDrainCore:
                 f"Raster vectorized to {len(merged.geoms)} disjoint parts; returning a MultiLineString."
             )
         
-        # 5) Snap endpoint to destination cell center if requested
-        if snap_endpoint_to_raster and os.path.exists(snap_endpoint_to_raster):
-            merged = self._snap_line_endpoint_to_destination_cell(merged, snap_endpoint_to_raster)
-            
+        # 5) Snap start to destination cell center if requested
+        if snap_to_start_point:
+            merged = self._snap_line_to_point(merged, snap_to_start_point)
+
+        # 6) Snap endpoint to destination cell center if requested
+        if snap_to_endpoint:
+            merged = self._snap_line_to_point(merged, snap_to_endpoint)
         return merged
 
-    def _snap_line_endpoint_to_destination_cell(self, line: LineString, destination_raster_path: str) -> LineString:
+    def _snap_line_to_point(self, line: LineString, snap_point: Point, position: str = None) -> LineString:
         """
-        Snap the endpoint of a line to the center of the destination cell (value = 1).
-        
+        Snap the closest endpoint of a line to a given Point, or to 'start'/'end' if specified.
+
         Args:
             line (LineString): Input line geometry.
-            destination_raster_path (str): Path to binary destination raster (1 = destination cell).
-            
+            snap_point (Point): Point to snap to.
+            position (str, optional): "start", "end", or None. If None, snaps the closer endpoint.
+
         Returns:
-            LineString: Line with endpoint snapped to destination cell center.
+            LineString: Line with endpoint snapped to the given point.
         """
         if not isinstance(line, LineString):
-            # For MultiLineString, just return as-is for now
             warnings.warn("Cannot snap endpoint for MultiLineString geometry")
             return line
-            
-        with rasterio.open(destination_raster_path) as src:
-            destination_data = src.read(1)
-            transform = src.transform
-            
-            # Find destination cell(s) with value 1
-            dest_rows, dest_cols = np.where(destination_data == 1)
-            
-            if len(dest_rows) == 0:
-                warnings.warn("No destination cells found in raster")
-                return line
-                
-            # Get line coordinates
-            coords = list(line.coords)
-            if len(coords) < 2:
-                return line
-                
-            start_point = Point(coords[0])
-            end_point = Point(coords[-1])
-            
-            # Find the destination cell center closest to the current endpoint
-            min_distance = float('inf')
-            best_dest_center = None
-            
-            for row, col in zip(dest_rows, dest_cols):
-                # Get center coordinates of this destination cell
-                x, y = rasterio.transform.xy(transform, row, col)
-                dest_center = Point(x, y)
-                
-                # Check distance to current endpoint
-                distance = end_point.distance(dest_center)
-                if distance < min_distance:
-                    min_distance = distance
-                    best_dest_center = dest_center
-            
-            if best_dest_center is None:
-                return line
-                
-            # Check which end of the line is closer to the destination
-            start_dist = start_point.distance(best_dest_center)
-            end_dist = end_point.distance(best_dest_center)
-            
-            # Create new coordinates with snapped endpoint
-            new_coords = coords.copy()
-            
-            if end_dist <= start_dist:
-                # Snap the end point
-                new_coords[-1] = (best_dest_center.x, best_dest_center.y)
-                print(f"[_snap_line_endpoint] Snapped endpoint to destination cell center: {best_dest_center.x:.2f}, {best_dest_center.y:.2f} (distance: {end_dist:.2f})")
+
+        coords = list(line.coords)
+        if len(coords) < 2:
+            return line
+
+        # If position is not specified, snap the closer endpoint
+        if position is None:
+            dist_start = snap_point.distance(Point(coords[0]))
+            dist_end = snap_point.distance(Point(coords[-1]))
+            if dist_start <= dist_end:
+                coords[0] = (snap_point.x, snap_point.y)
             else:
-                # Snap the start point (reverse the line first)
-                new_coords[0] = (best_dest_center.x, best_dest_center.y)
-                print(f"[_snap_line_endpoint] Snapped startpoint to destination cell center: {best_dest_center.x:.2f}, {best_dest_center.y:.2f} (distance: {start_dist:.2f})")
-            
-            return LineString(new_coords)
-        
+                coords[-1] = (snap_point.x, snap_point.y)
+        elif position == "start":
+            coords[0] = (snap_point.x, snap_point.y)
+        elif position == "end":
+            coords[-1] = (snap_point.x, snap_point.y)
+        else:
+            raise ValueError("position must be 'start', 'end', or None")
+
+        return LineString(coords)
     def extract_valleys(
         self,
         dtm_path: str,
@@ -1298,7 +1268,7 @@ class TopoDrainCore:
         sorted_candidates = sorted(candidates, key=lambda x: x[1], reverse=True)
         return sorted_candidates
 
-
+    ###################### Maybe remove sampling_distance later?
     def get_keypoints(
         self,
         valley_lines: gpd.GeoDataFrame,
@@ -1382,10 +1352,10 @@ class TopoDrainCore:
                 elevations = [val[0] for val in sample_gen(src, coords)]
 
                 # Smooth elevation profile
-                elev_smooth = savgol_filter(elevations, smoothing_window, polyorder)
+                elev_smooth = savgol_filter(elevations, smoothing_window, polyorder) ###### Plot later
 
                 # Second derivative = curvature
-                curvature = savgol_filter(elevations, smoothing_window, polyorder, deriv=2)
+                curvature = savgol_filter(elevations, smoothing_window, polyorder, deriv=2) ###### or better derivative of elev_smooth?
 
                 # Find concave→convex transitions
                 find_window = max(3, int(round(find_window_distance / pixel_size)))  # mindestens 3 Zellen
@@ -1708,7 +1678,7 @@ class TopoDrainCore:
     def _select_best_destination_cell(
         accum_raster_path: str,
         destination_raster_path: str,
-        output_best_destination_raster_path: str
+        best_destination_raster_path: str
     ) -> str:
         """
         Select the best destination cell from a binary destination raster based on
@@ -1717,10 +1687,11 @@ class TopoDrainCore:
         Args:
             accum_raster_path (str): Path to the cost accumulation raster (GeoTIFF).
             destination_raster_path (str): Path to the binary destination raster (1 = destination, 0 = background).
-            output_best_destination_raster_path (str): Path to output raster with only the best cell marked (GeoTIFF).
+            best_destination_raster_path (str): Path to output raster with only the best cell marked (GeoTIFF).
 
         Returns:
             str: Path to the output best destination raster (GeoTIFF).
+            Point: The spatial coordinates of the best destination cell.
         """
         with rasterio.open(accum_raster_path) as acc_src, rasterio.open(destination_raster_path) as dest_src:
             acc_data = acc_src.read(1)
@@ -1741,8 +1712,8 @@ class TopoDrainCore:
             row, col = min_indices[0][0], min_indices[1][0]
 
             # If you want the spatial coordinates:
-            # x, y = acc_src.xy(row, col)
-            # You could then use dest_src.index(x, y) if needed
+            x, y = acc_src.xy(row, col)
+            best_destination_point = Point(x, y)
 
             # Create output raster marking only the best cell
             best_dest = np.zeros_like(dest_data, dtype=np.uint8)
@@ -1752,10 +1723,10 @@ class TopoDrainCore:
             profile.update(dtype=rasterio.uint8, nodata=0)
  
             # Write the best destination raster
-            with rasterio.open(output_best_destination_raster_path, "w", **profile) as dst:
+            with rasterio.open(best_destination_raster_path, "w", **profile) as dst:
                 dst.write(best_dest, 1)
 
-            return output_best_destination_raster_path
+            return best_destination_raster_path, best_destination_point
         
     def _get_constant_slope_line(
         self,
@@ -1817,10 +1788,10 @@ class TopoDrainCore:
         )
 
         # --- Select best destination cell ---
-        best_destination_raster_path = TopoDrainCore._select_best_destination_cell(
+        best_destination_raster_path, best_destination_point = TopoDrainCore._select_best_destination_cell(
             accum_raster_path=accum_raster_path,
             destination_raster_path=destination_raster_path,
-            output_best_destination_raster_path=best_destination_raster_path
+            best_destination_raster_path=best_destination_raster_path # output path
         )
 
         # --- Trace least-cost pathway ---
@@ -1837,7 +1808,7 @@ class TopoDrainCore:
             dst.nodata = nodata_value
 
         # --- Convert to LineString ---
-        line = self._raster_to_linestring_wbt(pathway_raster_path, snap_endpoint_to_raster=best_destination_raster_path)
+        line = self._raster_to_linestring_wbt(pathway_raster_path, snap_to_start_point=start_point, snap_to_endpoint=best_destination_point)
         if line is None:
             warnings.warn("[SlopeLine] No valid line could be extracted from pathway raster.")
             return None
@@ -2275,10 +2246,10 @@ class TopoDrainCore:
             # Progress: 5% at start, 95% spread over expected_stages
             progress = 5 + int((stage - 1) * (95 / expected_stages))
             if feedback:
-                feedback.pushInfo(f"**** Stage {stage}/~{max_iterations}: Processing {len(current_start_points)} start points...***")
+                feedback.pushInfo(f"**** Stage {stage}/~{expected_stages}: Processing {len(current_start_points)} start points...***")
                 feedback.setProgress(min(progress, 99))
             else:
-                print(f"**** Stage {stage}/~{max_iterations}: Processing {len(current_start_points)} start points...****")
+                print(f"**** Stage {stage}/~{expected_stages}: Processing {len(current_start_points)} start points...****")
                 print(f"Progress: {progress}%")
             
             # Determine destination and barrier features based on stage
