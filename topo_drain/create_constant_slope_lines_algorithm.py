@@ -11,7 +11,8 @@ from qgis.PyQt.QtGui import QIcon
 from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterRasterLayer,
                        QgsProcessingParameterVectorLayer, QgsProcessingParameterMultipleLayers,
                        QgsProcessingParameterVectorDestination, QgsProcessingParameterNumber,
-                       QgsProcessing, QgsProcessingException, QgsProcessingParameterFeatureSource)
+                       QgsProcessing, QgsProcessingException, QgsProcessingParameterFeatureSource,
+                       QgsProcessingParameterBoolean)
 import os
 import geopandas as gpd
 from .utils import get_crs_from_layer
@@ -43,6 +44,7 @@ class CreateConstantSlopeLinesAlgorithm(QgsProcessingAlgorithm):
     INPUT_BARRIER_FEATURES = 'INPUT_BARRIER_FEATURES'
     OUTPUT_SLOPE_LINES = 'OUTPUT_SLOPE_LINES'
     SLOPE = 'SLOPE'
+    ALLOW_BARRIERS_AS_TEMP_DESTINATION = 'ALLOW_BARRIERS_AS_TEMP_DESTINATION'
 
     def __init__(self, core=None):
         super().__init__()
@@ -144,6 +146,14 @@ Parameters:
             )
         )
         
+        self.addParameter(
+            QgsProcessingParameterBoolean(
+                self.ALLOW_BARRIERS_AS_TEMP_DESTINATION,
+                self.tr('Allow Barriers as Temporary Destination (enables iterative tracing)'),
+                defaultValue=False
+            )
+        )
+        
         # Output parameters
         slope_lines_param = QgsProcessingParameterVectorDestination(
             self.OUTPUT_SLOPE_LINES,
@@ -166,6 +176,7 @@ Parameters:
         
         slope_lines_output = self.parameterAsOutputLayer(parameters, self.OUTPUT_SLOPE_LINES, context)
         slope = self.parameterAsDouble(parameters, self.SLOPE, context)
+        allow_barriers_as_temp_destination = self.parameterAsBoolean(parameters, self.ALLOW_BARRIERS_AS_TEMP_DESTINATION, context)
 
         # Extract file paths
         slope_lines_path = slope_lines_output if isinstance(slope_lines_output, str) else slope_lines_output
@@ -229,6 +240,7 @@ Parameters:
             destination_features=destination_gdfs,
             slope=slope,
             barrier_features=barrier_gdfs if barrier_gdfs else None,
+            allow_barriers_as_temp_destination=allow_barriers_as_temp_destination,
             feedback=feedback
         )
 

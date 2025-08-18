@@ -146,7 +146,7 @@ class TopoDrainCore:
             return self._execute_with_subprocess(arguments)
 
     ########## Maybe later show whitebox output only in python console (print statements)
-    def _execute_with_qgis_process(self, arguments, feedback):
+    def _execute_with_qgis_process(self, arguments, feedback=None):
         """Execute using QGIS QgsBlockingProcess with progress monitoring."""
         
         def on_stdout(ba):
@@ -158,7 +158,10 @@ class TopoDrainCore:
                     progress_str = match.group(0).rstrip('%')
                     try:
                         progress = int(progress_str)
-                        feedback.setProgress(progress)
+                        if feedback:    
+                            feedback.setProgress(progress)
+                        else:
+                            print(f"[QWhiteboxTools] Progress: {progress}%")
                     except ValueError:
                         pass
                 else:
@@ -217,71 +220,137 @@ class TopoDrainCore:
             warnings.warn(f"Error executing WhiteboxTools: {e}")
             return 1
 
-    def _stitch_multilinestring(self, geom, preserve_original=False):
+    @staticmethod
+    def _merge_lines_by_distance(line_geometries):
         """
-        Turn a MultiLineString (or a multipart LineString) into a single LineString
-        by concatenating segments end-to-end at their nearest endpoints.
+        Merge multiple LineString geometries into a single LineString by
+        connecting them based on closest endpoint distances.
+        
+        Can handle:
+        - List of LineString/MultiLineString objects
+        - Single LineString 
+        - Single MultiLineString
 
         Args:
-            geom (LineString or MultiLineString):
-                If a simple LineString, it’s returned unchanged.
-                If a MultiLineString, its parts are stitched together.
-            preserve_original (bool):
-                If True, returns the original geom when it's already a LineString;
-                if False, always returns a new LineString.
+            line_geometries (list|LineString|MultiLineString): 
+                Input geometries to merge.
 
         Returns:
-            LineString:
-                One continuous LineString whose coordinate sequence visits every part
-                of the original geometry.  Segments are appended in order of minimal
-                jump distance between ends.  Gaps are not interpolated.
-
-        Raises:
-            TypeError: if `geom` is not LineString or MultiLineString.
+            LineString: Single merged LineString, or None if merging fails.
         """
-        # nothing to do for a single LineString (unless user explicitly wants a copy)
-        if isinstance(geom, LineString) and preserve_original:
-            return geom
-
-        # flatten a MultiLineString into a list of LineStrings
-        if isinstance(geom, MultiLineString):
-            parts = list(geom.geoms)
-        elif isinstance(geom, LineString):
-            return LineString(geom.coords)  # make a fresh copy
+        # Handle different input types
+        if isinstance(line_geometries, LineString):
+            print(f"[_merge_lines_by_distance] Input: Single LineString, returning as-is")
+            return line_geometries
+        elif isinstance(line_geometries, MultiLineString):
+            print(f"[_merge_lines_by_distance] Input: MultiLineString with {len(line_geometries.geoms)} parts")
+            line_list = list(line_geometries.geoms)
+        elif isinstance(line_geometries, list):
+            print(f"[_merge_lines_by_distance] Input: List with {len(line_geometries)} items")
+            # Flatten any MultiLineString objects in the list
+            line_list = []
+            for geom in line_geometries:
+                if isinstance(geom, LineString):
+                    line_list.append(geom)
+                elif isinstance(geom, MultiLineString):
+                    line_list.extend(list(geom.geoms))
+                else:
+                    warnings.warn(f"[_merge_lines_by_distance] Warning: Skipping unsupported geometry type: {type(geom)}")
         else:
-            raise TypeError("geom must be LineString or MultiLineString")
-
-        if not parts:
+            warnings.warn(f"[_merge_lines_by_distance] Error: Unsupported input type: {type(line_geometries)}")
             return None
 
-        # start with the longest segment
-        parts.sort(key=lambda seg: seg.length, reverse=True)
-        base_coords = list(parts.pop(0).coords)
+        print(f"[_merge_lines_by_distance] Starting with {len(line_list) if line_list else 0} lines")
+        
+        if not line_list:
+            print(f"[_merge_lines_by_distance] No lines provided, returning None")
+            return None
+        
+        if len(line_list) == 1:
+            print(f"[_merge_lines_by_distance] Single line, returning as-is")
+            return line_list[0]
+        
+        # Convert to list to avoid modifying original
+        remaining_lines = line_list.copy()
+        
+        # Start with the longest line as base
+        for idx, line in enumerate(remaining_lines):
+            print(f"[_merge_lines_by_distance] Line {idx}: length={line.length:.2f}, wkt={line.wkt}")
 
-        # greedily attach the next segment whose one endpoint is closest to our current end
-        while parts:
-            tail = Point(base_coords[-1])
-            best_idx, best_flip, best_dist = None, False, float("inf")
+        remaining_lines.sort(key=lambda line: line.length, reverse=True)
+        longest_line = remaining_lines.pop(0)
+        merged_coords = list(longest_line.coords)
+        print(f"[_merge_lines_by_distance] Starting with longest line ({longest_line.length:.2f} units, {len(merged_coords)} coords)")
+        iteration = 0
+        while remaining_lines:
+            iteration += 1
+            print(f"[_merge_lines_by_distance] Iteration {iteration}: {len(remaining_lines)} lines remaining")
+            
+            # Get endpoints of current merged line
+            start_point = Point(merged_coords[0])
+            end_point = Point(merged_coords[-1])
+            
+            best_line_idx = None
+            best_connection = None
+            best_distance = float('inf')
+            
+            # Find the closest connection among all remaining lines
+            for idx, line in enumerate(remaining_lines):
+                line_start = Point(line.coords[0])
+                line_end = Point(line.coords[-1])
+                
+                # Check all possible connections
+                connections = [
+                    ('start_to_start', start_point.distance(line_start), 'prepend_reversed'),
+                    ('start_to_end', start_point.distance(line_end), 'prepend_normal'),
+                    ('end_to_start', end_point.distance(line_start), 'append_normal'),
+                    ('end_to_end', end_point.distance(line_end), 'append_reversed')
+                ]
+                
+                for conn_type, distance, action in connections:
+                    if distance < best_distance:
+                        best_distance = distance
+                        best_line_idx = idx
+                        best_connection = action
+                        print(f"[_merge_lines_by_distance]   New best: line {idx}, {conn_type}, distance {distance:.3f}, action {action}")
+            
+            # Connect the best line
+            if best_line_idx is not None:
+                best_line = remaining_lines.pop(best_line_idx)
+                line_coords = list(best_line.coords)
+                coords_before = len(merged_coords)
+                
+                if best_connection == 'prepend_normal':
+                    # Add line to start of merged (line_end connects to merged_start)
+                    merged_coords = line_coords[:-1] + merged_coords
+                elif best_connection == 'prepend_reversed':
+                    # Add reversed line to start of merged (line_start connects to merged_start)
+                    line_coords.reverse()
+                    merged_coords = line_coords[:-1] + merged_coords
+                elif best_connection == 'append_normal':
+                    # Add line to end of merged (merged_end connects to line_start)
+                    merged_coords = merged_coords[:-1] + line_coords
+                elif best_connection == 'append_reversed':
+                    # Add reversed line to end of merged (merged_end connects to line_end)
+                    line_coords.reverse()
+                    merged_coords = merged_coords[:-1] + line_coords
+                
+                coords_after = len(merged_coords)
+                print(f"[_merge_lines_by_distance]   Connected line {best_line_idx} using {best_connection}, coords: {coords_before} -> {coords_after}")
+            else:
+                # No valid connection found, break
+                print(f"[_merge_lines_by_distance] No valid connection found, stopping with {len(remaining_lines)} lines unmerged")
+                break
+        
+        result = LineString(merged_coords)
+        print(f"[_merge_lines_by_distance] Result WKT: {result.wkt}")
+        
 
-            for i, seg in enumerate(parts):
-                s, e = Point(seg.coords[0]), Point(seg.coords[-1])
-                d_s, d_e = tail.distance(s), tail.distance(e)
-                if d_s < best_dist:
-                    best_dist, best_idx, best_flip = d_s, i, False
-                if d_e < best_dist:
-                    best_dist, best_idx, best_flip = d_e, i, True
+        print(f"[_merge_lines_by_distance] Final result: LineString with {len(merged_coords)} coordinates, length {result.length:.2f}")
+        return result
 
-            seg = parts.pop(best_idx)
-            seq = list(seg.coords)
-            if best_flip:
-                seq.reverse()
-
-            # append, skipping the duplicate connecting vertex
-            base_coords.extend(seq[1:])
-
-        return LineString(base_coords)
-
-    def _smooth_linestring(self, geom, sigma: float = 1.0):
+    @staticmethod
+    def _smooth_linestring(geom, sigma: float = 1.0):
         """
         Smooth a LineString or MultiLineString geometry using a Gaussian filter,
         preserving the first and last point of the original geometry.
@@ -295,7 +364,7 @@ class TopoDrainCore:
         """
         # Handle MultiLineString by smoothing each part
         if isinstance(geom, MultiLineString):
-            smoothed_parts = [self._smooth_linestring(part, sigma) for part in geom.geoms]
+            smoothed_parts = [TopoDrainCore._smooth_linestring(part, sigma) for part in geom.geoms]
             return MultiLineString(smoothed_parts)
 
         # Must be a LineString from here on
@@ -319,7 +388,8 @@ class TopoDrainCore:
         smoothed = LineString(np.column_stack([x_smooth, y_smooth]))
         return smoothed
 
-    def _mask_raster(self, raster_path: str, mask: gpd.GeoDataFrame, out_path: str) -> str:
+    @staticmethod
+    def _mask_raster(raster_path: str, mask: gpd.GeoDataFrame, out_path: str) -> str:
         """
         Mask (clip) a raster file using a polygon mask.
 
@@ -357,39 +427,68 @@ class TopoDrainCore:
         except Exception as e:
             raise RuntimeError(f"Unexpected error during raster masking: {e}")
 
-
+    @staticmethod
     def _vector_to_mask(
-        self,
         features: list[gpd.GeoDataFrame],
-        reference_raster_path: str
+        reference_raster_path: str,
+        unique_values: bool = False
     ) -> np.ndarray:
         """
-        Convert one or more GeoDataFrames to a binary raster mask (1 = feature, 0 = background).
+        Convert one or more GeoDataFrames to a binary raster mask (1 = feature, 0 = background)
+        or a multi-value mask with unique values for each geometry.
 
         Args:
             features (list[GeoDataFrame]): List of GeoDataFrames (polygon or line geometries).
             reference_raster_path (str): Path to a reference raster for shape and transform.
+            unique_values (bool): If True, assigns unique values (1, 2, 3, ...) to cells for each individual geometry.
+                                If False, all features get value 1 (default behavior).
 
         Returns:
-            np.ndarray: Binary mask with the same shape as the reference raster.
+            np.ndarray: Binary or multi-value mask with the same shape as the reference raster.
         """
         with rasterio.open(reference_raster_path) as src:
             out_shape = (src.height, src.width)
             transform = src.transform
             res = src.res[0]
 
-        all_shapes = []
-        for gdf in features:
-            if gdf.empty:
-                continue
-            # Slightly buffer line geometries to ensure rasterization covers their width
-            for geom in gdf.geometry:
+        if unique_values:
+            # First, collect all individual geometries and flatten MultiLineStrings
+            all_individual_geoms = []
+            for gdf in features:
+                if gdf.empty:
+                    continue
+                for geom in gdf.geometry:
+                    if geom.geom_type == "MultiLineString":
+                        # Split MultiLineString into individual LineStrings
+                        all_individual_geoms.extend(list(geom.geoms))
+                    else:
+                        all_individual_geoms.append(geom)
+            
+            # Assign unique values to each individual geometry
+            all_shapes = []
+            for i, geom in enumerate(all_individual_geoms):
+                mask_value = i + 1  # Start from 1
                 if geom.geom_type in ("LineString", "MultiLineString"):
                     # Buffer by a small distance (e.g., 1 pixel width)
                     buffered_geom = geom.buffer(res + 0.01) #### Maybe later without buffer, because all_toueched=True should handle it (but seems not to work as expected)
-                    all_shapes.append((buffered_geom, 1))
+                    all_shapes.append((buffered_geom, mask_value))
                 else:
-                    all_shapes.append((geom, 1))
+                    all_shapes.append((geom, mask_value))
+        else:
+            # Default behavior: all features get value 1
+            all_shapes = []
+            for gdf in features:
+                if gdf.empty:
+                    continue
+                
+                # Slightly buffer line geometries to ensure rasterization covers their width
+                for geom in gdf.geometry:
+                    if geom.geom_type in ("LineString", "MultiLineString"):
+                        # Buffer by a small distance (e.g., 1 pixel width)
+                        buffered_geom = geom.buffer(res + 0.01) #### Maybe later without buffer, because all_toueched=True should handle it (but seems not to work as expected)
+                        all_shapes.append((buffered_geom, 1))
+                    else:
+                        all_shapes.append((geom, 1))
 
         mask = rasterize(
             shapes=all_shapes,
@@ -401,6 +500,59 @@ class TopoDrainCore:
         )
 
         return mask
+
+    @staticmethod
+    def _vector_to_raster(
+        gdf: gpd.GeoDataFrame,
+        reference_raster: str,
+        value_field: str = None,
+        output_path: str = None
+    ) -> np.ndarray:
+        """
+        Rasterize geometries from a GeoDataFrame to match the resolution and extent of a reference raster.
+
+        Args:
+            gdf (GeoDataFrame): GeoDataFrame containing lines, polygons, or points.
+            reference_raster (str): Path to a GeoTIFF file used as spatial reference (resolution, shape, transform).
+            value_field (str, optional): Column name to use for raster values. If None or invalid, all values are set to 1.
+            output_path (str, optional): If provided, saves the raster to this path as a GeoTIFF.
+
+        Returns:
+            np.ndarray: Rasterized array (int32).
+        """
+        with rasterio.open(reference_raster) as src:
+            out_shape = (src.height, src.width)
+            transform = src.transform
+            ref_crs = src.crs
+
+        if value_field and value_field in gdf.columns:
+            shapes = [(geom, val) for geom, val in zip(gdf.geometry, gdf[value_field])]
+        else:
+            shapes = [(geom, 1) for geom in gdf.geometry]
+
+        raster = rasterize(
+            shapes,
+            out_shape=out_shape,
+            transform=transform,
+            fill=0,
+            dtype='int32',
+            all_touched=True
+        )
+
+        if output_path:
+            with rasterio.open(
+                output_path, 'w',
+                driver='GTiff',
+                height=out_shape[0],
+                width=out_shape[1],
+                count=1,
+                dtype='int32',
+                crs=ref_crs,
+                transform=transform
+            ) as dst:
+                dst.write(raster, 1)
+
+        return raster
 
     def _invert_dtm(self, dtm_path: str, output_path: str, feedback=None) -> str:
         """
@@ -430,60 +582,8 @@ class TopoDrainCore:
 
         return output_path
 
-    def _line_to_raster(
-        self,
-        gdf: gpd.GeoDataFrame,
-        reference_raster: str,
-        value_field: str = None,
-        output_path: str = None
-    ) -> np.ndarray:
-        """
-        Rasterize geometries from a GeoDataFrame to match the resolution and extent of a reference raster.
-
-        Args:
-            gdf (GeoDataFrame): GeoDataFrame containing lines, polygons, or points.
-            reference_raster (str): Path to a GeoTIFF file used as spatial reference (resolution, shape, transform).
-            value_field (str, optional): Column name to use for raster values. If None or invalid, all values are set to 1.
-            output_path (str, optional): If provided, saves the raster to this path as a GeoTIFF.
-
-        Returns:
-            np.ndarray: Rasterized array (int32).
-        """
-        with rasterio.open(reference_raster) as src:
-            out_shape = (src.height, src.width)
-            transform = src.transform
-
-        if value_field and value_field in gdf.columns:
-            shapes = [(geom, val) for geom, val in zip(gdf.geometry, gdf[value_field])]
-        else:
-            shapes = [(geom, 1) for geom in gdf.geometry]
-
-        raster = rasterize(
-            shapes,
-            out_shape=out_shape,
-            transform=transform,
-            fill=0,
-            dtype='int32',
-            all_touched=True
-        )
-
-        if output_path:
-            with rasterio.open(
-                output_path, 'w',
-                driver='GTiff',
-                height=out_shape[0],
-                width=out_shape[1],
-                count=1,
-                dtype='int32',
-                crs=self.crs,
-                transform=transform
-            ) as dst:
-                dst.write(raster, 1)
-
-        return raster
-
+    @staticmethod
     def _log_raster(
-        self,
         input_raster: str,
         output_path: str,
         overwrite: bool = True,
@@ -537,9 +637,8 @@ class TopoDrainCore:
 
         return output_path
 
-
+    @staticmethod
     def _modify_dtm_with_mask(
-        self,
         dtm_path: str,
         mask: np.ndarray,
         elevation_add: float,
@@ -571,6 +670,48 @@ class TopoDrainCore:
 
         return output_path
 
+    @staticmethod
+    def _snap_line_to_point(line: LineString, snap_point: Point, position: str = None) -> LineString:
+        """
+        Snap the closest endpoint of a line to a given Point.
+
+        Args:
+            line (LineString): Input line geometry.
+            snap_point (Point): Point to snap to.
+            position (str, optional): "start", "end", or None. 
+                - "start" snaps the start of the line to the point, if endpoint is closer reverse line direction first.
+                - "end" snaps the end of the line to the point, if startpoint is closer reverse line direction first.
+                - None snaps the closer endpoint to the point.
+
+        Returns:
+            LineString: Line with endpoint snapped to the given point.
+        """
+        if not isinstance(line, LineString):
+            warnings.warn("Cannot snap endpoint for MultiLineString geometry")
+            return line
+
+        coords = list(line.coords)
+        if len(coords) < 2:
+            return line
+
+        dist_start = snap_point.distance(Point(coords[0]))
+        dist_end = snap_point.distance(Point(coords[-1]))
+
+        # Always snap to the closest endpoint
+        if dist_start <= dist_end:
+            coords[0] = (snap_point.x, snap_point.y)
+            if position == "end":
+                # Reverse line direction if snapping to end
+                coords.reverse()
+        else:
+            coords[-1] = (snap_point.x, snap_point.y)
+            if position == "start":
+                # Reverse line direction if snapping to start
+                coords.reverse()
+
+        return LineString(coords)
+    
+
     def _raster_to_linestring_wbt(self, raster_path: str, snap_to_start_point: Point = None, snap_to_endpoint: Point = None, feedback=None) -> LineString:
         """
         Uses WhiteboxTools to vectorize a raster and return a merged LineString or MultiLineString.
@@ -600,75 +741,101 @@ class TopoDrainCore:
             raise RuntimeError(f"Raster to vector lines failed: WhiteboxTools returned {ret}, output not found at {vector_path}")
 
         gdf = gpd.read_file(vector_path)
+        
         if gdf.empty:
             warnings.warn(f"No vector features found in {vector_path}.")
             return None
 
-        # 1) union all pieces
-        all_union = unary_union(list(gdf.geometry))
+        all_geometries = list(gdf.geometry) 
+        # First linemerge on all geometries
+        merged_geom = linemerge(all_geometries)
 
-        # 2) if that's already a single LineString, return it
-        if isinstance(all_union, LineString):
-            merged = all_union
+        # Extract line geometries and filter valid ones
+        line_geometries = []
+        if isinstance(merged_geom, LineString):
+            line_geometries.append(merged_geom)
+        elif isinstance(merged_geom, MultiLineString):
+            line_geometries.extend(list(merged_geom.geoms))
         else:
-            # 3) if it's a MultiLineString (or GeometryCollection), merge touching parts
-            try:
-                merged = linemerge(all_union)
-            except ValueError:
-                # fallback: try merging the raw list of geometries
-                merged = linemerge(list(gdf.geometry))
-
-        # 4) warn if still multipart
-        if isinstance(merged, MultiLineString):
-            warnings.warn(
-                f"Raster vectorized to {len(merged.geoms)} disjoint parts; returning a MultiLineString."
-            )
+            # Fallback: process individual geometries if linemerge didn't work
+            for geom in gdf.geometry:
+                if isinstance(geom, LineString):
+                    line_geometries.append(geom)
+                elif isinstance(geom, MultiLineString):
+                    # Add individual parts of MultiLineString
+                    line_geometries.extend(list(geom.geoms))
         
-        # 5) Snap start to destination cell center if requested
+        if not line_geometries:
+            warnings.warn("No valid LineString geometries found after vectorization.")
+            return None
+        
+        # Merge to one single LineString
+        if len(line_geometries) == 1:
+            # If only one line, no need to merge
+            single_part_line = line_geometries[0]
+        else:
+            # Merge lines using distance-based approach
+            single_part_line = TopoDrainCore._merge_lines_by_distance(line_geometries)
+            
+        # If single_part_line is empty, return None
+        if not single_part_line:
+            warnings.warn("No valid line segments found after vectorization.")
+            return None
+        
+        # 5) Snap start to destination cell center if requested, and ensure correct line direction
         if snap_to_start_point:
-            merged = self._snap_line_to_point(merged, snap_to_start_point)
+            single_part_line = TopoDrainCore._snap_line_to_point(single_part_line, snap_to_start_point, "start")
 
         # 6) Snap endpoint to destination cell center if requested
         if snap_to_endpoint:
-            merged = self._snap_line_to_point(merged, snap_to_endpoint)
-        return merged
+            single_part_line = TopoDrainCore._snap_line_to_point(single_part_line, snap_to_endpoint, "end")
 
-    def _snap_line_to_point(self, line: LineString, snap_point: Point, position: str = None) -> LineString:
+        print(f"[TopoDrainCore] _raster_to_linestring_wbt: Returning line WKT: {single_part_line.wkt}")
+        
+        return single_part_line
+
+    
+    @staticmethod
+    def _find_inflection_candidates(curvature: np.ndarray, window: int) -> list:
         """
-        Snap the closest endpoint of a line to a given Point, or to 'start'/'end' if specified.
+        Detect inflection points where the curvature changes from concave to convex,
+        using a moving average window. If none found, return point of strongest convexity.
 
         Args:
-            line (LineString): Input line geometry.
-            snap_point (Point): Point to snap to.
-            position (str, optional): "start", "end", or None. If None, snaps the closer endpoint.
+            curvature (np.ndarray): Smoothed 2nd derivative of elevation profile.
+            window (int): Number of points before/after to average.
 
         Returns:
-            LineString: Line with endpoint snapped to the given point.
+            list of tuples: Sorted (index, strength) candidates (at least one guaranteed).
         """
-        if not isinstance(line, LineString):
-            warnings.warn("Cannot snap endpoint for MultiLineString geometry")
-            return line
+        candidates = []
 
-        coords = list(line.coords)
-        if len(coords) < 2:
-            return line
+        for i in range(window, len(curvature) - window):
+            before_avg = np.mean(curvature[i - window:i])
+            after_avg = np.mean(curvature[i + 1:i + 1 + window])
+            if before_avg < 0 and after_avg > 0:
+                strength = abs(before_avg) + abs(after_avg)
+                candidates.append((i, strength))
 
-        # If position is not specified, snap the closer endpoint
-        if position is None:
-            dist_start = snap_point.distance(Point(coords[0]))
-            dist_end = snap_point.distance(Point(coords[-1]))
-            if dist_start <= dist_end:
-                coords[0] = (snap_point.x, snap_point.y)
-            else:
-                coords[-1] = (snap_point.x, snap_point.y)
-        elif position == "start":
-            coords[0] = (snap_point.x, snap_point.y)
-        elif position == "end":
-            coords[-1] = (snap_point.x, snap_point.y)
-        else:
-            raise ValueError("position must be 'start', 'end', or None")
+        # Fallback: wenn keine echten Übergänge gefunden wurden
+        if not candidates:
+            warnings.warn("No clear concave → convex inflection points found. Using strongest average sign change as fallback.")
+            best_strength = -np.inf
+            best_index = None
+            for i in range(window, len(curvature) - window):
+                before_avg = np.mean(curvature[i - window:i])
+                after_avg = np.mean(curvature[i + 1:i + 1 + window])
+                strength = after_avg - before_avg
+                if strength > best_strength:
+                    best_strength = strength
+                    best_index = i
+            candidates = [(best_index, best_strength)]
 
-        return LineString(coords)
+        # Sortieren nach Stärke
+        sorted_candidates = sorted(candidates, key=lambda x: x[1], reverse=True)
+        return sorted_candidates
+
+
     def extract_valleys(
         self,
         dtm_path: str,
@@ -816,7 +983,7 @@ class TopoDrainCore:
             else:
                 print(f"[ExtractValleys] Log-scaled accumulation → {facc_log_output_path}")
             try:
-                self._log_raster(input_raster=facc_output_path, output_path=facc_log_output_path, nodata=float(self.nodata))
+                TopoDrainCore._log_raster(input_raster=facc_output_path, output_path=facc_log_output_path, nodata=float(self.nodata))
                 if not os.path.exists(facc_log_output_path):
                     raise RuntimeError(f"[ExtractValleys] Log-scaled accumulation output not found at {facc_log_output_path}")
             except Exception as e:
@@ -1087,7 +1254,7 @@ class TopoDrainCore:
             else:
                 print(f"[ExtractMainValleys] Rasterizing valley lines for polygon {poly_idx + 1}...")
             valley_raster_path = os.path.join(self.temp_directory, f"valley_mask_poly_{poly_idx}.tif")
-            valley_mask = self._line_to_raster(
+            valley_mask = self._vector_to_raster(
                 gdf=valley_clipped.geometry,
                 reference_raster=facc_path,
                 output_path=valley_raster_path
@@ -1248,56 +1415,15 @@ class TopoDrainCore:
         return gdf
 
 
-    @staticmethod
-    def _find_inflection_candidates(curvature: np.ndarray, window: int) -> list:
-        """
-        Detect inflection points where the curvature changes from concave to convex,
-        using a moving average window. If none found, return point of strongest convexity.
-
-        Args:
-            curvature (np.ndarray): Smoothed 2nd derivative of elevation profile.
-            window (int): Number of points before/after to average.
-
-        Returns:
-            list of tuples: Sorted (index, strength) candidates (at least one guaranteed).
-        """
-        candidates = []
-
-        for i in range(window, len(curvature) - window):
-            before_avg = np.mean(curvature[i - window:i])
-            after_avg = np.mean(curvature[i + 1:i + 1 + window])
-            if before_avg < 0 and after_avg > 0:
-                strength = abs(before_avg) + abs(after_avg)
-                candidates.append((i, strength))
-
-        # Fallback: wenn keine echten Übergänge gefunden wurden
-        if not candidates:
-            warnings.warn("No clear concave → convex inflection points found. Using strongest average sign change as fallback.")
-            best_strength = -np.inf
-            best_index = None
-            for i in range(window, len(curvature) - window):
-                before_avg = np.mean(curvature[i - window:i])
-                after_avg = np.mean(curvature[i + 1:i + 1 + window])
-                strength = after_avg - before_avg
-                if strength > best_strength:
-                    best_strength = strength
-                    best_index = i
-            candidates = [(best_index, best_strength)]
-
-        # Sortieren nach Stärke
-        sorted_candidates = sorted(candidates, key=lambda x: x[1], reverse=True)
-        return sorted_candidates
-
-    ###################### Maybe remove sampling_distance later?
     def get_keypoints(
         self,
         valley_lines: gpd.GeoDataFrame,
         dtm_path: str,
-        sampling_distance: float = 2.0,
         smoothing_window: int = 9,
         polyorder: int = 2,
         min_distance: float = 10.0,
         max_keypoints: int = 5,
+        find_window_cells: int = 10,
         feedback=None
         ) -> gpd.GeoDataFrame:
         """
@@ -1305,18 +1431,19 @@ class TopoDrainCore:
         (second derivative). Keypoints are locations with high convexity, typically
         indicating a local change from concave to convex profile shape.
 
-        The elevation profile is extracted along each valley line using the DTM and
-        smoothed using a Savitzky-Golay filter. The second derivative is then computed,
-        and the top N points with the strongest convex curvature are selected as keypoints.
+        The elevation profile is extracted along each valley line using the DTM at
+        pixel resolution (all values along the line) and smoothed using a Savitzky-Golay 
+        filter. The second derivative is then computed, and the top N points with the 
+        strongest convex curvature are selected as keypoints.
 
         Args:
             valley_lines (GeoDataFrame): Valley centerlines with geometries and unique FID.
             dtm_path (str): Path to the input DTM raster.
-            sampling_distance (float): Distance between elevation samples along each line (in meters).
             smoothing_window (int): Window size for Savitzky-Golay filter (must be odd).
             polyorder (int): Polynomial order for Savitzky-Golay smoothing.
             min_distance (float): Minimum distance between selected keypoints (in meters).
             max_keypoints (int): Maximum number of keypoints to retain per valley line.
+            find_window_cells (int): Number of cells to consider for curvature detection.
             feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting/logging.
 
         Returns:
@@ -1330,16 +1457,16 @@ class TopoDrainCore:
             if feedback:
                 feedback.pushInfo(f"[GetKeypoints] Smoothing window adjusted to {smoothing_window} (must be odd)")
 
-        # Auto-calculate find_window_distance based on sampling_distance
-        find_window_distance = max(10.0, sampling_distance * 3)  # At least 3 samples
-
         if feedback:
             feedback.pushInfo(f"[GetKeypoints] Starting keypoint detection on {len(valley_lines)} valley lines...")
+            feedback.pushInfo(f"[GetKeypoints] Using pixel resolution sampling (pixel size: {pixel_size:.2f}m)")
         else:
             print(f"[GetKeypoints] Starting keypoint detection on {len(valley_lines)} valley lines...")
+            print(f"[GetKeypoints] Using pixel resolution sampling (pixel size: {pixel_size:.2f}m)")
 
         with rasterio.open(dtm_path) as src:
             pixel_size = src.res[0]
+            # Auto-calculate find_window_distance based on pixel size
             processed_lines = 0
             skipped_lines = 0
             total_lines = len(valley_lines)
@@ -1349,20 +1476,16 @@ class TopoDrainCore:
                 line = row.geometry
                 line_id = row.FID
                 length = line.length
-                num_samples = int(length // sampling_distance)
+                # Sample at pixel resolution - use pixel size as sampling distance
+                sampling_distance = pixel_size
+                num_samples = max(int(length / sampling_distance), 2)  # At least 2 samples
 
                 # Progress reporting for every line (or every 5 lines for large datasets)
                 current_line = idx + 1
                 if feedback:
                     if total_lines <= 20 or current_line % 5 == 0 or current_line == total_lines:
                         progress_pct = int((current_line / total_lines) * 100)
-                        feedback.pushInfo(f"[GetKeypoints] Processing line {current_line}/{total_lines} ({progress_pct}%) - Line ID: {line_id}, Length: {length:.1f}m")
-
-                if num_samples < smoothing_window or num_samples < 10:
-                    skipped_lines += 1
-                    if feedback:
-                        feedback.pushInfo(f"[GetKeypoints] Skipping valley line {line_id}: insufficient samples ({num_samples}, need ≥{max(smoothing_window, 10)})")
-                    continue
+                        feedback.pushInfo(f"[GetKeypoints] Processing line {current_line}/{total_lines} ({progress_pct}%) - Line ID: {line_id}, Length: {length:.1f}m, Samples: {num_samples}")
 
                 processed_lines += 1
 
@@ -1372,13 +1495,13 @@ class TopoDrainCore:
                 elevations = [val[0] for val in sample_gen(src, coords)]
 
                 # Smooth elevation profile
-                elev_smooth = savgol_filter(elevations, smoothing_window, polyorder) ###### Plot later
+                elev_smooth = savgol_filter(elevations, smoothing_window, polyorder) ###### Maybe plot later?
 
                 # Second derivative = curvature
                 curvature = savgol_filter(elevations, smoothing_window, polyorder, deriv=2) ###### or better derivative of elev_smooth?
 
                 # Find concave→convex transitions
-                find_window = max(3, int(round(find_window_distance / pixel_size)))  # mindestens 3 Zellen
+                find_window = max(3, find_window_cells)  # At least 3 pixels, maybe later as input parameter? e.g. Nr. of cells?
                 candidates = TopoDrainCore._find_inflection_candidates(curvature, window=find_window)
 
                 # Sort and select strongest candidates
@@ -1447,6 +1570,7 @@ class TopoDrainCore:
         Returns:
             tuple: (left_point, right_point), or (None, None) if no valid points found.
         """
+        print(f"[GetOrthogonalDirectionsStartPoints] Checking point {point}, max_offset={max_offset}")
         with rasterio.open(barrier_raster_path) as src:
             barrier_mask = src.read(1)
             rows, cols = barrier_mask.shape
@@ -1489,10 +1613,13 @@ class TopoDrainCore:
                     if not (0 <= row_idx < rows and 0 <= col_idx < cols):
                         continue
 
-                    # barrier == 1 means forbidden
-                    if barrier_mask[row_idx, col_idx] != 1:
+                    # barrier >= 1 means forbidden
+                    if barrier_mask[row_idx, col_idx] >= 1:
+                        print(f"[GetOrthogonalDirectionsStartPoints] Still on barrier at offset {i}.")
+                    else:
+                        print(f"[GetOrthogonalDirectionsStartPoints] Found valid point at offset {i}: ({test_x}, {test_y})")
                         return Point(test_x, test_y)
-
+    
                 return None
 
             left_pt = find_valid_point(ortho_left)
@@ -1502,33 +1629,36 @@ class TopoDrainCore:
         
 
     @staticmethod
-    def _get_linedirection_start_point(
+    def _get_linedirection_start_point( ### maybe adjust line_geom
         barrier_raster_path: str,
         line_geom: LineString,
-        max_offset: int = 5
+        max_offset: int = 5,
+        reverse: bool = False
     ) -> Point:
         """
         Determine a start point in the proceeding direction of a given input line.
 
-        The function searches along the proceeding line direction from its end point until it finds
-        a non-barrier cell in the provided raster.
+        The function searches from the endpoint of the line along its direction until it finds
+        a non-barrier cell. If reverse=True, follows the line geometry backwards from the endpoint.
 
         Args:
             barrier_raster_path (str): Path to binary raster (GeoTIFF) with 1 = barrier, 0 = free.
             line_geom (LineString): Reference line geometry used to determine orientation, e.g. keyline.
             max_offset (int): Maximum number of cells to move outward when searching.
+            reverse (bool): If True, follow line geometry backwards from endpoint, if False search forward.
 
         Returns:
             Point or None: The new start point beyond the barrier, or None if not found.
         """
-        print("=====================================_get_linedirection_start_point=====================================")
         coords = list(line_geom.coords)
         if len(coords) >= 2:
-            end_point = coords[-1]
+            end_point = coords[-1]    # Always start from the endpoint
+            ref_point = coords[-2]    # Reference point for direction
         else:
             raise ValueError("LineString must have at least two coordinates to determine direction.")
         
-        print(f"[TopoDrainCore] _get_linedirection_start_point: Checking endpoint {end_point}")
+        print(f"[GetLinedirectionStartPoint]: Checking endpoint {end_point}, reverse={reverse}")
+        print(f"[GetLinedirectionStartPoint] barrier_raster_path: {barrier_raster_path}")
 
         with rasterio.open(barrier_raster_path) as src:
             barrier_mask = src.read(1)
@@ -1536,52 +1666,110 @@ class TopoDrainCore:
             res = src.res[0]  # assumes square pixels
 
             row_ep, col_ep = src.index(end_point[0], end_point[1])
-            print(f"[TopoDrainCore] Endpoint raster index: row={row_ep}, col={col_ep}")
-            if not barrier_mask[row_ep, col_ep] == 1:
-                print("[TopoDrainCore] No barrier at endpoint, returning None.")
+            print(f"[GetLinedirectionStartPoint] Endpoint raster index: row={row_ep}, col={col_ep}")
+            if not barrier_mask[row_ep, col_ep] >= 1:
+                print("[GetLinedirectionStartPoint] No barrier at endpoint, returning None.")
                 return None  # no barrier at endpoint, so no need to search
 
-            # Create tangent vector in the direction of the line
-            prev_point = coords[-2]
-            dx = end_point[0] - prev_point[0]
-            dy = end_point[1] - prev_point[1]
-            norm = np.linalg.norm([dx, dy])
-            if norm > 0:
-                tangent = np.array([dx, dy]) / norm
-                print(f"[TopoDrainCore] Tangent vector: {tangent}")
+            if reverse:
+                # For reverse, follow the line geometry backwards
+                print("[GetLinedirectionStartPoint] Reverse mode: following line geometry backwards")
+                
+                # Get total line length and work backwards from endpoint
+                total_length = line_geom.length
+                
+                def find_valid_point_along_line():
+                    for i in range(1, max_offset + 1):
+                        # Calculate distance to move back along the line
+                        back_distance = res * i
+                        
+                        # Calculate position along line (from start = 0 to end = total_length)
+                        # We want to go backwards from the end, so subtract from total_length
+                        target_distance = max(0, total_length - back_distance)
+                        
+                        # Get point at this distance along the line
+                        try:
+                            test_point = line_geom.interpolate(target_distance)
+                            test_x, test_y = test_point.x, test_point.y
+                            
+                            row_idx, col_idx = src.index(test_x, test_y)
+                            print(f"[GetLinedirectionStartPoint] Checking offset {i} along line: ({test_x}, {test_y}) -> row={row_idx}, col={col_idx}")
+
+                            if not (0 <= row_idx < rows and 0 <= col_idx < cols):
+                                print(f"[GetLinedirectionStartPoint] Offset {i} out of raster bounds.")
+                                continue
+
+                            if barrier_mask[row_idx, col_idx] > 0:
+                                print(f"[GetLinedirectionStartPoint] Still on barrier at offset {i} along line.")
+                            else:
+                                print(f"[GetLinedirectionStartPoint] Found valid point at offset {i} along line: ({test_x}, {test_y})")
+                                return Point(test_x, test_y)
+                                
+                        except Exception as e:
+                            print(f"[GetLinedirectionStartPoint] Error interpolating at distance {target_distance}: {e}")
+                            continue
+                            
+                        # If we've reached the start of the line, stop
+                        if target_distance <= 0:
+                            print("[GetLinedirectionStartPoint] Reached start of line without finding valid point.")
+                            break
+                    
+                    print("[GetLinedirectionStartPoint] No valid point found following line backwards.")
+                    return None
+                
+                new_pt = find_valid_point_along_line()
+                
             else:
-                print("[TopoDrainCore] Zero-length tangent vector, cannot proceed.")
-                return None
+                # For forward, use tangent vector approach as before
+                print("[GetLinedirectionStartPoint] Forward mode: using tangent vector extrapolation")
+                
+                # Create tangent vector based on line direction
+                dx = end_point[0] - ref_point[0]
+                dy = end_point[1] - ref_point[1]
+                
+                norm = np.linalg.norm([dx, dy])
+                if norm > 0:
+                    tangent = np.array([dx, dy]) / norm
+                    print(f"[GetLinedirectionStartPoint] Tangent vector: {tangent}")
+                else:
+                    print("[GetLinedirectionStartPoint] Zero-length tangent vector, cannot proceed.")
+                    return None
 
-            def find_valid_point(direction_vec):
-                for i in range(1, max_offset + 1):
-                    offset = res * i
-                    test_x = end_point[0] + direction_vec[0] * offset
-                    test_y = end_point[1] + direction_vec[1] * offset
+                def find_valid_point_forward():
+                    for i in range(1, max_offset + 1):
+                        offset = res * i
+                        test_x = end_point[0] + tangent[0] * offset
+                        test_y = end_point[1] + tangent[1] * offset
 
-                    row_idx, col_idx = src.index(test_x, test_y)
-                    print(f"[TopoDrainCore] Checking offset {i}: ({test_x}, {test_y}) -> row={row_idx}, col={col_idx}")
+                        row_idx, col_idx = src.index(test_x, test_y)
+                        print(f"[GetLinedirectionStartPoint] Checking offset {i}: ({test_x}, {test_y}) -> row={row_idx}, col={col_idx}")
 
-                    if not (0 <= row_idx < rows and 0 <= col_idx < cols):
-                        print(f"[TopoDrainCore] Offset {i} out of raster bounds.")
-                        continue
+                        if not (0 <= row_idx < rows and 0 <= col_idx < cols):
+                            print(f"[GetLinedirectionStartPoint] Offset {i} out of raster bounds.")
+                            continue
 
-                    if barrier_mask[row_idx, col_idx] != 1:
-                        print(f"[TopoDrainCore] Found valid point at offset {i}: ({test_x}, {test_y})")
-                        return Point(test_x, test_y)
-                    else:
-                        print(f"[TopoDrainCore] Still on barrier at offset {i}.")
+                        # barrier >= 1 means forbidden
+                        if barrier_mask[row_idx, col_idx] >= 1:
+                            print(f"[GetLinedirectionStartPoint] Still on barrier at offset {i}.")
+                        else:
+                            print(f"[GetLinedirectionStartPoint] Found valid point at offset {i}: ({test_x}, {test_y})")
+                            return Point(test_x, test_y)
 
-                print("[TopoDrainCore] No valid point found beyond barrier.")
-                return None
+                    print("[GetLinedirectionStartPoint] No valid point found beyond barrier.")
+                    return None
 
-            new_pt = find_valid_point(tangent)
+                new_pt = find_valid_point_forward()
 
             if new_pt:
-                print(f"[TopoDrainCore] Returning new start point: {new_pt}")
+                print(f"[GetLinedirectionStartPoint] Returning new start point: {new_pt}")
             else:
-                print("[TopoDrainCore] No new start point found.")
+                print("[GetLinedirectionStartPoint] No new start point found.")
+
+            if new_pt:
+                print(f"[GetLinedirectionStartPoint] New point WKT: {new_pt.wkt}")
+
             return new_pt
+
 
     @staticmethod
     def _create_slope_cost_raster(
@@ -1590,7 +1778,7 @@ class TopoDrainCore:
         output_cost_raster_path: str,
         slope: float = 0.01,
         barrier_raster_path: str = None,
-        penalty_exp: float = 4.0
+        penalty_exp: float = 2.0
     ) -> str:
         """
         Create a raster with cost values based on deviation from desired slope.
@@ -1653,7 +1841,6 @@ class TopoDrainCore:
             dst.write(cost.astype('float32'), 1)
 
         return output_cost_raster_path
-
 
     @staticmethod
     def _create_source_raster(
@@ -1765,7 +1952,7 @@ class TopoDrainCore:
 
         Args:
             dtm_path (str): Path to the digital terrain model (GeoTIFF).
-            start_point (Point): Starting point of the constant slope line (usually located on a valley line).
+            start_point (Point): Starting point of the constant slope line.
             destination_raster_path (str): Path to the binary raster indicating destination cells (1 = destination).
             slope (float): Desired slope for the line (e.g., 0.01 for 1% downhill or -0.01 for uphill).
             barrier_raster_path (str): Optional path to a binary raster of cells that should not be crossed (1 = barrier).
@@ -1785,7 +1972,7 @@ class TopoDrainCore:
         best_destination_raster_path = os.path.join(self.temp_directory, "destination_best.tif")
         pathway_raster_path = os.path.join(self.temp_directory, "pathway.tif")
 
-        print(f"[TopoDrainCore] Create cost slope raster for start point {start_point} with slope {slope}")
+        print(f"[GetConstantSlopeLine] Create cost slope raster for start point {start_point} with slope {slope}")
         # --- Create cost raster ---
         cost_raster_path = TopoDrainCore._create_slope_cost_raster(
             dtm_path=dtm_path,
@@ -1795,7 +1982,7 @@ class TopoDrainCore:
             barrier_raster_path=barrier_raster_path
         )
 
-        print("[TopoDrainCore] Create source raster")
+        print("[GetConstantSlopeLine] Create source raster")
         # --- Create source raster ---
         source_raster_path = TopoDrainCore._create_source_raster(
             reference_raster_path=dtm_path,
@@ -1803,7 +1990,7 @@ class TopoDrainCore:
             output_source_raster_path=source_raster_path
         )
 
-        print("[TopoDrainCore] Starting cost-distance analysis")
+        print("[GetConstantSlopeLine] Starting cost-distance analysis")
         # --- Run cost-distance analysis ---
         ret = self._execute_wbt(
             'cost_distance',
@@ -1817,7 +2004,7 @@ class TopoDrainCore:
         if ret != 0 or not os.path.exists(accum_raster_path) or not os.path.exists(backlink_raster_path):
             raise RuntimeError(f"Cost distance analysis failed: WhiteboxTools returned {ret}, outputs not found")
 
-        print("[TopoDrainCore] Selecting best destination cell")
+        print("[GetConstantSlopeLine] Selecting best destination cell")
         # --- Select best destination cell ---
         best_destination_raster_path, best_destination_point = TopoDrainCore._select_best_destination_cell(
             accum_raster_path=accum_raster_path,
@@ -1825,7 +2012,7 @@ class TopoDrainCore:
             best_destination_raster_path=best_destination_raster_path # output path
         )
 
-        print(f"[TopoDrainCore] Tracing least-cost pathway to best destination {best_destination_point}")
+        print(f"[GetConstantSlopeLine] Tracing least-cost pathway to best destination {best_destination_point}")
         # --- Trace least-cost pathway ---
         ret = self._execute_wbt(
             'cost_pathway',
@@ -1848,25 +2035,226 @@ class TopoDrainCore:
         with rasterio.open(pathway_raster_path, 'r+') as dst:
             dst.nodata = nodata_value
 
-        print("[TopoDrainCore] Converting pathway raster to LineString")
-        # --- Convert to LineString ---
+        print("[GetConstantSlopeLine] Converting pathway raster to LineString")
+        # --- Convert to LineString, ensure single part and correct line direction ---
         line = self._raster_to_linestring_wbt(pathway_raster_path, snap_to_start_point=start_point, snap_to_endpoint=best_destination_point, feedback=feedback)
 
         if line is None:
-            warnings.warn("[SlopeLine] No valid line could be extracted from pathway raster.")
+            warnings.warn("[GetConstantSlopeLine] No valid line could be extracted from pathway raster.")
             return None
 
-        # --- Ensure single LineString ---
-        if isinstance(line, MultiLineString):
-            print("[TopoDrainCore] Stitching MultiLineString")
-            line = self._stitch_multilinestring(line)
-
-        print("[TopoDrainCore] Smoothing the resulting line")
+        print("[GetConstantSlopeLine] Smoothing the resulting line")
         # --- Optional smoothing ---
-        line = self._smooth_linestring(line, sigma=2.0)
+        line = TopoDrainCore._smooth_linestring(line, sigma=1.0)
 
+        print(f"[GetConstantSlopeLine] Smoothed line WKT: {line.wkt}")
         return line
+    
+    def _get_iterative_constant_slope_line(
+        self,
+        dtm_path: str,
+        start_point: Point,
+        destination_raster_path: str,
+        slope: float,
+        barrier_raster_path: str,
+        initial_barrier_value: int = None,
+        max_iterations: int = 10,
+        feedback=None
+    ) -> LineString:
+        """
+        Trace lines with constant slope starting from a given point using a cost-distance approach based on slope deviation.
+        Unlike _get_constant_slope_line, this function allows barriers to act as temporary destinations.
+        The barrier raster needs in this case different values (1, 2, ...) for different barrier features.
 
+        This function creates a cost raster that penalizes deviation from the desired slope,
+        runs a least-cost-path analysis using WhiteboxTools, and returns the resulting line.
+
+        Args:
+            dtm_path (str): Path to the digital terrain model (GeoTIFF).
+            start_point (Point): Starting point of the constant slope line (not on a barrier, this is handled in get_constant_slope_lines).
+            destination_raster_path (str): Path to the binary raster indicating destination cells (1 = destination).
+            slope (float): Desired slope for the line (e.g., 0.01 for 1% downhill or -0.01 for uphill).
+            barrier_raster_path (str): Path to a raster of cells that should not be crossed (different barriers have unique values 1, 2, ...).
+            feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting.
+
+        Returns:
+            LineString: Least-cost slope path as a Shapely LineString, or None if no path found.
+        """
+        if self.wbt is None:
+            raise RuntimeError("WhiteboxTools not initialized.")
+        
+        current_iteration = 0
+        current_start_point = start_point
+        current_barrier_value = initial_barrier_value
+        accumulated_line_coords = []
+    
+        # Read destination raster data
+        with rasterio.open(destination_raster_path) as dest_src:
+            destination_profile = dest_src.profile.copy()
+            orig_dest_data = dest_src.read(1).copy() # create a copy to avoid modifying the original raster
+        
+        # Read barrier raster data
+        with rasterio.open(barrier_raster_path) as src:
+            barrier_profile = src.profile.copy() 
+            orig_barrier_data = src.read(1).copy() # create a copy to avoid modifying the original raster
+        
+        while current_iteration < max_iterations:
+            if feedback:
+                feedback.pushInfo(f"[IterativeConstantSlopeLine] Iteration {current_iteration + 1}/{max_iterations}")
+            else:
+                print(f"[IterativeConstantSlopeLine] Iteration {current_iteration + 1}/{max_iterations}")
+            
+            # --- Create barrier raster for _get_constant_slope_line ---
+            if current_barrier_value:
+                working_barrier_data = np.where(orig_barrier_data == current_barrier_value, 1, 0).astype('uint8') # current barrier act as barrier and not as destination
+                working_destination_data = np.where((orig_dest_data == 1) | ((orig_barrier_data >= 1) & (orig_barrier_data != current_barrier_value)), 1, 0).astype('uint8')  # all other barriers act as temporary destinations except the current one
+            else:
+                working_barrier_data = None # all barriers acting as temporary destinations and not as barriers
+                working_destination_data = np.where((orig_dest_data == 1) | (orig_barrier_data >= 1), 1, 0).astype('uint8') 
+                
+            # Debug: Print start point and extracted value
+            if feedback:
+                feedback.pushInfo(f"[IterativeConstantSlopeLine] Start point: ({current_start_point.x:.2f}, {current_start_point.y:.2f})")
+                feedback.pushInfo(f"[IterativeConstantSlopeLine] Current barrier value: {current_barrier_value}")
+            else:
+                print(f"[IterativeConstantSlopeLine] Start point: ({current_start_point.x:.2f}, {current_start_point.y:.2f})")
+
+            # Create iteration-specific rasters          
+            # Save barrier mask
+            if working_barrier_data is not None:
+                working_barrier_raster_path = os.path.join(self.temp_directory, f"barrier_iter_{current_iteration}.tif")
+                with rasterio.open(working_barrier_raster_path, "w", **barrier_profile) as dst:
+                    dst.write(working_barrier_data, 1)
+                if feedback:
+                    feedback.pushInfo(f"[IterativeConstantSlopeLine] Working barrier raster created at {working_barrier_raster_path}") 
+                else:
+                    print(f"[IterativeConstantSlopeLine] Working barrier raster created at {working_barrier_raster_path}")
+            else:
+                working_barrier_raster_path = None
+                if feedback:
+                    feedback.pushInfo("[IterativeConstantSlopeLine] No working barrier raster created (all barriers act as temporary destinations).")
+                else:
+                    print("[IterativeConstantSlopeLine] No working barrier raster created (all barriers act as temporary destinations).")
+                        
+            working_destination_raster_path = os.path.join(self.temp_directory, f"destination_iter_{current_iteration}.tif")
+            # Save destination mask
+            with rasterio.open(working_destination_raster_path, "w", **destination_profile) as dst:
+                dst.write(working_destination_data, 1)
+            if feedback:
+                feedback.pushInfo(f"[IterativeConstantSlopeLine] Working destination raster created at {working_destination_raster_path}")
+            else:
+                print(f"[IterativeConstantSlopeLine] Working destination raster created at {working_destination_raster_path}")
+
+            # Call _get_constant_slope_line with current parameters
+            if feedback:
+                feedback.pushInfo(f"[IterativeConstantSlopeLine] Tracing from point {current_start_point}")
+            else:
+                print(f"[IterativeConstantSlopeLine] Tracing from point {current_start_point}")
+                
+            line_segment = self._get_constant_slope_line(
+                dtm_path=dtm_path,
+                start_point=current_start_point,
+                destination_raster_path=working_destination_raster_path,
+                slope=slope,
+                barrier_raster_path=working_barrier_raster_path,
+                feedback=feedback
+            )
+
+            # Check if a line segment was found
+            if line_segment is None:
+                if feedback:
+                    feedback.pushWarning(f"[IterativeConstantSlopeLine] No line found in iteration {current_iteration + 1}")
+                else:
+                    warnings.warn(f"[IterativeConstantSlopeLine] No line found in iteration {current_iteration + 1}")
+                break
+
+            line_coords = list(line_segment.coords)
+            # Check if endpoint is on original destination
+            endpoint = Point(line_coords[-1])
+            print(f"[IterativeConstantSlopeLine] Endpoint iteration {current_iteration}: {endpoint.wkt}")
+            with rasterio.open(destination_raster_path) as dest_src:
+                end_row, end_col = dest_src.index(endpoint.x, endpoint.y)
+                if 0 <= end_row < orig_dest_data.shape[0] and 0 <= end_col < orig_dest_data.shape[1]:
+                    if orig_dest_data[end_row, end_col] == 1:
+                        if feedback:
+                            feedback.pushInfo(f"[IterativeConstantSlopeLine] Reached final destination in iteration {current_iteration + 1}")
+                        else:
+                            print(f"[IterativeConstantSlopeLine] Reached final destination in iteration {current_iteration + 1}")
+                        break
+                    else:
+                        print(f"[IterativeConstantSlopeLine] Endpoint not on destination in iteration {current_iteration + 1}, checking barriers.")
+            
+            # else endpoint will be on a barrier or not on destination, so we need to adjust the start point for the next iteration
+            # Get barrier value at endpoint for next iteration
+            with rasterio.open(barrier_raster_path) as barrier_src:
+                end_row, end_col = barrier_src.index(endpoint.x, endpoint.y)
+                if 0 <= end_row < barrier_src.height and 0 <= end_col < barrier_src.width:
+                    current_barrier_value = int(barrier_src.read(1)[end_row, end_col])
+                else:
+                    current_barrier_value = None
+                print(f"[IterativeConstantSlopeLine] current_barrier_value: {current_barrier_value}")
+
+            if current_barrier_value:
+                # Get start point for next iteration
+                current_start_point = TopoDrainCore._get_linedirection_start_point(
+                    barrier_raster_path=barrier_raster_path,
+                    line_geom=line_segment,
+                    max_offset=5,  # adjust as needed
+                    reverse=True  # always go backward were the line came from
+                )
+            else:
+                current_start_point = endpoint  # if no barrier, continue from endpoint (should actually never happen in this case)
+
+            # Adjust line_segment to only go up to the new current_start_point (not to the endpoint)
+            if current_start_point != endpoint:
+                coords = list(line_segment.coords)
+                min_dist = float('inf')
+                min_idx = None
+                for i, coord in enumerate(coords):
+                    dist = Point(coord).distance(current_start_point)
+                    if dist < min_dist:
+                        min_dist = dist
+                        min_idx = i
+                # If the closest point is not exactly at a vertex and not exactly current_start_point,
+                # set the coordinate at min_idx to current_start_point and remove subsequent indexes
+                if min_idx:
+                    if Point(coords[min_idx]).equals(current_start_point):
+                        new_coords = coords[:min_idx + 1]
+                    else:
+                        new_coords = coords[:min_idx]
+                        new_coords.append((current_start_point.x, current_start_point.y))
+                    line_segment = LineString(new_coords)
+
+            print(f"[IterativeConstantSlopeLine] Iteration {current_iteration} - final line segment WKT: {line_segment.wkt}")
+            print(f"[IterativeConstantSlopeLine] New start point for next iteration: {current_start_point.wkt}")
+
+            if accumulated_line_coords:
+                # Skip first coordinate to avoid duplication
+                accumulated_line_coords.extend(line_segment.coords[1:])
+            else:
+                accumulated_line_coords.extend(line_segment.coords)
+
+            # Prepare for next iteration
+            current_iteration += 1
+
+
+        # Create final line from accumulated coordinates
+        if len(accumulated_line_coords) >= 2:
+            line = LineString(accumulated_line_coords)
+            if feedback:
+                feedback.pushInfo(f"[IterativeConstantSlopeLine] Completed after {current_iteration + 1} iterations")
+            else:
+                print(f"[IterativeConstantSlopeLine] Completed after {current_iteration + 1} iterations")
+            return line
+        else:
+            if feedback:
+                feedback.pushWarning("[IterativeConstantSlopeLine] No valid line could be created")
+            else:
+                print("[IterativeConstantSlopeLine] No valid line could be created")
+            return None
+
+
+    ###### Maybe perimeter as seperate parameter so we can check if new start points are within the perimeter?
     def get_constant_slope_lines(
         self,
         dtm_path: str,
@@ -1874,6 +2262,7 @@ class TopoDrainCore:
         destination_features: list[gpd.GeoDataFrame],
         slope: float = 0.01,
         barrier_features: list[gpd.GeoDataFrame] = None,
+        allow_barriers_as_temp_destination: bool = False,
         feedback=None
     ) -> gpd.GeoDataFrame:
         """
@@ -1888,6 +2277,7 @@ class TopoDrainCore:
             destination_features (list[gpd.GeoDataFrame]): List of destination features (e.g. main ridge lines, area of interest).
             slope (float): Desired slope for the lines (e.g., 0.01 for 1% downhill).
             barrier_features (list[gpd.GeoDataFrame], optional): List of barrier features to avoid (e.g. main valley lines).
+            allow_barriers_as_temp_destination (bool): If True, barriers are included as temporary destinations for iterative tracing.
             feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting/logging.
             
         Returns:
@@ -1913,6 +2303,8 @@ class TopoDrainCore:
             feedback.pushInfo("[ConstantSlopeLines] Building destination mask…")
         else:
             print("[ConstantSlopeLines] Building destination mask…")
+        
+        # Process destination features - convert polygons to boundaries
         destination_processed = []
         for gdf in destination_features:
             if gdf.geom_type.isin(["Polygon", "MultiPolygon"]).any():
@@ -1921,37 +2313,22 @@ class TopoDrainCore:
                 destination_processed.append(g)
             else:
                 destination_processed.append(gdf)
-        destination_mask = self._vector_to_mask(destination_processed, dtm_path)
+        
+        # Create binary destination mask
+        destination_mask = TopoDrainCore._vector_to_mask(destination_processed, dtm_path)
         if feedback:
             feedback.pushInfo("[ConstantSlopeLines] Destination mask ready")
         else:
             print("[ConstantSlopeLines] Destination mask ready")
 
-        # save destination mask as raster
-        destination_raster_path = os.path.join(self.temp_directory, "destination_mask.tif")
-
-        dest_profile = profile.copy()
-        dest_profile.update(dtype=rasterio.uint8, nodata=0)
-        with rasterio.open(destination_raster_path, "w", **dest_profile) as dst:
-            dst.write(destination_mask.astype("uint8"), 1)
-        if feedback:
-            feedback.pushInfo(f"[ConstantSlopeLines] Destination raster saved to {destination_raster_path}")
-        else:
-            print(f"[ConstantSlopeLines] Destination raster saved to {destination_raster_path}")
-
-        # --- Barrier handling ---
-        if barrier_features:
-            # 1) Create barrier mask and save as raster
-            if feedback:
-                feedback.pushInfo("[ConstantSlopeLines] Preparing mask layers...")
-            else:
-                print("[ConstantSlopeLines] Preparing mask layers...")
-
-            if feedback:
-                feedback.pushInfo("[ConstantSlopeLines] Processing barrier features (converting polygon barriers to boundaries)...")
-            else:
-                print("[ConstantSlopeLines] Processing barrier features (converting polygon barriers to boundaries)...")
             
+        # --- Barrier mask ---
+        if barrier_features:
+            if feedback:
+                feedback.pushInfo("[ConstantSlopeLines] Preparing barrier mask...")
+            else:
+                print("[ConstantSlopeLines] Preparing barrier mask...")
+
             # Process barrier features - convert polygons to boundaries like destinations
             barrier_processed = []
             for gdf in barrier_features:
@@ -1962,38 +2339,15 @@ class TopoDrainCore:
                 else:
                     barrier_processed.append(gdf)
 
-            if feedback:
-                feedback.pushInfo("[ConstantSlopeLines] Rasterizing all barrier features into mask")
+            # Create binary barrier mask
+            if allow_barriers_as_temp_destination:
+                # If barriers should be treated as temporary destinations, use unique values so we can distinguish them later
+                barrier_mask = TopoDrainCore._vector_to_mask(barrier_processed, dtm_path, unique_values=True) # unique values for each barrier feature
             else:
-                print("[ConstantSlopeLines] Rasterizing all barrier features into mask")
-            barrier_mask = self._vector_to_mask(barrier_processed, dtm_path)
-            
-            # Handle overlapping barrier and destination cells
-            # If barrier_mask and destination_mask have 1 in same cell, set destination cell to 0
-            overlap_cells = (barrier_mask == 1) & (destination_mask == 1)
-            if np.any(overlap_cells):
-                num_overlaps = np.sum(overlap_cells)
-                if feedback:
-                    feedback.pushInfo(f"[ConstantSlopeLines] Found {num_overlaps} overlapping barrier/destination cells, setting destination cells to 0")
-                else:
-                    print(f"[ConstantSlopeLines] Found {num_overlaps} overlapping barrier/destination cells, setting destination cells to 0")
-                destination_mask[overlap_cells] = 0
-                
-                # Re-save the updated destination raster
-                with rasterio.open(destination_raster_path, "w", **dest_profile) as dst:
-                    dst.write(destination_mask.astype("uint8"), 1)
-                if feedback:
-                    feedback.pushInfo(f"[ConstantSlopeLines] Updated destination raster saved to {destination_raster_path}")
-                else:
-                    print(f"[ConstantSlopeLines] Updated destination raster saved to {destination_raster_path}")
-            else:
-                if feedback:
-                    feedback.pushInfo("[ConstantSlopeLines] No overlapping barrier/destination cells found")
-                else:
-                    print("[ConstantSlopeLines] No overlapping barrier/destination cells found")
-            
-            # save barrier mask as raster
-            barrier_raster_path = os.path.join(self.temp_directory, "barrier_mask.tif")
+                barrier_mask = TopoDrainCore._vector_to_mask(barrier_processed, dtm_path) # default is 1 for barriers, 0 for free cells
+
+            # Save barrier mask as raster
+            barrier_raster_path = os.path.join(self.temp_directory, "barrier_raster.tif")
             barrier_profile = profile.copy()
             barrier_profile.update(dtype=rasterio.uint8, nodata=0)
             with rasterio.open(barrier_raster_path, "w", **barrier_profile) as dst:
@@ -2003,48 +2357,48 @@ class TopoDrainCore:
             else:
                 print(f"[ConstantSlopeLines] Barrier raster saved to {barrier_raster_path}")
 
-           # 2) split into line vs non-line, because we want to adjust start points only if it lies on line barriers
-            if feedback:
-                feedback.pushInfo("[ConstantSlopeLines] Separating line vs non-line barriers") 
+            # Handle overlapping barrier and original destination cells --> adjust destination mask
+            dest_barrier_overlap = (barrier_mask >= 1) & (destination_mask == 1)
+            if np.any(dest_barrier_overlap):
+                num_overlaps = np.sum(dest_barrier_overlap)
+                if feedback:
+                    feedback.pushInfo(f"[ConstantSlopeLines] Found {num_overlaps} overlapping barrier/original destination cells")
+                else:
+                    print(f"[ConstantSlopeLines] Found {num_overlaps} overlapping barrier/original destination cells")
+                # Set destination_mask to 0 at overlapping cells, because not possible to be barrier and destination at the same time
+                destination_mask[dest_barrier_overlap] = 0
             else:
-                print("[ConstantSlopeLines] Separating line vs non-line barriers")
-            barrier_line_geoms = []
-            for gdf in barrier_processed:  # Use processed barriers instead of original
-                # collect only the geometries themselves
-                lines = [geom for geom in gdf.geometry if geom.geom_type in ("LineString", "MultiLineString")]
-                if lines:
-                    barrier_line_geoms.extend(lines)
-            if feedback:
-                feedback.pushInfo(f"[ConstantSlopeLines]  → {len(barrier_line_geoms)} total barrier line geometries")
-            else:
-                print(f"[ConstantSlopeLines]  → {len(barrier_line_geoms)} total barrier line geometries")
+                if feedback:
+                    feedback.pushInfo("[ConstantSlopeLines] No overlapping barrier/original destination cells found")
+                else:
+                    print("[ConstantSlopeLines] No overlapping barrier/original destination cells found")
+            
+            # Check if start point on barrier, if so, create adjusted start points orthogonally to the nearest barrier line
+            # fast-overlap check on barrier lines only
 
-            # 3) fast-overlap check on barrier lines only
-            if barrier_line_geoms:
-                if feedback:
-                    feedback.pushInfo("[ConstantSlopeLines] Check which start points intersect barrier lines?")
-                else:
-                    print("[ConstantSlopeLines] Check which start points intersect barrier lines?")
-                union_lines = unary_union(barrier_line_geoms)
-                # buffer outward by a tiny amount to avoid precision issues
-                buffered_lines = union_lines.buffer(tol)
-                # now intersects is more robust
-                overlaps = original_pts.geometry.intersects(buffered_lines) #### maybe later spatial join so we don't need too loop throw all barrier_line_geoms later
-                overlapping = original_pts[overlaps]
-                non_overlapping  = original_pts[~overlaps]
-                if feedback:
-                    feedback.pushInfo(f"[ConstantSlopeLines]  → {len(overlapping)} overlapping, {len(non_overlapping)} non-overlapping")
-                else:
-                    print(f"[ConstantSlopeLines]  → {len(overlapping)} overlapping, {len(non_overlapping)} non-overlapping")
+            if feedback:
+                feedback.pushInfo("[ConstantSlopeLines] Check which start points intersect barrier lines?")
             else:
-                if feedback:
-                    feedback.pushInfo("[ConstantSlopeLines] No line barriers → all points non-overlapping")
-                else:
-                    print("[ConstantSlopeLines] No line barriers → all points non-overlapping")
-                overlapping = original_pts.iloc[0:0]
-                non_overlapping = original_pts.copy()
+                print("[ConstantSlopeLines] Check which start points intersect barrier lines?")
+            
+            # Extract all geometries from barrier GeoDataFrames and merge lines
+            all_barrier_geoms = []
+            for gdf in barrier_processed:
+                all_barrier_geoms.extend(gdf.geometry.tolist())
+            merged_lines = linemerge(all_barrier_geoms)
+            
+            # buffer outward by a tiny amount to avoid precision issues
+            buffered_lines = merged_lines.buffer(tol)
+            # now intersects is more robust
+            overlaps = original_pts.geometry.intersects(buffered_lines) #### maybe later spatial join so we don't need too loop throw all barrier_line_geoms later
+            overlapping = original_pts[overlaps]
+            non_overlapping  = original_pts[~overlaps]
+            if feedback:
+                feedback.pushInfo(f"[ConstantSlopeLines]  → {len(overlapping)} overlapping, {len(non_overlapping)} non-overlapping")
+            else:
+                print(f"[ConstantSlopeLines]  → {len(overlapping)} overlapping, {len(non_overlapping)} non-overlapping")
 
-            # 4) try to build adjusted start points only for the true overlaps
+            # Try to build adjusted start points only for the true overlaps
             if not overlapping.empty:
                 if feedback:
                     feedback.pushInfo("[ConstantSlopeLines] Generating adjusted start points for overlaps…")
@@ -2055,30 +2409,57 @@ class TopoDrainCore:
                 # if so, offset them orthogonally to the line
                 for orig_idx, row in overlapping.iterrows():
                     pt = row.geometry
-                    for line in barrier_line_geoms:
-                        if pt.distance(line) < tol: # check if point is overlapping with the line
-                            if feedback:
-                                feedback.pushInfo(f"[ConstantSlopeLines]  Point {orig_idx} on a barrier line → offsetting")
-                            else:
-                                print(f"[ConstantSlopeLines]  Point {orig_idx} on a barrier line → offsetting")
-                            left_pt, right_pt = TopoDrainCore._get_orthogonal_directions_start_points(
-                                barrier_raster_path=barrier_raster_path,
-                                point=pt,
-                                line_geom=line
-                            )
-                            if left_pt:
-                                adjusted_records.append({"geometry": left_pt, "orig_index": orig_idx})
+                    
+                    # Get barrier mask value at original point location for allow_barriers_as_temp_destination
+                    orig_barrier_value = None
+                    if allow_barriers_as_temp_destination and barrier_mask is not None:
+                        with rasterio.open(dtm_path) as dtm_src:
+                            orig_r, orig_c = dtm_src.index(pt.x, pt.y)
+                            if 0 <= orig_r < barrier_mask.shape[0] and 0 <= orig_c < barrier_mask.shape[1]:
+                                orig_barrier_value = int(barrier_mask[orig_r, orig_c])
                                 if feedback:
-                                    feedback.pushInfo(f"[ConstantSlopeLines]   → Left offset for {orig_idx}")
+                                    feedback.pushInfo(f"[ConstantSlopeLines] Original point {orig_idx} barrier value: {orig_barrier_value}")
                                 else:
-                                    print(f"[ConstantSlopeLines]   → Left offset for {orig_idx}")
-                            if right_pt:
-                                adjusted_records.append({"geometry": right_pt, "orig_index": orig_idx})
+                                    print(f"[ConstantSlopeLines] Original point {orig_idx} barrier value: {orig_barrier_value}")
+                    
+                    # Check distance against all individual barrier geometries
+                    for gdf in barrier_processed:
+                        for geom in gdf.geometry:
+                            if pt.distance(geom) < tol: # check if point is overlapping with the line
                                 if feedback:
-                                    feedback.pushInfo(f"[ConstantSlopeLines]   → Right offset for {orig_idx}")
+                                    feedback.pushInfo(f"[ConstantSlopeLines]  Point {orig_idx} on a barrier line → offsetting")
                                 else:
-                                    print(f"[ConstantSlopeLines]   → Right offset for {orig_idx}")
-                            break
+                                    print(f"[ConstantSlopeLines]  Point {orig_idx} on a barrier line → offsetting")
+                                left_pt, right_pt = TopoDrainCore._get_orthogonal_directions_start_points(
+                                    barrier_raster_path=barrier_raster_path,
+                                    point=pt,
+                                    line_geom=geom
+                                )
+                                ########### add check if inside perimeter (also in other cases _get_linedirection_start_point)
+                                if left_pt:
+                                    adjusted_records.append({
+                                        "geometry": left_pt, 
+                                        "orig_index": orig_idx,
+                                        "orig_barrier_value": orig_barrier_value
+                                    })
+                                    if feedback:
+                                        feedback.pushInfo(f"[ConstantSlopeLines]   → Left offset for {orig_idx}")
+                                    else:
+                                        print(f"[ConstantSlopeLines]   → Left offset for {orig_idx}")
+                                if right_pt:
+                                    adjusted_records.append({
+                                        "geometry": right_pt, 
+                                        "orig_index": orig_idx,
+                                        "orig_barrier_value": orig_barrier_value
+                                    })
+                                    if feedback:
+                                        feedback.pushInfo(f"[ConstantSlopeLines]   → Right offset for {orig_idx}")
+                                    else:
+                                        print(f"[ConstantSlopeLines]   → Right offset for {orig_idx}")
+                                break
+                        else:
+                            continue  # Continue to next GeoDataFrame if no match found in current one
+                        break  # Break outer loop if match was found
                     else:
                         if feedback:
                             feedback.pushInfo(f"[ConstantSlopeLines]   No precise line match for {orig_idx} → treated as non-overlap")
@@ -2100,7 +2481,7 @@ class TopoDrainCore:
                     feedback.pushInfo("[ConstantSlopeLines] No overlapping start points → skipping adjustment step")
                 else:
                     print("[ConstantSlopeLines] No overlapping start points → skipping adjustment step")
-                adjusted_records_gdf = gpd.GeoDataFrame(columns=["geometry","orig_index"], crs=self.crs)
+                adjusted_records_gdf = gpd.GeoDataFrame(columns=["geometry","orig_index","orig_barrier_value"], crs=self.crs)
                 orig_to_adjusted = {}
         else:
             if feedback:
@@ -2109,26 +2490,36 @@ class TopoDrainCore:
                 print("[ConstantSlopeLines] No barrier features provided")
             barrier_mask = None
             barrier_raster_path = None
-            adjusted_records_gdf = gpd.GeoDataFrame(columns=["geometry","orig_index"], crs=self.crs)
+            adjusted_records_gdf = gpd.GeoDataFrame(columns=["geometry","orig_index","orig_barrier_value"], crs=self.crs)
             non_overlapping = original_pts.copy()
             orig_to_adjusted = {}
 
-        # --- Trace slope lines ---
+        # Save final destination mask as raster (save here because maybe changed because of overlapping barriers)
+        destination_raster_path = os.path.join(self.temp_directory, "destination_mask.tif")
+        dest_profile = profile.copy()
+        dest_profile.update(dtype=rasterio.uint8, nodata=0)
+        with rasterio.open(destination_raster_path, "w", **dest_profile) as dst:
+            dst.write(destination_mask.astype("uint8"), 1)
         if feedback:
-            feedback.pushInfo("[ConstantSlopeLines] Tracing from adjusted points…")
+            feedback.pushInfo(f"[ConstantSlopeLines] Destination raster saved to {destination_raster_path}")
         else:
-            print("[ConstantSlopeLines] Tracing from adjusted points…")
+            print(f"[ConstantSlopeLines] Destination raster saved to {destination_raster_path}")
+
+        # --- Trace slope lines ---
         results = []
-        
         # Calculate total points for progress tracking
         total_points = len(adjusted_records_gdf) + len(non_overlapping)
         current_point = 0
-
         with rasterio.open(dtm_path) as src:
+            if feedback:
+                feedback.pushInfo("[ConstantSlopeLines] Tracing from adjusted points…")
+            else:
+                print("[ConstantSlopeLines] Tracing from adjusted points…")
             # adjusted
             for adj_idx, row in adjusted_records_gdf.iterrows():
                 current_point += 1
                 pt, orig_idx = row.geometry, row.orig_index
+                orig_barrier_value = row.get('orig_barrier_value', None)  # Get the stored barrier value
                 orig_attrs = original_pts.loc[orig_idx].drop(labels="geometry").to_dict()
 
                 # Progress reporting
@@ -2140,17 +2531,30 @@ class TopoDrainCore:
                     print(f"[ConstantSlopeLines] Processing adjusted point {current_point}/{total_points} - Adjusted point {adj_idx} (orig {orig_idx})…")
                 r, c = src.index(pt.x, pt.y)
                 if barrier_mask is not None and 0 <= r < barrier_mask.shape[0] and 0 <= c < barrier_mask.shape[1]:
-                    if barrier_mask[r, c] == 1:
+                    if barrier_mask[r, c] >= 1:
                         warnings.warn(f"[ConstantSlopeLines] Adjusted point {adj_idx} on barrier cell")
 
-                raw_line = self._get_constant_slope_line(
-                    dtm_path=dtm_path,
-                    start_point=pt,
-                    destination_raster_path=destination_raster_path,
-                    slope=slope,
-                    barrier_raster_path=barrier_raster_path,
-                    feedback=feedback  # Suppress detailed feedback for individual calls
-                )
+                if allow_barriers_as_temp_destination and barrier_features:
+                    raw_line = self._get_iterative_constant_slope_line(
+                        dtm_path=dtm_path,
+                        start_point=pt,
+                        destination_raster_path=destination_raster_path,
+                        slope=slope,
+                        barrier_raster_path=barrier_raster_path,
+                        initial_barrier_value=orig_barrier_value,
+                        max_iterations=10, # später max_iterations_barriers
+                        feedback=None  # Suppress detailed feedback for individual calls
+                    )
+                else:
+                    raw_line = self._get_constant_slope_line(
+                        dtm_path=dtm_path,
+                        start_point=pt,
+                        destination_raster_path=destination_raster_path,
+                        slope=slope,
+                        barrier_raster_path=barrier_raster_path,
+                        feedback=None  # Suppress detailed feedback for individual calls
+                    )
+
                 if not raw_line:
                     if feedback:
                         feedback.pushInfo(f"[ConstantSlopeLines]   → No line for adjusted point {adj_idx}")
@@ -2159,23 +2563,11 @@ class TopoDrainCore:
                     continue
 
                 # snap with original start point
-                coords = list(raw_line.coords)
-                s_pt, e_pt = Point(coords[0]), Point(coords[-1])
-                if original_pts.loc[orig_idx].geometry.distance(s_pt) <= original_pts.loc[orig_idx].geometry.distance(e_pt):
-                    if original_pts.loc[orig_idx].geometry != s_pt:
-                        new_coords = [original_pts.loc[orig_idx].geometry.coords[0]] + coords
-                    else:
-                        new_coords = coords
-                else:
-                    if original_pts.loc[orig_idx].geometry != e_pt:
-                        new_coords = coords + [original_pts.loc[orig_idx].geometry.coords[0]]
-                    else:
-                        new_coords = coords
-                    # reverse line direction because we want start point to end point
-                    new_coords.reverse()
-
+                raw_line = TopoDrainCore._snap_line_to_point(raw_line, original_pts.loc[orig_idx].geometry, "start")
+                
+                # Append to results
                 results.append({
-                    "geometry": LineString(new_coords),
+                    "geometry": raw_line,
                     "orig_index": orig_idx,
                     "adj_index": adj_idx,
                     **orig_attrs
@@ -2203,14 +2595,26 @@ class TopoDrainCore:
                 else:
                     print(f"[ConstantSlopeLines] Processing non-overlapping point {current_point}/{total_points} - Orig pt {orig_idx} (no barrier)…")
 
-                raw_line = self._get_constant_slope_line(
-                    dtm_path=dtm_path,
-                    start_point=orig_pt,
-                    destination_raster_path=destination_raster_path,
-                    slope=slope,
-                    barrier_raster_path=barrier_raster_path,
-                    feedback=feedback  # Suppress detailed feedback for individual calls
-                )
+                if allow_barriers_as_temp_destination:
+                    raw_line = self._get_iterative_constant_slope_line(
+                        dtm_path=dtm_path,
+                        start_point=orig_pt,
+                        destination_raster_path=destination_raster_path,
+                        slope=slope,
+                        barrier_raster_path=barrier_raster_path,
+                        initial_barrier_value=None,  # No initial barrier value for non-overlapping points
+                        max_iterations=10, # max_iterations_barriers
+                        feedback=None  # Suppress detailed feedback for individual calls
+                    )
+                else:
+                    raw_line = self._get_constant_slope_line(
+                        dtm_path=dtm_path,
+                        start_point=orig_pt,
+                        destination_raster_path=destination_raster_path,
+                        slope=slope,
+                        barrier_raster_path=barrier_raster_path,
+                        feedback=None  # Suppress detailed feedback for individual calls
+                    )
 
                 if not raw_line:
                     if feedback:
@@ -2219,35 +2623,19 @@ class TopoDrainCore:
                         print(f"[ConstantSlopeLines]   → No line for point {orig_idx}")
                     continue
 
-                coords = list(raw_line.coords)
-                s_pt, e_pt = Point(coords[0]), Point(coords[-1])
-                if orig_pt.distance(s_pt) <= orig_pt.distance(e_pt):
-                    if orig_pt != s_pt:
-                        new_coords = [orig_pt.coords[0]] + coords
-                    else:
-                        new_coords = coords
-                else:
-                    if orig_pt != e_pt:
-                        new_coords = coords + [orig_pt.coords[0]]
-                    else:
-                        new_coords = coords
-                    # reverse line direction because we want start point to end point
-                    new_coords.reverse()
+                # Snap with original start point not necessary, because handled in _get_constant_slope_line if input is orig_pt
 
+                # Append to results
                 results.append({
-                    "geometry": LineString(new_coords),
+                    "geometry": raw_line,
                     "orig_index": orig_idx,
                     **orig_attrs
                 })
+
                 if feedback:
                     feedback.pushInfo(f"[ConstantSlopeLines]   → Line created for orig {orig_idx} (snapped)")
                 else:
                     print(f"[ConstantSlopeLines]   → Line created for orig {orig_idx} (snapped)")
-            else:
-                if feedback:
-                    feedback.pushInfo(f"[ConstantSlopeLines]   → No line for orig {orig_idx}")
-                else:
-                    print(f"[ConstantSlopeLines]   → No line for orig {orig_idx}")
 
         if not results:
             if feedback:
@@ -2262,11 +2650,12 @@ class TopoDrainCore:
 
         # build GeoDataFrame including all original attributes
         out_gdf = gpd.GeoDataFrame(results, crs=self.crs)
-        if barrier_features and barrier_line_geoms:
+        if barrier_features:
             out_gdf.orig_to_adjusted = dict(orig_to_adjusted)  # Add information about original indices to adjusted geometries
+            
         return out_gdf
 
-    def create_keylines(self, dtm_path, start_points, valley_lines, ridge_lines, slope, perimeter, feedback=None):
+    def create_keylines(self, dtm_path, start_points, valley_lines, ridge_lines, slope, perimeter, allow_barriers_as_temp_destination=False, feedback=None):
         """
         Create keylines using an iterative process:
         1. Trace from start points to ridges (using valleys as barriers)
@@ -2290,6 +2679,8 @@ class TopoDrainCore:
             Target slope for the constant slope lines (e.g., 0.01 for 1%)
         perimeter : GeoDataFrame
             Area of interest (perimeter) that always acts as destination feature (e.g. watershed, parcel polygon)
+        allow_barriers_as_temp_destination : bool
+            If True, barriers are included as temporary destinations for iterative tracing
         feedback : QgsProcessingFeedback
             Feedback object for progress reporting
 
@@ -2309,7 +2700,7 @@ class TopoDrainCore:
         ridge_lines_raster_path = os.path.join(self.temp_directory, "ridge_lines_mask.tif")
 
         # Rasterize valley_lines
-        valley_lines_mask = self._vector_to_mask([valley_lines], dtm_path)
+        valley_lines_mask = TopoDrainCore._vector_to_mask([valley_lines], dtm_path)
         with rasterio.open(dtm_path) as src:
             profile = src.profile.copy()
             res = src.res[0]  # Get resolution from DTM
@@ -2319,7 +2710,7 @@ class TopoDrainCore:
             dst.write(valley_lines_mask.astype("uint8"), 1)
 
         # Rasterize ridge_lines
-        ridge_lines_mask = self._vector_to_mask([ridge_lines], dtm_path)
+        ridge_lines_mask = TopoDrainCore._vector_to_mask([ridge_lines], dtm_path)
         ridge_profile = profile.copy()
         ridge_profile.update(dtype=rasterio.uint8, nodata=0)
         with rasterio.open(ridge_lines_raster_path, "w", **ridge_profile) as dst:
@@ -2375,6 +2766,7 @@ class TopoDrainCore:
                 destination_features=destination_features,
                 slope=use_slope,
                 barrier_features=barrier_features,
+                allow_barriers_as_temp_destination=allow_barriers_as_temp_destination,
                 feedback=None # want to keep feedback for the main loop, not for each tracing call here???
             )
 
@@ -2385,21 +2777,6 @@ class TopoDrainCore:
                     print(f"Stage {stage}: No lines generated, stopping...")
                 break
                 
-            # Add stage lines to results - ensure all lines go from valleys to ridges
-            for _, row in stage_lines.iterrows():
-                line_geom = row.geometry
-                
-                # For even stages, we traced from ridges to valleys (uphill)
-                # We need to reverse these lines so all keylines go valley → ridge
-                if stage % 2 == 0:  # Even stage: reverse direction to ensure valley → ridge
-                    if hasattr(line_geom, 'coords'):
-                        reversed_coords = list(line_geom.coords)[::-1]  # Reverse coordinate order
-                        line_geom = LineString(reversed_coords)
-                        if feedback:
-                            feedback.pushInfo(f"Stage {stage}: Reversed line direction (ridge→valley to valley→ridge)")
-                
-                all_keylines.append(line_geom)
-                
             if feedback:
                 feedback.pushInfo(f"Stage {stage} complete: {len(stage_lines)} lines to {target_type}")
             else:
@@ -2407,29 +2784,33 @@ class TopoDrainCore:
 
             # Check endpoints and create new start points if they're on target features
             new_start_points = []
+            # Define which raster acts as barrier
             new_point_barrier_raster_path = ridge_lines_raster_path if target_type == "ridges" else valley_lines_raster_path
             new_point_barrier_feature = ridge_lines if target_type == "ridges" else valley_lines
             if feedback:    
                 feedback.pushInfo(f"Stage {stage}: Checking endpoints on {target_type}...")
             else:
                 print(f"Stage {stage}: Checking endpoints on {target_type}...")
+            
+            # Iterate through each line in the stage_lines GeoDataFrame
             for _, line_row in stage_lines.iterrows():
                 line_geom = line_row.geometry
                 if hasattr(line_geom, 'coords') and len(line_geom.coords) >= 2:
                     end_point = Point(line_geom.coords[-1])
                     if feedback:
                         feedback.pushInfo(f"Stage {stage}: Checking endpoint {end_point.wkt} for new start point...")
-                    # Check if endpoint is within the perimeter boundary (not just the polygon itself)
+                    # Check if endpoint reached the perimeter boundary
                     if perimeter is not None:
                         # Use the boundary (line) of the perimeter polygon(s) to check for overlap
-                        perim_boundary = perimeter.boundary.unary_union
-                        min_dist_perim = perim_boundary.distance(end_point)
+                        perimeter_boundary = perimeter.boundary.unary_union
+                        min_dist_perim = perimeter_boundary.distance(end_point)
                         if feedback:
                             feedback.pushInfo(f"Stage {stage}: Distance to perimeter boundary: {min_dist_perim}")
                         if min_dist_perim <= 2 * res:
                             if feedback:
                                 feedback.pushInfo(f"Stage {stage}: Endpoint is close enough to perimeter boundary (< {2 * res}), skipping further tracing.")
                             continue  # We have reached the final destination
+                    # Check if endpoint is probably on barrier
                     min_dist_barrier = new_point_barrier_feature.distance(end_point).min()
                     if feedback:
                         feedback.pushInfo(f"Stage {stage}: Distance to barrier: {min_dist_barrier}")
@@ -2443,12 +2824,28 @@ class TopoDrainCore:
                             if feedback:
                                 feedback.pushInfo(f"Stage {stage}: New start point found at {new_start_point.wkt}")
                             new_start_points.append(new_start_point)
+                            # Extend line_geom to include the new start point
+                            line_geom = TopoDrainCore._snap_line_to_point(
+                                line_geom, new_start_point, "end"
+                            )
+
                         else:
                             if feedback:
                                 feedback.pushInfo(f"Stage {stage}: No valid start point found.")
                             else:
                                 print(f"Stage {stage}: No valid start point found.")
-                    else:
+
+                    # For even stages, we traced from ridges to valleys (uphill)
+                    # We want to reverse these lines so all keylines go valley → ridge
+                    if stage % 2 == 0:  # Even stage: reverse direction to ensure valley → ridge
+                        reversed_coords = list(line_geom.coords)[::-1]  # Reverse coordinate order
+                        line_geom = LineString(reversed_coords)
+                        if feedback:
+                            feedback.pushInfo(f"Stage {stage}: Reversed line direction (ridge→valley to valley→ridge)")
+                            
+                    all_keylines.append(line_geom)
+
+                else:
                         feedback.pushInfo(f"Stage {stage}: Endpoint is not within {2.5 * res}, skipping...")
 
             if not new_start_points:
@@ -2503,6 +2900,7 @@ class TopoDrainCore:
         slope_after: float,
         destination_features: list[gpd.GeoDataFrame],
         barrier_features: list[gpd.GeoDataFrame] = None,
+        allow_barriers_as_temp_destination: bool = False,
         feedback=None
     ) -> gpd.GeoDataFrame:
         """
@@ -2518,6 +2916,7 @@ class TopoDrainCore:
             slope_after (float): New slope to apply after the change point (e.g., 0.01 for 1% downhill).
             destination_features (list[gpd.GeoDataFrame]): Destination features for the new slope sections, e.g. ridge lines in case of keylines.
             barrier_features (list[gpd.GeoDataFrame], optional): Barrier features to avoid, e.g. valley lines in case of keylines.
+            allow_barriers_as_temp_destination (bool): If True, barriers are included as temporary destinations for iterative tracing.
             feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting.
             
         Returns:
@@ -2550,8 +2949,8 @@ class TopoDrainCore:
             # Handle MultiLineString by stitching into a single LineString
             if isinstance(line_geom, MultiLineString):
                 if feedback:
-                    feedback.pushInfo(f"[AdjustConstantSlopeAfter] Converting MultiLineString to LineString using _stitch_multilinestring")
-                line_geom = self._stitch_multilinestring(line_geom)
+                    feedback.pushInfo(f"[AdjustConstantSlopeAfter] Converting MultiLineString to LineString using _merge_lines_by_distance")
+                line_geom = TopoDrainCore._merge_lines_by_distance(line_geom)
             elif not isinstance(line_geom, LineString):
                 if feedback:
                     feedback.pushInfo(f"[AdjustConstantSlopeAfter] Skipping unsupported geometry type: {type(line_geom)} at index {idx}")
@@ -2666,6 +3065,7 @@ class TopoDrainCore:
                     destination_features=destination_features,
                     slope=slope_after,
                     barrier_features=barrier_features,
+                    allow_barriers_as_temp_destination=allow_barriers_as_temp_destination,
                     feedback=feedback  # Pass feedback to the main tracing call
                 )
                 

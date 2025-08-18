@@ -11,7 +11,8 @@ from qgis.PyQt.QtGui import QIcon
 from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterRasterLayer,
                        QgsProcessingParameterVectorLayer, QgsProcessingParameterMultipleLayers,
                        QgsProcessingParameterVectorDestination, QgsProcessingParameterNumber,
-                       QgsProcessing, QgsProcessingException, QgsProcessingParameterFeatureSource)
+                       QgsProcessingParameterBoolean, QgsProcessing, QgsProcessingException, 
+                       QgsProcessingParameterFeatureSource)
 import os
 import geopandas as gpd
 from .utils import get_crs_from_layer
@@ -41,6 +42,7 @@ class AdjustConstantSlopeAfterAlgorithm(QgsProcessingAlgorithm):
     OUTPUT_ADJUSTED_LINES = 'OUTPUT_ADJUSTED_LINES'
     CHANGE_AFTER = 'CHANGE_AFTER'
     SLOPE_AFTER = 'SLOPE_AFTER'
+    ALLOW_BARRIERS_AS_TEMP_DESTINATION = 'ALLOW_BARRIERS_AS_TEMP_DESTINATION'
 
     def __init__(self, core=None):
         super().__init__()
@@ -136,6 +138,14 @@ Parameters:
                 defaultValue=0.005,
                 minValue=-1.0,
                 maxValue=1.0
+            )
+        )
+        
+        self.addParameter(
+            QgsProcessingParameterBoolean(
+                self.ALLOW_BARRIERS_AS_TEMP_DESTINATION,
+                self.tr('Allow barriers as temporary destinations (iterative tracing)'),
+                defaultValue=False
             )
         )
         

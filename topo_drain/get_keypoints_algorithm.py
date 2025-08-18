@@ -48,7 +48,6 @@ class GetKeypointsAlgorithm(QgsProcessingAlgorithm):
     # Constants used to refer to parameters and outputs
     INPUT_VALLEY_LINES = 'INPUT_VALLEY_LINES'
     INPUT_DTM = 'INPUT_DTM'
-    SAMPLING_DISTANCE = 'SAMPLING_DISTANCE'
     SMOOTHING_WINDOW = 'SMOOTHING_WINDOW'
     POLYORDER = 'POLYORDER'
     MIN_DISTANCE = 'MIN_DISTANCE'
@@ -87,7 +86,7 @@ class GetKeypointsAlgorithm(QgsProcessingAlgorithm):
 This algorithm identifies keypoints (points of high convexity) along valley lines by analyzing the curvature of elevation profiles extracted from a DTM. 
 
 The algorithm:
-- Extracts elevation profiles along each valley line using the DTM. Extracts elevation value every x meters along the line ("Sampling distance along lines (m)")
+- Extracts elevation profiles along each valley line using the DTM at pixel resolution
 - Applies smoothing to reduce noise depending on the parameters "smoothing window" and "polyorder"
 - Computes the second derivative (curvature) of the elevation profile
 - Identifies inflection points where curvature changes from concave to convex
@@ -106,7 +105,7 @@ Point layer containing detected keypoints with attributes: valley_id, elev_index
 Simplified Parameters:
 - Maximum keypoints: Limits output per valley line
 - Minimum distance: Ensures spatial separation between keypoints
-- Sampling distance: Controls resolution of elevation profile analysis"""
+- Smoothing parameters: Control noise reduction in elevation profiles"""
         )
 
     def icon(self):
@@ -155,17 +154,6 @@ Simplified Parameters:
             )
         )
 
-        # Sampling distance along lines
-        self.addParameter(
-            QgsProcessingParameterNumber(
-                self.SAMPLING_DISTANCE,
-                self.tr('Sampling distance along lines (m)'),
-                type=QgsProcessingParameterNumber.Double,
-                defaultValue=2.0,
-                minValue=0.1
-          )
-        )
-
         # Polynomial order
         self.addParameter(
             QgsProcessingParameterNumber(
@@ -202,7 +190,6 @@ Simplified Parameters:
         # Validate and read input parameters
         valley_lines_source = self.parameterAsSource(parameters, self.INPUT_VALLEY_LINES, context)
         dtm_layer = self.parameterAsRasterLayer(parameters, self.INPUT_DTM, context)
-        sampling_distance = self.parameterAsDouble(parameters, self.SAMPLING_DISTANCE, context)
         smoothing_window = self.parameterAsInt(parameters, self.SMOOTHING_WINDOW, context)
         polyorder = self.parameterAsInt(parameters, self.POLYORDER, context)
         min_distance = self.parameterAsDouble(parameters, self.MIN_DISTANCE, context)
@@ -262,7 +249,6 @@ Simplified Parameters:
         keypoints_gdf = self.core.get_keypoints(
             valley_lines=valley_lines_gdf,
             dtm_path=dtm_path,
-            sampling_distance=sampling_distance,
             smoothing_window=smoothing_window,
             polyorder=polyorder,
             min_distance=min_distance,
