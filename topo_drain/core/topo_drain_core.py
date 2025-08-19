@@ -18,7 +18,7 @@ from rasterio.mask import mask as rio_mask
 from rasterio.sample import sample_gen
 from rasterio.features import rasterize
 from shapely.geometry import LineString, MultiLineString, Point
-from shapely.ops import linemerge, nearest_points, unary_union
+from shapely.ops import linemerge, nearest_points, unary_union, substring
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import savgol_filter
 import re
@@ -1935,13 +1935,16 @@ class TopoDrainCore:
         destination_raster_path: str,
         slope: float = 0.01,
         barrier_raster_path: str = None,
-        feedback=None
+        feedback=None,
+        max_iterations: int = 10,
+        distance_deviation_threshold: float = 0.1
     ) -> LineString:
         """
-        Trace lines with constant slope starting from a given point using a cost-distance approach based on slope deviation.
-
-        This function creates a cost raster that penalizes deviation from the desired slope,
-        runs a least-cost-path analysis using WhiteboxTools, and returns the resulting line.
+        Trace lines with constant slope starting from a given point using an iterative approach.
+        
+        This function traces a line, checks where the line distance deviates too much from 
+        the Euclidean distance from start point, cuts the line at that point, and continues 
+        from there in subsequent iterations.
 
         Args:
             dtm_path (str): Path to the digital terrain model (GeoTIFF).
@@ -1950,97 +1953,269 @@ class TopoDrainCore:
             slope (float): Desired slope for the line (e.g., 0.01 for 1% downhill or -0.01 for uphill).
             barrier_raster_path (str): Optional path to a binary raster of cells that should not be crossed (1 = barrier).
             feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting.
+            max_iterations (int): Maximum number of iterations for line refinement.
+            distance_deviation_threshold (float): Maximum allowed deviation of line distance vs Euclidean distance (e.g., 0.1 for 10%).
 
         Returns:
-            LineString: Least-cost slope path as a Shapely LineString, or None if no path found.
+            LineString: Refined constant slope path as a Shapely LineString, or None if no path found.
         """
         if self.wbt is None:
             raise RuntimeError("WhiteboxTools not initialized.")
 
-        # --- Temporary file paths ---
-        cost_raster_path = os.path.join(self.temp_directory, "cost.tif")
-        source_raster_path = os.path.join(self.temp_directory, "source.tif")
-        accum_raster_path = os.path.join(self.temp_directory, "accum.tif")
-        backlink_raster_path = os.path.join(self.temp_directory, "backlink.tif")
-        best_destination_raster_path = os.path.join(self.temp_directory, "destination_best.tif")
-        pathway_raster_path = os.path.join(self.temp_directory, "pathway.tif")
-
-        print(f"[GetConstantSlopeLine] Create cost slope raster for start point {start_point} with slope {slope}")
-        # --- Create cost raster ---
-        cost_raster_path = TopoDrainCore._create_slope_cost_raster(
-            dtm_path=dtm_path,
-            start_point=start_point,
-            output_cost_raster_path=cost_raster_path,
-            slope=slope,
-            barrier_raster_path=barrier_raster_path
-        )
-
-        print("[GetConstantSlopeLine] Create source raster")
-        # --- Create source raster ---
-        source_raster_path = TopoDrainCore._create_source_raster(
-            reference_raster_path=dtm_path,
-            source_point=start_point,
-            output_source_raster_path=source_raster_path
-        )
-
-        print("[GetConstantSlopeLine] Starting cost-distance analysis")
-        # --- Run cost-distance analysis ---
-        ret = self._execute_wbt(
-            'cost_distance',
-            feedback=feedback,
-            source=source_raster_path,
-            cost=cost_raster_path,
-            out_accum=accum_raster_path,
-            out_backlink=backlink_raster_path
-        )
+        current_start_point = start_point
+        accumulated_line_segments = []
         
-        if ret != 0 or not os.path.exists(accum_raster_path) or not os.path.exists(backlink_raster_path):
-            raise RuntimeError(f"Cost distance analysis failed: WhiteboxTools returned {ret}, outputs not found")
+        for iteration in range(max_iterations):
+            print(f"[GetConstantSlopeLine] Iteration {iteration + 1}/{max_iterations}")
+            
+            # --- Temporary file paths ---
+            cost_raster_path = os.path.join(self.temp_directory, f"cost_iter_{iteration}.tif")
+            source_raster_path = os.path.join(self.temp_directory, f"source_iter_{iteration}.tif")
+            accum_raster_path = os.path.join(self.temp_directory, f"accum_iter_{iteration}.tif")
+            backlink_raster_path = os.path.join(self.temp_directory, f"backlink_iter_{iteration}.tif")
+            best_destination_raster_path = os.path.join(self.temp_directory, f"destination_best_iter_{iteration}.tif")
+            pathway_raster_path = os.path.join(self.temp_directory, f"pathway_iter_{iteration}.tif")
 
-        print("[GetConstantSlopeLine] Selecting best destination cell")
-        # --- Select best destination cell ---
-        best_destination_raster_path, best_destination_point = TopoDrainCore._select_best_destination_cell(
-            accum_raster_path=accum_raster_path,
-            destination_raster_path=destination_raster_path,
-            best_destination_raster_path=best_destination_raster_path # output path
-        )
+            print(f"[GetConstantSlopeLine] Create cost slope raster for iteration {iteration + 1}")
+            # --- Create cost raster ---
+            cost_raster_path = TopoDrainCore._create_slope_cost_raster(
+                dtm_path=dtm_path,
+                start_point=current_start_point,
+                output_cost_raster_path=cost_raster_path,
+                slope=slope,
+                barrier_raster_path=barrier_raster_path
+            )
 
-        print(f"[GetConstantSlopeLine] Tracing least-cost pathway to best destination {best_destination_point}")
-        # --- Trace least-cost pathway ---
-        ret = self._execute_wbt(
-            'cost_pathway',
-            feedback=feedback,
-            destination=best_destination_raster_path,
-            backlink=backlink_raster_path,
-            output=pathway_raster_path
-        )
-        
-        if ret != 0 or not os.path.exists(pathway_raster_path):
-            if feedback:
-                feedback.pushError(f"[TopoDrainCore] Cost pathway analysis failed: WhiteboxTools returned {ret}, output not found at {pathway_raster_path}")
+            print(f"[GetConstantSlopeLine] Create source raster for iteration {iteration + 1}")
+            # --- Create source raster ---
+            source_raster_path = TopoDrainCore._create_source_raster(
+                reference_raster_path=dtm_path,
+                source_point=current_start_point,
+                output_source_raster_path=source_raster_path
+            )
+
+            print(f"[GetConstantSlopeLine] Starting cost-distance analysis for iteration {iteration + 1}")
+            # --- Run cost-distance analysis ---
+            ret = self._execute_wbt(
+                'cost_distance',
+                feedback=feedback,
+                source=source_raster_path,
+                cost=cost_raster_path,
+                out_accum=accum_raster_path,
+                out_backlink=backlink_raster_path
+            )
+            
+            if ret != 0 or not os.path.exists(accum_raster_path) or not os.path.exists(backlink_raster_path):
+                raise RuntimeError(f"Cost distance analysis failed in iteration {iteration + 1}: WhiteboxTools returned {ret}")
+
+            print(f"[GetConstantSlopeLine] Selecting best destination cell for iteration {iteration + 1}")
+            # --- Select best destination cell ---
+            best_destination_raster_path, best_destination_point = TopoDrainCore._select_best_destination_cell(
+                accum_raster_path=accum_raster_path,
+                destination_raster_path=destination_raster_path,
+                best_destination_raster_path=best_destination_raster_path
+            )
+
+            print(f"[GetConstantSlopeLine] Tracing least-cost pathway for iteration {iteration + 1}")
+            # --- Trace least-cost pathway ---
+            ret = self._execute_wbt(
+                'cost_pathway',
+                feedback=feedback,
+                destination=best_destination_raster_path,
+                backlink=backlink_raster_path,
+                output=pathway_raster_path
+            )
+            
+            if ret != 0 or not os.path.exists(pathway_raster_path):
+                if feedback:
+                    feedback.pushError(f"[TopoDrainCore] Cost pathway analysis failed in iteration {iteration + 1}")
+                raise RuntimeError(f"Cost pathway analysis failed in iteration {iteration + 1}")
+
+            # --- Set correct NoData value for pathway raster ---
+            with rasterio.open(backlink_raster_path) as src:
+                nodata_value = src.nodata
+            with rasterio.open(pathway_raster_path, 'r+') as dst:
+                dst.nodata = nodata_value
+
+            print(f"[GetConstantSlopeLine] Converting pathway raster to LineString for iteration {iteration + 1}")
+            # --- Convert to LineString ---
+            line_segment = self._raster_to_linestring_wbt(
+                pathway_raster_path, 
+                snap_to_start_point=current_start_point, 
+                snap_to_endpoint=best_destination_point, 
+                feedback=feedback
+            )
+
+            if line_segment is None:
+                print(f"[GetConstantSlopeLine] No valid line found in iteration {iteration + 1}")
+                break
+
+            # --- Analyze distance deviation and find cut point ---
+            print(f"[GetConstantSlopeLine] Analyzing distance deviation for iteration {iteration + 1}")
+            cut_point, reaches_destination = self._analyze_distance_deviation_and_cut(
+                line_segment, 
+                current_start_point, 
+                distance_deviation_threshold,
+                destination_raster_path
+            )
+            
+            if cut_point is not None:
+                # Cut the line at the identified point
+                cut_line = self._cut_line_at_point(line_segment, cut_point)
+                if cut_line:
+                    accumulated_line_segments.append(cut_line)
+                    
+                    if reaches_destination:
+                        print(f"[GetConstantSlopeLine] Reached destination in iteration {iteration + 1}")
+                        break
+                    else:
+                        # Continue from cut point in next iteration
+                        current_start_point = cut_point
+                        print(f"[GetConstantSlopeLine] Continuing from cut point: {cut_point}")
+                else:
+                    # If cutting failed, use the whole segment
+                    accumulated_line_segments.append(line_segment)
+                    break
             else:
-                print(f"[TopoDrainCore] Cost pathway analysis failed: WhiteboxTools returned {ret}, output not found at {pathway_raster_path}")
-            raise RuntimeError(f"Cost pathway analysis failed: WhiteboxTools returned {ret}, output not found at {pathway_raster_path}")
+                # No cut needed, line is good
+                accumulated_line_segments.append(line_segment)
+                print(f"[GetConstantSlopeLine] Line segment acceptable, no cutting needed in iteration {iteration + 1}")
+                break
 
-        # --- Set correct NoData value for pathway raster ---
-        with rasterio.open(backlink_raster_path) as src:
-            nodata_value = src.nodata
-        with rasterio.open(pathway_raster_path, 'r+') as dst:
-            dst.nodata = nodata_value
-
-        print("[GetConstantSlopeLine] Converting pathway raster to LineString")
-        # --- Convert to LineString, ensure single part and correct line direction ---
-        line = self._raster_to_linestring_wbt(pathway_raster_path, snap_to_start_point=start_point, snap_to_endpoint=best_destination_point, feedback=feedback)
-
-        if line is None:
-            warnings.warn("[GetConstantSlopeLine] No valid line could be extracted from pathway raster.")
+        # --- Combine all segments into final line ---
+        if not accumulated_line_segments:
+            warnings.warn("[GetConstantSlopeLine] No valid line segments could be extracted.")
             return None
+
+        if len(accumulated_line_segments) == 1:
+            final_line = accumulated_line_segments[0]
+        else:
+            # Merge multiple segments
+            all_coords = []
+            for segment in accumulated_line_segments:
+                coords = list(segment.coords)
+                if all_coords and coords[0] == all_coords[-1]:
+                    # Remove duplicate point at junction
+                    coords = coords[1:]
+                all_coords.extend(coords)
+            
+            if len(all_coords) < 2:
+                warnings.warn("[GetConstantSlopeLine] Insufficient coordinates for final line.")
+                return None
+                
+            final_line = LineString(all_coords)
 
         print("[GetConstantSlopeLine] Smoothing the resulting line")
         # --- Optional smoothing ---
-        line = TopoDrainCore._smooth_linestring(line, sigma=1.0)
+        final_line = TopoDrainCore._smooth_linestring(final_line, sigma=1.0)
 
-        return line
+        print(f"[GetConstantSlopeLine] Final line WKT: {final_line.wkt}")
+        return final_line
+
+    def _analyze_distance_deviation_and_cut(
+        self,
+        line: LineString,
+        start_point: Point,
+        deviation_threshold: float,
+        destination_raster_path: str
+    ) -> tuple[Point, bool]:
+        """
+        Analyze the distance deviation of a line compared to Euclidean distance from start point.
+        
+        Args:
+            line (LineString): The line to analyze.
+            start_point (Point): Original start point for reference.
+            deviation_threshold (float): Maximum allowed relative deviation (e.g., 0.1 for 10%).
+            destination_raster_path (str): Path to destination raster to check if cut point reaches destination.
+            
+        Returns:
+            tuple: (cut_point, reaches_destination) where cut_point is None if no cutting needed.
+        """
+        # Sample points along the line at regular intervals
+        line_length = line.length
+        num_samples = max(int(line_length / 5.0), 10)  # Sample every 5 meters or at least 10 points
+        
+        distances_along_line = np.linspace(0, line_length, num_samples)
+        sample_points = [line.interpolate(d) for d in distances_along_line]
+        
+        print(f"[AnalyzeDistanceDeviation] Analyzing {num_samples} points along {line_length:.1f}m line")
+        print(f"[AnalyzeDistanceDeviation] Start point: {start_point}, Deviation threshold: {deviation_threshold:.2f}")
+        
+        # Calculate deviations
+        for i, (line_distance, point) in enumerate(zip(distances_along_line, sample_points)):
+            if line_distance == 0:
+                continue  # Skip start point
+                
+            # Calculate Euclidean distance from start point
+            euclidean_distance = start_point.distance(point)
+            
+            # Calculate deviation ratio (line_distance / euclidean_distance)
+            if euclidean_distance > 0:
+                deviation_ratio = line_distance / euclidean_distance
+                relative_deviation = (deviation_ratio - 1.0)  # How much more than straight line
+                
+                print(f"[AnalyzeDistanceDeviation] Point {i}: line_dist={line_distance:.1f}m, "
+                      f"euclidean_dist={euclidean_distance:.1f}m, ratio={deviation_ratio:.3f}, "
+                      f"deviation={relative_deviation:.3f}")
+                
+                if relative_deviation > deviation_threshold:
+                    print(f"[AnalyzeDistanceDeviation] Distance deviation {relative_deviation:.3f} exceeds threshold {deviation_threshold:.3f} at line distance {line_distance:.1f}m")
+                    
+                    # Check if this point is on destination
+                    reaches_destination = self._point_on_destination(point, destination_raster_path)
+                    
+                    return point, reaches_destination
+        
+        # No cutting needed - line maintains acceptable distance deviation
+        print(f"[AnalyzeDistanceDeviation] Line maintains acceptable distance deviation")
+        
+        # Check if endpoint reaches destination
+        endpoint = Point(line.coords[-1])
+        reaches_destination = self._point_on_destination(endpoint, destination_raster_path)
+        
+        return None, reaches_destination
+
+    def _point_on_destination(self, point: Point, destination_raster_path: str) -> bool:
+        """Check if a point is on a destination cell."""
+        with rasterio.open(destination_raster_path) as src:
+            try:
+                row, col = src.index(point.x, point.y)
+                if 0 <= row < src.height and 0 <= col < src.width:
+                    dest_data = src.read(1)
+                    return dest_data[row, col] == 1
+            except:
+                pass
+        return False
+
+    def _cut_line_at_point(self, line: LineString, cut_point: Point) -> LineString:
+        """
+        Cut a line at the specified point, returning the portion from start to cut point.
+        
+        Args:
+            line (LineString): The line to cut.
+            cut_point (Point): The point where to cut the line.
+            
+        Returns:
+            LineString: The line segment from start to cut point.
+        """
+        try:
+            # Find the distance along the line to the cut point
+            cut_distance = line.project(cut_point)
+            
+            # Create a new line from start to cut point
+            cut_line = substring(line, 0, cut_distance)
+            
+            # Ensure the cut line ends exactly at the cut point
+            if isinstance(cut_line, LineString) and len(cut_line.coords) >= 2:
+                coords = list(cut_line.coords)
+                coords[-1] = (cut_point.x, cut_point.y)  # Replace last coordinate with exact cut point
+                return LineString(coords)
+            else:
+                return line  # Fallback to original line if cutting failed
+                
+        except Exception as e:
+            print(f"[CutLineAtPoint] Error cutting line: {e}")
+            return line  # Fallback to original line
     
     def _get_iterative_constant_slope_line(
         self,
@@ -2544,7 +2719,7 @@ class TopoDrainCore:
                         slope=slope,
                         barrier_raster_path=barrier_raster_path,
                         initial_barrier_value=orig_barrier_value,
-                        max_iterations=1, # später max_iterations_barriers
+                        max_iterations=10, # später max_iterations_barriers
                         feedback=feedback  # Suppress detailed feedback for individual calls
                     )
                 else:
@@ -2605,7 +2780,7 @@ class TopoDrainCore:
                         slope=slope,
                         barrier_raster_path=barrier_raster_path,
                         initial_barrier_value=None,  # No initial barrier value for non-overlapping points
-                        max_iterations=1, # max_iterations_barriers
+                        max_iterations=10, # max_iterations_barriers
                         feedback=feedback  # Suppress detailed feedback for individual calls
                     )
                 else:
