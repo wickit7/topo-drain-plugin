@@ -145,7 +145,6 @@ class TopoDrainCore:
             # Fallback to subprocess
             return self._execute_with_subprocess(arguments)
 
-    ########## Maybe later show whitebox output only in python console (print statements)
     def _execute_with_qgis_process(self, arguments, feedback=None):
         """Execute using QGIS QgsBlockingProcess with progress monitoring."""
         
@@ -170,7 +169,10 @@ class TopoDrainCore:
                 on_stdout.buffer += val
 
             if on_stdout.buffer.endswith(('\n', '\r')):
-                feedback.pushConsoleInfo(on_stdout.buffer.rstrip())
+                if feedback:
+                    feedback.pushConsoleInfo(on_stdout.buffer.rstrip())
+                else:
+                    print(on_stdout.buffer.rstrip())
                 on_stdout.buffer = ''
 
         on_stdout.buffer = ''
@@ -180,7 +182,10 @@ class TopoDrainCore:
             on_stderr.buffer += val
 
             if on_stderr.buffer.endswith(('\n', '\r')):
-                feedback.reportError(on_stderr.buffer.rstrip())
+                if feedback:
+                    feedback.reportError(on_stderr.buffer.rstrip())
+                else:
+                    print(on_stderr.buffer.rstrip())
                 on_stderr.buffer = ''
 
         on_stderr.buffer = ''
@@ -197,11 +202,17 @@ class TopoDrainCore:
         elif not feedback.isCanceled() and proc.exitStatus() == QProcess.CrashExit:
             raise QgsProcessingException('Process was unexpectedly terminated.')
         elif res == 0:
-            feedback.pushInfo('Process completed successfully.')
+            if feedback:
+                feedback.pushInfo('Process completed successfully.')
+            else:
+                print('Process completed successfully.')
         elif proc.processError() == QProcess.FailedToStart:
             raise QgsProcessingException(f'Process "{command}" failed to start. Either "{command}" is missing, or you may have insufficient permissions to run the program.')
         else:
-            feedback.reportError(f'Process returned error code {res}')
+            if feedback:
+                feedback.reportError(f'Process returned error code {res}')
+            else:
+                print(f'Process returned error code {res}') 
 
         return res
 
@@ -238,15 +249,13 @@ class TopoDrainCore:
         Returns:
             LineString: Single merged LineString, or None if merging fails.
         """
+        print(f"[_merge_lines_by_distance] Start merge lines...")
         # Handle different input types
         if isinstance(line_geometries, LineString):
-            print(f"[_merge_lines_by_distance] Input: Single LineString, returning as-is")
             return line_geometries
         elif isinstance(line_geometries, MultiLineString):
-            print(f"[_merge_lines_by_distance] Input: MultiLineString with {len(line_geometries.geoms)} parts")
             line_list = list(line_geometries.geoms)
         elif isinstance(line_geometries, list):
-            print(f"[_merge_lines_by_distance] Input: List with {len(line_geometries)} items")
             # Flatten any MultiLineString objects in the list
             line_list = []
             for geom in line_geometries:
@@ -260,31 +269,22 @@ class TopoDrainCore:
             warnings.warn(f"[_merge_lines_by_distance] Error: Unsupported input type: {type(line_geometries)}")
             return None
 
-        print(f"[_merge_lines_by_distance] Starting with {len(line_list) if line_list else 0} lines")
         
         if not line_list:
-            print(f"[_merge_lines_by_distance] No lines provided, returning None")
             return None
         
         if len(line_list) == 1:
-            print(f"[_merge_lines_by_distance] Single line, returning as-is")
             return line_list[0]
         
         # Convert to list to avoid modifying original
         remaining_lines = line_list.copy()
-        
-        # Start with the longest line as base
-        for idx, line in enumerate(remaining_lines):
-            print(f"[_merge_lines_by_distance] Line {idx}: length={line.length:.2f}, wkt={line.wkt}")
 
         remaining_lines.sort(key=lambda line: line.length, reverse=True)
         longest_line = remaining_lines.pop(0)
         merged_coords = list(longest_line.coords)
-        print(f"[_merge_lines_by_distance] Starting with longest line ({longest_line.length:.2f} units, {len(merged_coords)} coords)")
         iteration = 0
         while remaining_lines:
             iteration += 1
-            print(f"[_merge_lines_by_distance] Iteration {iteration}: {len(remaining_lines)} lines remaining")
             
             # Get endpoints of current merged line
             start_point = Point(merged_coords[0])
@@ -312,7 +312,6 @@ class TopoDrainCore:
                         best_distance = distance
                         best_line_idx = idx
                         best_connection = action
-                        print(f"[_merge_lines_by_distance]   New best: line {idx}, {conn_type}, distance {distance:.3f}, action {action}")
             
             # Connect the best line
             if best_line_idx is not None:
@@ -336,17 +335,12 @@ class TopoDrainCore:
                     merged_coords = merged_coords[:-1] + line_coords
                 
                 coords_after = len(merged_coords)
-                print(f"[_merge_lines_by_distance]   Connected line {best_line_idx} using {best_connection}, coords: {coords_before} -> {coords_after}")
             else:
                 # No valid connection found, break
-                print(f"[_merge_lines_by_distance] No valid connection found, stopping with {len(remaining_lines)} lines unmerged")
                 break
         
-        result = LineString(merged_coords)
-        print(f"[_merge_lines_by_distance] Result WKT: {result.wkt}")
-        
+        result = LineString(merged_coords)        
 
-        print(f"[_merge_lines_by_distance] Final result: LineString with {len(merged_coords)} coordinates, length {result.length:.2f}")
         return result
 
     @staticmethod
@@ -790,7 +784,6 @@ class TopoDrainCore:
         if snap_to_endpoint:
             single_part_line = TopoDrainCore._snap_line_to_point(single_part_line, snap_to_endpoint, "end")
 
-        print(f"[TopoDrainCore] _raster_to_linestring_wbt: Returning line WKT: {single_part_line.wkt}")
         
         return single_part_line
 
@@ -2047,7 +2040,6 @@ class TopoDrainCore:
         # --- Optional smoothing ---
         line = TopoDrainCore._smooth_linestring(line, sigma=1.0)
 
-        print(f"[GetConstantSlopeLine] Smoothed line WKT: {line.wkt}")
         return line
     
     def _get_iterative_constant_slope_line(
@@ -2172,6 +2164,7 @@ class TopoDrainCore:
             # Check if endpoint is on original destination
             endpoint = Point(line_coords[-1])
             print(f"[IterativeConstantSlopeLine] Endpoint iteration {current_iteration}: {endpoint.wkt}")
+            final_destination_found = False
             with rasterio.open(destination_raster_path) as dest_src:
                 end_row, end_col = dest_src.index(endpoint.x, endpoint.y)
                 if 0 <= end_row < orig_dest_data.shape[0] and 0 <= end_col < orig_dest_data.shape[1]:
@@ -2180,59 +2173,68 @@ class TopoDrainCore:
                             feedback.pushInfo(f"[IterativeConstantSlopeLine] Reached final destination in iteration {current_iteration + 1}")
                         else:
                             print(f"[IterativeConstantSlopeLine] Reached final destination in iteration {current_iteration + 1}")
-                        break
+                        final_destination_found = True
                     else:
                         print(f"[IterativeConstantSlopeLine] Endpoint not on destination in iteration {current_iteration + 1}, checking barriers.")
             
-            # else endpoint will be on a barrier or not on destination, so we need to adjust the start point for the next iteration
-            # Get barrier value at endpoint for next iteration
-            with rasterio.open(barrier_raster_path) as barrier_src:
-                end_row, end_col = barrier_src.index(endpoint.x, endpoint.y)
-                if 0 <= end_row < barrier_src.height and 0 <= end_col < barrier_src.width:
-                    current_barrier_value = int(barrier_src.read(1)[end_row, end_col])
+            if final_destination_found:
+                # If we reached the final destination, add this final segment and stop
+                if accumulated_line_coords:
+                    # Skip first coordinate to avoid duplication
+                    accumulated_line_coords.extend(line_segment.coords[1:])
                 else:
-                    current_barrier_value = None
-                print(f"[IterativeConstantSlopeLine] current_barrier_value: {current_barrier_value}")
-
-            if current_barrier_value:
-                # Get start point for next iteration
-                current_start_point = TopoDrainCore._get_linedirection_start_point(
-                    barrier_raster_path=barrier_raster_path,
-                    line_geom=line_segment,
-                    max_offset=5,  # adjust as needed
-                    reverse=True  # always go backward were the line came from
-                )
+                    accumulated_line_coords.extend(line_segment.coords)
+                    
+                break
             else:
-                current_start_point = endpoint  # if no barrier, continue from endpoint (should actually never happen in this case)
-
-            # Adjust line_segment to only go up to the new current_start_point (not to the endpoint)
-            if current_start_point != endpoint:
-                coords = list(line_segment.coords)
-                min_dist = float('inf')
-                min_idx = None
-                for i, coord in enumerate(coords):
-                    dist = Point(coord).distance(current_start_point)
-                    if dist < min_dist:
-                        min_dist = dist
-                        min_idx = i
-                # If the closest point is not exactly at a vertex and not exactly current_start_point,
-                # set the coordinate at min_idx to current_start_point and remove subsequent indexes
-                if min_idx:
-                    if Point(coords[min_idx]).equals(current_start_point):
-                        new_coords = coords[:min_idx + 1]
+                # Get barrier value at endpoint for next iteration
+                with rasterio.open(barrier_raster_path) as barrier_src:
+                    end_row, end_col = barrier_src.index(endpoint.x, endpoint.y)
+                    if 0 <= end_row < barrier_src.height and 0 <= end_col < barrier_src.width:
+                        current_barrier_value = int(barrier_src.read(1)[end_row, end_col])
                     else:
-                        new_coords = coords[:min_idx]
-                        new_coords.append((current_start_point.x, current_start_point.y))
-                    line_segment = LineString(new_coords)
+                        current_barrier_value = None
+                    print(f"[IterativeConstantSlopeLine] current_barrier_value: {current_barrier_value}")
 
-            print(f"[IterativeConstantSlopeLine] Iteration {current_iteration} - final line segment WKT: {line_segment.wkt}")
-            print(f"[IterativeConstantSlopeLine] New start point for next iteration: {current_start_point.wkt}")
+                if current_barrier_value:
+                    # Get start point for next iteration
+                    current_start_point = TopoDrainCore._get_linedirection_start_point(
+                        barrier_raster_path=barrier_raster_path,
+                        line_geom=line_segment,
+                        max_offset=5,  # adjust as needed
+                        reverse=True  # always go backward were the line came from
+                    )
+                else:
+                    current_start_point = endpoint  # if no barrier, continue from endpoint (should actually never happen in this case)
 
-            if accumulated_line_coords:
-                # Skip first coordinate to avoid duplication
-                accumulated_line_coords.extend(line_segment.coords[1:])
-            else:
-                accumulated_line_coords.extend(line_segment.coords)
+                # Adjust line_segment to only go up to the new current_start_point (not to the endpoint)
+                if current_start_point != endpoint:
+                    coords = list(line_segment.coords)
+                    min_dist = float('inf')
+                    min_idx = None
+                    for i, coord in enumerate(coords):
+                        dist = Point(coord).distance(current_start_point)
+                        if dist < min_dist:
+                            min_dist = dist
+                            min_idx = i
+                    # If the closest point is not exactly at a vertex and not exactly current_start_point,
+                    # set the coordinate at min_idx to current_start_point and remove subsequent indexes
+                    if min_idx:
+                        if Point(coords[min_idx]).equals(current_start_point):
+                            new_coords = coords[:min_idx + 1]
+                        else:
+                            new_coords = coords[:min_idx]
+                            new_coords.append((current_start_point.x, current_start_point.y))
+                        line_segment = LineString(new_coords)                    
+
+                print(f"[IterativeConstantSlopeLine] New start point for next iteration: {current_start_point.wkt}")
+
+                # Add line segment to accumulated coordinates for continuing iterations
+                if accumulated_line_coords:
+                    # Skip first coordinate to avoid duplication
+                    accumulated_line_coords.extend(line_segment.coords[1:])
+                else:
+                    accumulated_line_coords.extend(line_segment.coords)
 
             # Prepare for next iteration
             current_iteration += 1
@@ -2542,8 +2544,8 @@ class TopoDrainCore:
                         slope=slope,
                         barrier_raster_path=barrier_raster_path,
                         initial_barrier_value=orig_barrier_value,
-                        max_iterations=10, # später max_iterations_barriers
-                        feedback=None  # Suppress detailed feedback for individual calls
+                        max_iterations=1, # später max_iterations_barriers
+                        feedback=feedback  # Suppress detailed feedback for individual calls
                     )
                 else:
                     raw_line = self._get_constant_slope_line(
@@ -2603,8 +2605,8 @@ class TopoDrainCore:
                         slope=slope,
                         barrier_raster_path=barrier_raster_path,
                         initial_barrier_value=None,  # No initial barrier value for non-overlapping points
-                        max_iterations=10, # max_iterations_barriers
-                        feedback=None  # Suppress detailed feedback for individual calls
+                        max_iterations=1, # max_iterations_barriers
+                        feedback=feedback  # Suppress detailed feedback for individual calls
                     )
                 else:
                     raw_line = self._get_constant_slope_line(
