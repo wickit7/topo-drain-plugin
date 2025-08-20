@@ -17,8 +17,8 @@ import rasterio
 from rasterio.mask import mask as rio_mask
 from rasterio.sample import sample_gen
 from rasterio.features import rasterize
-from shapely.geometry import LineString, MultiLineString, Point
-from shapely.ops import linemerge, nearest_points, unary_union, substring
+from shapely.geometry import LineString, MultiLineString, Point, GeometryCollection
+from shapely.ops import linemerge, nearest_points, substring
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import savgol_filter
 import re
@@ -231,6 +231,20 @@ class TopoDrainCore:
             warnings.warn(f"Error executing WhiteboxTools: {e}")
             return 1
 
+
+    @staticmethod
+    def _value_at_raster(point: Point, input_raster_path: str) -> bool:
+        """Returns cell value of raster at certain point."""
+        with rasterio.open(input_raster_path) as src:
+            try:
+                row, col = src.index(point.x, point.y)
+                if 0 <= row < src.height and 0 <= col < src.width:
+                    dest_data = src.read(1)
+                    return dest_data[row, col]
+            except:
+                pass
+        return None
+    
     @staticmethod
     def _merge_lines_by_distance(line_geometries):
         """
@@ -1610,9 +1624,11 @@ class TopoDrainCore:
                     if barrier_mask[row_idx, col_idx] >= 1:
                         print(f"[GetOrthogonalDirectionsStartPoints] Still on barrier at offset {i}.")
                     else:
-                        print(f"[GetOrthogonalDirectionsStartPoints] Found valid point at offset {i}: ({test_x}, {test_y})")
-                        return Point(test_x, test_y)
-    
+                        new_point = Point(test_x, test_y)
+                        print(f"[GetOrthogonalDirectionsStartPoints] Found valid point at offset {i}: {new_point.wkt}")
+                        return new_point
+                    
+                print("[GetOrthogonalDirectionsStartPoints] No valid point found within max_offset.")
                 return None
 
             left_pt = find_valid_point(ortho_left)
@@ -1695,9 +1711,10 @@ class TopoDrainCore:
                             if barrier_mask[row_idx, col_idx] > 0:
                                 print(f"[GetLinedirectionStartPoint] Still on barrier at offset {i} along line.")
                             else:
-                                print(f"[GetLinedirectionStartPoint] Found valid point at offset {i} along line: ({test_x}, {test_y})")
-                                return Point(test_x, test_y)
-                                
+                                new_point = Point(test_x, test_y)
+                                print(f"[GetLinedirectionStartPoint] Found valid point at offset {i} along line: {new_point.wkt}")
+                                return new_point
+
                         except Exception as e:
                             print(f"[GetLinedirectionStartPoint] Error interpolating at distance {target_distance}: {e}")
                             continue
@@ -1745,8 +1762,9 @@ class TopoDrainCore:
                         if barrier_mask[row_idx, col_idx] >= 1:
                             print(f"[GetLinedirectionStartPoint] Still on barrier at offset {i}.")
                         else:
-                            print(f"[GetLinedirectionStartPoint] Found valid point at offset {i}: ({test_x}, {test_y})")
-                            return Point(test_x, test_y)
+                            new_point = Point(test_x, test_y)
+                            print(f"[GetLinedirectionStartPoint] Found valid point at offset {i}: {new_point.wkt}")
+                            return new_point
 
                     print("[GetLinedirectionStartPoint] No valid point found beyond barrier.")
                     return None
@@ -1754,14 +1772,9 @@ class TopoDrainCore:
                 new_pt = find_valid_point_forward()
 
             if new_pt:
-                print(f"[GetLinedirectionStartPoint] Returning new start point: {new_pt}")
+                return new_pt
             else:
-                print("[GetLinedirectionStartPoint] No new start point found.")
-
-            if new_pt:
-                print(f"[GetLinedirectionStartPoint] New point WKT: {new_pt.wkt}")
-
-            return new_pt
+                return None
 
 
     @staticmethod
@@ -1799,7 +1812,7 @@ class TopoDrainCore:
 
             # elevation difference and horizontal distance
             dz = dtm - dtm[key_row, key_col]
-            dist = np.hypot(rr - key_row, cc - key_col) * src.res[0]
+            dist = np.hypot(rr - key_row, cc - key_col) * src.res[0] ## maybe later with .distance()?
             expected_dz = -dist * slope
 
             # linear deviation
@@ -1927,7 +1940,95 @@ class TopoDrainCore:
                 dst.write(best_dest, 1)
 
             return best_destination_raster_path, best_destination_point
+
+    def _analyze_distance_deviation_and_cut(
+        self,
+        line: LineString,
+        start_point: Point,
+        deviation_threshold: float
+        ) -> Point:
+        """
+        Analyse the distance deviation of a line compared to Euclidean distance from start point.
+        Because we should update cost raster, if deviation exceeds threshold.
+
+        Args:
+            line (LineString): The line to analyse.
+            start_point (Point): Original start point for reference.
+            deviation_threshold (float): Maximum allowed relative deviation (e.g., 0.1 for 10%).
+            
+        Returns:
+            Point: The point where cutting should occur, or None if no cutting needed.
+        """
+        # Sample points along the line at regular intervals
+        line_length = line.length
+        num_samples = max(int(line_length / 5.0), 10)  # Sample every 5 meters or at least 10 points
         
+        distances_along_line = np.linspace(0, line_length, num_samples)
+        sample_points = [line.interpolate(d) for d in distances_along_line]
+        end_point = sample_points[-1]
+
+        print(f"[AnalyzeDistanceDeviation] Analyzing {num_samples} points along {line_length:.1f}m line")
+        print(f"[AnalyzeDistanceDeviation] Start point: {start_point}, End point: {end_point}")
+        print(f"[AnalyzeDistanceDeviation] Deviation threshold: {deviation_threshold:.2f}")
+        
+        # Calculate deviations
+        for i, (line_distance, point) in enumerate(zip(distances_along_line, sample_points)):
+            if line_distance == 0:
+                continue  # Skip start point
+                
+            # Calculate Euclidean distance from start point
+            euclidean_distance = start_point.distance(point)
+            
+            # Calculate deviation ratio (line_distance / euclidean_distance)
+            if euclidean_distance > 0:
+                deviation_ratio = line_distance / euclidean_distance
+                relative_deviation = abs((deviation_ratio - 1.0))  # How much more than straight line
+
+                print(f"[AnalyzeDistanceDeviation] Point {i}: line_dist={line_distance:.1f}m, "
+                      f"euclidean_dist={euclidean_distance:.1f}m, "
+                      f"deviation={relative_deviation:.3f}")
+                
+                if relative_deviation > deviation_threshold:
+                    print(f"[AnalyzeDistanceDeviation] Distance deviation {relative_deviation:.3f} exceeds threshold {deviation_threshold:.3f} at line distance {line_distance:.1f}m")
+                    return point
+        
+        # No cutting needed - line maintains acceptable distance deviation
+        print(f"[AnalyzeDistanceDeviation] Line maintains acceptable distance deviation")
+        
+        return None
+
+    def _cut_line_at_point(self, line: LineString, cut_point: Point) -> LineString:
+        """
+        Cut a line at the specified point, returning the portion from start to cut point.
+        
+        Args:
+            line (LineString): The line to cut.
+            cut_point (Point): The point where to cut the line.
+            
+        Returns:
+            LineString: The line segment from start to cut point.
+        """
+        try:
+            # Find the distance along the line to the cut point
+            cut_distance = line.project(cut_point)
+            print(f"[CutLineAtPoint] Cutting line ({line.length:.2f}m) at distance {cut_distance:.2f}m from start to point {cut_point}")
+
+            # Create a new line from start to cut point
+            cut_line = substring(line, 0, cut_distance)
+
+            # Ensure the cut line ends exactly at the cut point
+            if isinstance(cut_line, LineString) and len(cut_line.coords) >= 2:
+                coords = list(cut_line.coords)
+                coords[-1] = (cut_point.x, cut_point.y)  # Replace last coordinate with exact cut point
+                return LineString(coords)
+            else:
+                return line  # Fallback to original line if cutting failed
+                
+        except Exception as e:
+            print(f"[CutLineAtPoint] Error cutting line: {e}")
+            return line  # Fallback to original line
+
+
     def _get_constant_slope_line(
         self,
         dtm_path: str,
@@ -1935,9 +2036,9 @@ class TopoDrainCore:
         destination_raster_path: str,
         slope: float = 0.01,
         barrier_raster_path: str = None,
-        feedback=None,
         max_iterations: int = 10,
-        distance_deviation_threshold: float = 0.1
+        distance_deviation_threshold: float = 0.2,
+        feedback: QgsProcessingFeedback = None
     ) -> LineString:
         """
         Trace lines with constant slope starting from a given point using an iterative approach.
@@ -1952,9 +2053,9 @@ class TopoDrainCore:
             destination_raster_path (str): Path to the binary raster indicating destination cells (1 = destination).
             slope (float): Desired slope for the line (e.g., 0.01 for 1% downhill or -0.01 for uphill).
             barrier_raster_path (str): Optional path to a binary raster of cells that should not be crossed (1 = barrier).
-            feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting.
             max_iterations (int): Maximum number of iterations for line refinement.
             distance_deviation_threshold (float): Maximum allowed deviation of line distance vs Euclidean distance (e.g., 0.1 for 10%).
+            feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting.
 
         Returns:
             LineString: Refined constant slope path as a Shapely LineString, or None if no path found.
@@ -1962,8 +2063,13 @@ class TopoDrainCore:
         if self.wbt is None:
             raise RuntimeError("WhiteboxTools not initialized.")
 
+        print(f"[GetConstantSlopeLine] Starting constant slope line tracing")
+        print(f"[GetConstantSlopeLine] destination raster path: {destination_raster_path}")
+        print(f"[GetConstantSlopeLine] barrier raster path: {barrier_raster_path}")
+        print(f"[GetConstantSlopeLine] slope: {slope}, max_iterations: {max_iterations}, distance_deviation_threshold: {distance_deviation_threshold}")
+
         current_start_point = start_point
-        accumulated_line_segments = []
+        accumulated_line_coords = []
         
         for iteration in range(max_iterations):
             print(f"[GetConstantSlopeLine] Iteration {iteration + 1}/{max_iterations}")
@@ -2027,11 +2133,9 @@ class TopoDrainCore:
             )
             
             if ret != 0 or not os.path.exists(pathway_raster_path):
-                if feedback:
-                    feedback.pushError(f"[TopoDrainCore] Cost pathway analysis failed in iteration {iteration + 1}")
                 raise RuntimeError(f"Cost pathway analysis failed in iteration {iteration + 1}")
 
-            # --- Set correct NoData value for pathway raster ---
+            # --- Set correct NoData value for pathway raster --- ## Noch prüfen, ob das notwendig ist
             with rasterio.open(backlink_raster_path) as src:
                 nodata_value = src.nodata
             with rasterio.open(pathway_raster_path, 'r+') as dst:
@@ -2052,171 +2156,73 @@ class TopoDrainCore:
 
             # --- Analyze distance deviation and find cut point ---
             print(f"[GetConstantSlopeLine] Analyzing distance deviation for iteration {iteration + 1}")
-            cut_point, reaches_destination = self._analyze_distance_deviation_and_cut(
+            cut_point = self._analyze_distance_deviation_and_cut(
                 line_segment, 
                 current_start_point, 
-                distance_deviation_threshold,
-                destination_raster_path
-            )
+                distance_deviation_threshold
+                )
+
+            # Check if the line segment reaches the destination
+            if cut_point:
+                dest_value = self._value_at_raster(cut_point, destination_raster_path)
+                if dest_value == 1:
+                    print(f"[GetConstantSlopeLine] Cut point {cut_point} is a destination cell")
+                    reached_destination = True
+                else:
+                    reached_destination = False
+
+            # Check if last iteration reached
+            last_iteration = (iteration == max_iterations - 1)
             
-            if cut_point is not None:
+            if last_iteration and cut_point is not None:
+                print(f"[GetConstantSlopeLine] Last iteration reached without finding fully valid line segment")
+
+            if last_iteration or cut_point is None or reached_destination:
+                # If we are at the last iteration or reached destination, we can wan to add fully line segement instead of doing another iteration
+                if accumulated_line_coords:
+                    # Skip first coordinate to avoid duplication
+                    accumulated_line_coords.extend(line_segment.coords[1:])
+                else:
+                    accumulated_line_coords.extend(line_segment.coords)
+                break
+
+            else:
                 # Cut the line at the identified point
                 cut_line = self._cut_line_at_point(line_segment, cut_point)
                 if cut_line:
-                    accumulated_line_segments.append(cut_line)
-                    
-                    if reaches_destination:
-                        print(f"[GetConstantSlopeLine] Reached destination in iteration {iteration + 1}")
-                        break
+                    if accumulated_line_coords:
+                        # Skip first coordinate to avoid duplication
+                        accumulated_line_coords.extend(cut_line.coords[1:])
                     else:
-                        # Continue from cut point in next iteration
-                        current_start_point = cut_point
-                        print(f"[GetConstantSlopeLine] Continuing from cut point: {cut_point}")
+                        accumulated_line_coords.extend(cut_line.coords)
+
+                    # Store the cut point for the next iteration
+                    current_start_point = cut_point
+                    iteration += 1
+                    print(f"[GetConstantSlopeLine] Continuing from cut point: {cut_point}")
                 else:
                     # If cutting failed, use the whole segment
-                    accumulated_line_segments.append(line_segment)
+                    print(f"[GetConstantSlopeLine] Cutting failed, using whole line segment")
+                    if accumulated_line_coords:
+                        # Skip first coordinate to avoid duplication
+                        accumulated_line_coords.extend(line_segment.coords[1:])
+                    else:
+                        accumulated_line_coords.extend(line_segment.coords)
                     break
-            else:
-                # No cut needed, line is good
-                accumulated_line_segments.append(line_segment)
-                print(f"[GetConstantSlopeLine] Line segment acceptable, no cutting needed in iteration {iteration + 1}")
-                break
 
         # --- Combine all segments into final line ---
-        if not accumulated_line_segments:
+        if not accumulated_line_coords or len(accumulated_line_coords) < 2:
             warnings.warn("[GetConstantSlopeLine] No valid line segments could be extracted.")
             return None
 
-        if len(accumulated_line_segments) == 1:
-            final_line = accumulated_line_segments[0]
-        else:
-            # Merge multiple segments
-            all_coords = []
-            for segment in accumulated_line_segments:
-                coords = list(segment.coords)
-                if all_coords and coords[0] == all_coords[-1]:
-                    # Remove duplicate point at junction
-                    coords = coords[1:]
-                all_coords.extend(coords)
-            
-            if len(all_coords) < 2:
-                warnings.warn("[GetConstantSlopeLine] Insufficient coordinates for final line.")
-                return None
-                
-            final_line = LineString(all_coords)
+        final_line = LineString(accumulated_line_coords)
 
         print("[GetConstantSlopeLine] Smoothing the resulting line")
         # --- Optional smoothing ---
         final_line = TopoDrainCore._smooth_linestring(final_line, sigma=1.0)
 
-        print(f"[GetConstantSlopeLine] Final line WKT: {final_line.wkt}")
         return final_line
 
-    def _analyze_distance_deviation_and_cut(
-        self,
-        line: LineString,
-        start_point: Point,
-        deviation_threshold: float,
-        destination_raster_path: str
-    ) -> tuple[Point, bool]:
-        """
-        Analyze the distance deviation of a line compared to Euclidean distance from start point.
-        
-        Args:
-            line (LineString): The line to analyze.
-            start_point (Point): Original start point for reference.
-            deviation_threshold (float): Maximum allowed relative deviation (e.g., 0.1 for 10%).
-            destination_raster_path (str): Path to destination raster to check if cut point reaches destination.
-            
-        Returns:
-            tuple: (cut_point, reaches_destination) where cut_point is None if no cutting needed.
-        """
-        # Sample points along the line at regular intervals
-        line_length = line.length
-        num_samples = max(int(line_length / 5.0), 10)  # Sample every 5 meters or at least 10 points
-        
-        distances_along_line = np.linspace(0, line_length, num_samples)
-        sample_points = [line.interpolate(d) for d in distances_along_line]
-        
-        print(f"[AnalyzeDistanceDeviation] Analyzing {num_samples} points along {line_length:.1f}m line")
-        print(f"[AnalyzeDistanceDeviation] Start point: {start_point}, Deviation threshold: {deviation_threshold:.2f}")
-        
-        # Calculate deviations
-        for i, (line_distance, point) in enumerate(zip(distances_along_line, sample_points)):
-            if line_distance == 0:
-                continue  # Skip start point
-                
-            # Calculate Euclidean distance from start point
-            euclidean_distance = start_point.distance(point)
-            
-            # Calculate deviation ratio (line_distance / euclidean_distance)
-            if euclidean_distance > 0:
-                deviation_ratio = line_distance / euclidean_distance
-                relative_deviation = (deviation_ratio - 1.0)  # How much more than straight line
-                
-                print(f"[AnalyzeDistanceDeviation] Point {i}: line_dist={line_distance:.1f}m, "
-                      f"euclidean_dist={euclidean_distance:.1f}m, ratio={deviation_ratio:.3f}, "
-                      f"deviation={relative_deviation:.3f}")
-                
-                if relative_deviation > deviation_threshold:
-                    print(f"[AnalyzeDistanceDeviation] Distance deviation {relative_deviation:.3f} exceeds threshold {deviation_threshold:.3f} at line distance {line_distance:.1f}m")
-                    
-                    # Check if this point is on destination
-                    reaches_destination = self._point_on_destination(point, destination_raster_path)
-                    
-                    return point, reaches_destination
-        
-        # No cutting needed - line maintains acceptable distance deviation
-        print(f"[AnalyzeDistanceDeviation] Line maintains acceptable distance deviation")
-        
-        # Check if endpoint reaches destination
-        endpoint = Point(line.coords[-1])
-        reaches_destination = self._point_on_destination(endpoint, destination_raster_path)
-        
-        return None, reaches_destination
-
-    def _point_on_destination(self, point: Point, destination_raster_path: str) -> bool:
-        """Check if a point is on a destination cell."""
-        with rasterio.open(destination_raster_path) as src:
-            try:
-                row, col = src.index(point.x, point.y)
-                if 0 <= row < src.height and 0 <= col < src.width:
-                    dest_data = src.read(1)
-                    return dest_data[row, col] == 1
-            except:
-                pass
-        return False
-
-    def _cut_line_at_point(self, line: LineString, cut_point: Point) -> LineString:
-        """
-        Cut a line at the specified point, returning the portion from start to cut point.
-        
-        Args:
-            line (LineString): The line to cut.
-            cut_point (Point): The point where to cut the line.
-            
-        Returns:
-            LineString: The line segment from start to cut point.
-        """
-        try:
-            # Find the distance along the line to the cut point
-            cut_distance = line.project(cut_point)
-            
-            # Create a new line from start to cut point
-            cut_line = substring(line, 0, cut_distance)
-            
-            # Ensure the cut line ends exactly at the cut point
-            if isinstance(cut_line, LineString) and len(cut_line.coords) >= 2:
-                coords = list(cut_line.coords)
-                coords[-1] = (cut_point.x, cut_point.y)  # Replace last coordinate with exact cut point
-                return LineString(coords)
-            else:
-                return line  # Fallback to original line if cutting failed
-                
-        except Exception as e:
-            print(f"[CutLineAtPoint] Error cutting line: {e}")
-            return line  # Fallback to original line
-    
     def _get_iterative_constant_slope_line(
         self,
         dtm_path: str,
@@ -2270,7 +2276,16 @@ class TopoDrainCore:
                 feedback.pushInfo(f"[IterativeConstantSlopeLine] Iteration {current_iteration + 1}/{max_iterations}")
             else:
                 print(f"[IterativeConstantSlopeLine] Iteration {current_iteration + 1}/{max_iterations}")
-            
+
+            # Debug: Print start point and extracted value
+            if feedback:
+                feedback.pushInfo(f"[IterativeConstantSlopeLine] Start point: {current_start_point.wkt}")
+                feedback.pushInfo(f"[IterativeConstantSlopeLine] Start barrier value: {current_barrier_value}")
+            else:
+                print(f"[IterativeConstantSlopeLine] Start point: {current_start_point.wkt}")
+                print(f"[IterativeConstantSlopeLine] Start barrier value: {current_barrier_value}")
+
+            print(f"[IterativeConstantSlopeLine] Creating working rasters for _get_constant_slope_line...")
             # --- Create barrier raster for _get_constant_slope_line ---
             if current_barrier_value:
                 working_barrier_data = np.where(orig_barrier_data == current_barrier_value, 1, 0).astype('uint8') # current barrier act as barrier and not as destination
@@ -2279,14 +2294,6 @@ class TopoDrainCore:
                 working_barrier_data = None # all barriers acting as temporary destinations and not as barriers
                 working_destination_data = np.where((orig_dest_data == 1) | (orig_barrier_data >= 1), 1, 0).astype('uint8') 
                 
-            # Debug: Print start point and extracted value
-            if feedback:
-                feedback.pushInfo(f"[IterativeConstantSlopeLine] Start point: ({current_start_point.x:.2f}, {current_start_point.y:.2f})")
-                feedback.pushInfo(f"[IterativeConstantSlopeLine] Current barrier value: {current_barrier_value}")
-            else:
-                print(f"[IterativeConstantSlopeLine] Start point: ({current_start_point.x:.2f}, {current_start_point.y:.2f})")
-
-            # Create iteration-specific rasters          
             # Save barrier mask
             if working_barrier_data is not None:
                 working_barrier_raster_path = os.path.join(self.temp_directory, f"barrier_iter_{current_iteration}.tif")
@@ -2336,9 +2343,9 @@ class TopoDrainCore:
                 break
 
             line_coords = list(line_segment.coords)
-            # Check if endpoint is on original destination
+            # Check if endpoint is on original (final) destination
             endpoint = Point(line_coords[-1])
-            print(f"[IterativeConstantSlopeLine] Endpoint iteration {current_iteration}: {endpoint.wkt}")
+            print(f"[IterativeConstantSlopeLine] Endpoint iteration {current_iteration + 1}: {endpoint.wkt}")
             final_destination_found = False
             with rasterio.open(destination_raster_path) as dest_src:
                 end_row, end_col = dest_src.index(endpoint.x, endpoint.y)
@@ -2352,57 +2359,50 @@ class TopoDrainCore:
                     else:
                         print(f"[IterativeConstantSlopeLine] Endpoint not on destination in iteration {current_iteration + 1}, checking barriers.")
             
-            if final_destination_found:
+            last_iteration = (current_iteration == max_iterations - 1)
+            if not final_destination_found and last_iteration:
+                if feedback:
+                    feedback.pushWarning("[IterativeConstantSlopeLine] Maximum iterations reached without finding a fully valid line")
+                else:
+                    print("[IterativeConstantSlopeLine] Maximum iterations reached without finding a fully valid line")
+
+            if final_destination_found or last_iteration: 
+                # If we reached the last iteration, add this final segment to avoid cutting in the last iteration:
                 # If we reached the final destination, add this final segment and stop
                 if accumulated_line_coords:
                     # Skip first coordinate to avoid duplication
                     accumulated_line_coords.extend(line_segment.coords[1:])
                 else:
                     accumulated_line_coords.extend(line_segment.coords)
-                    
                 break
-            else:
+
+            else: 
                 # Get barrier value at endpoint for next iteration
                 with rasterio.open(barrier_raster_path) as barrier_src:
                     end_row, end_col = barrier_src.index(endpoint.x, endpoint.y)
                     if 0 <= end_row < barrier_src.height and 0 <= end_col < barrier_src.width:
-                        current_barrier_value = int(barrier_src.read(1)[end_row, end_col])
+                        end_barrier_value = int(barrier_src.read(1)[end_row, end_col])
                     else:
-                        current_barrier_value = None
-                    print(f"[IterativeConstantSlopeLine] current_barrier_value: {current_barrier_value}")
+                        end_barrier_value = None
+                    print(f"[IterativeConstantSlopeLine] Iteration reached barrier: {end_barrier_value}")
 
-                if current_barrier_value:
-                    # Get start point for next iteration
-                    current_start_point = TopoDrainCore._get_linedirection_start_point(
+                if end_barrier_value:
+                    # Get start point for next iteration next to the barrier (back where the line came from)
+                    next_start_point = TopoDrainCore._get_linedirection_start_point(
                         barrier_raster_path=barrier_raster_path,
                         line_geom=line_segment,
                         max_offset=5,  # adjust as needed
                         reverse=True  # always go backward were the line came from
                     )
                 else:
-                    current_start_point = endpoint  # if no barrier, continue from endpoint (should actually never happen in this case)
+                    next_start_point = endpoint  # if no barrier, continue from endpoint (should actually never happen in this case)
 
-                # Adjust line_segment to only go up to the new current_start_point (not to the endpoint)
-                if current_start_point != endpoint:
-                    coords = list(line_segment.coords)
-                    min_dist = float('inf')
-                    min_idx = None
-                    for i, coord in enumerate(coords):
-                        dist = Point(coord).distance(current_start_point)
-                        if dist < min_dist:
-                            min_dist = dist
-                            min_idx = i
-                    # If the closest point is not exactly at a vertex and not exactly current_start_point,
-                    # set the coordinate at min_idx to current_start_point and remove subsequent indexes
-                    if min_idx:
-                        if Point(coords[min_idx]).equals(current_start_point):
-                            new_coords = coords[:min_idx + 1]
-                        else:
-                            new_coords = coords[:min_idx]
-                            new_coords.append((current_start_point.x, current_start_point.y))
-                        line_segment = LineString(new_coords)                    
+                print(f"[IterativeConstantSlopeLine] Start point for next iteration: {next_start_point.wkt}")
 
-                print(f"[IterativeConstantSlopeLine] New start point for next iteration: {current_start_point.wkt}")
+                print(f"[IterativeConstantSlopeLine] Adjusting line segment to new start point")
+                # Adjust line_segment to only go up to the new next_start_point (not to the endpoint)
+                if next_start_point != endpoint:
+                    line_segment = self._cut_line_at_point(line_segment, next_start_point)
 
                 # Add line segment to accumulated coordinates for continuing iterations
                 if accumulated_line_coords:
@@ -2412,10 +2412,11 @@ class TopoDrainCore:
                     accumulated_line_coords.extend(line_segment.coords)
 
             # Prepare for next iteration
+            current_barrier_value = end_barrier_value if end_barrier_value else None  # Update barrier value for next iteration
+            current_start_point = next_start_point  # Update start point for next iteration
             current_iteration += 1
 
 
-        # Create final line from accumulated coordinates
         if len(accumulated_line_coords) >= 2:
             line = LineString(accumulated_line_coords)
             if feedback:
@@ -2561,8 +2562,21 @@ class TopoDrainCore:
             # Extract all geometries from barrier GeoDataFrames and merge lines
             all_barrier_geoms = []
             for gdf in barrier_processed:
-                all_barrier_geoms.extend(gdf.geometry.tolist())
-            merged_lines = linemerge(all_barrier_geoms)
+                for geom in gdf.geometry:
+                    # Handle multi-part geometries by extracting individual parts
+                    if hasattr(geom, 'geoms'):  # MultiLineString, MultiPolygon, etc.
+                        all_barrier_geoms.extend(list(geom.geoms))
+                    else:  # Single geometry
+                        all_barrier_geoms.append(geom)
+            
+            # Filter to include all line-type geometries (LineString and MultiLineString) for linemerge
+            line_geoms = [geom for geom in all_barrier_geoms if geom.geom_type in ['LineString', 'MultiLineString']]
+            
+            if line_geoms:
+                merged_lines = linemerge(line_geoms)
+            else:
+                # Fallback: use all geometries if no line geometries found
+                merged_lines = GeometryCollection(all_barrier_geoms)
             
             # buffer outward by a tiny amount to avoid precision issues
             buffered_lines = merged_lines.buffer(tol)
@@ -2719,7 +2733,7 @@ class TopoDrainCore:
                         slope=slope,
                         barrier_raster_path=barrier_raster_path,
                         initial_barrier_value=orig_barrier_value,
-                        max_iterations=10, # später max_iterations_barriers
+                        max_iterations=30, # später max_iterations_barriers
                         feedback=feedback  # Suppress detailed feedback for individual calls
                     )
                 else:
@@ -2780,7 +2794,7 @@ class TopoDrainCore:
                         slope=slope,
                         barrier_raster_path=barrier_raster_path,
                         initial_barrier_value=None,  # No initial barrier value for non-overlapping points
-                        max_iterations=10, # max_iterations_barriers
+                        max_iterations=30, # max_iterations_barriers
                         feedback=feedback  # Suppress detailed feedback for individual calls
                     )
                 else:
@@ -2901,6 +2915,9 @@ class TopoDrainCore:
         expected_stages = (len(valley_lines) + len(ridge_lines)) + 1  # Rough estimate
         max_iterations = expected_stages + 10  # Set a reasonable limit based on input features (+10 for safety)
 
+        # get perimeter boundary --> later check if polygon or line
+        perimeter_boundary = perimeter.boundary.unary_union
+
         # Iterate until no new start points are found or max iterations reached
         while not current_start_points.empty and stage <= max_iterations:
             # Progress: 5% at start, 95% spread over expected_stages
@@ -2962,8 +2979,8 @@ class TopoDrainCore:
             # Check endpoints and create new start points if they're on target features
             new_start_points = []
             # Define which raster acts as barrier
-            new_point_barrier_raster_path = ridge_lines_raster_path if target_type == "ridges" else valley_lines_raster_path
-            new_point_barrier_feature = ridge_lines if target_type == "ridges" else valley_lines
+            new_barrier_raster_path = ridge_lines_raster_path if target_type == "ridges" else valley_lines_raster_path
+            new_barrier_feature = ridge_lines if target_type == "ridges" else valley_lines
             if feedback:    
                 feedback.pushInfo(f"Stage {stage}: Checking endpoints on {target_type}...")
             else:
@@ -2979,23 +2996,32 @@ class TopoDrainCore:
                     # Check if endpoint reached the perimeter boundary
                     if perimeter is not None:
                         # Use the boundary (line) of the perimeter polygon(s) to check for overlap
-                        perimeter_boundary = perimeter.boundary.unary_union
                         min_dist_perim = perimeter_boundary.distance(end_point)
                         if feedback:
-                            feedback.pushInfo(f"Stage {stage}: Distance to perimeter boundary: {min_dist_perim}")
+                            feedback.pushInfo(f"Stage {stage}: Distance to perimeter boundary: {min_dist_perim}m")
                         if min_dist_perim <= 2 * res:
                             if feedback:
-                                feedback.pushInfo(f"Stage {stage}: Endpoint is close enough to perimeter boundary (< {2 * res}), skipping further tracing.")
-                            continue  # We have reached the final destination
+                                feedback.pushInfo(f"Stage {stage}: Endpoint is close enough to perimeter boundary (< {2 * res}m), adding line and skipping further tracing.")
+                            # For even stages, we traced from ridges to valleys (uphill)
+                            # We want to reverse these lines so all keylines go valley → ridge
+                            if stage % 2 == 0:  # Even stage: reverse direction to ensure valley → ridge
+                                reversed_coords = list(line_geom.coords)[::-1]  # Reverse coordinate order
+                                line_geom = LineString(reversed_coords)
+                                if feedback:
+                                    feedback.pushInfo(f"Stage {stage}: Reversed line direction (ridge→valley to valley→ridge)")    
+                            # Add final line to all_keylines
+                            all_keylines.append(line_geom)
+                            continue  # Skip further processing for this line
+                            
                     # Check if endpoint is probably on barrier
-                    min_dist_barrier = new_point_barrier_feature.distance(end_point).min()
+                    min_dist_barrier = new_barrier_feature.distance(end_point).min()
                     if feedback:
-                        feedback.pushInfo(f"Stage {stage}: Distance to barrier: {min_dist_barrier}")
+                        feedback.pushInfo(f"Stage {stage}: Distance to barrier: {min_dist_barrier}m")
                     if min_dist_barrier <= 2.5 * res: # fast overlap, don't has to be precsie (for safety consider 2.5 * res. Check is done again in _get_linedirection_start_point)
                         if feedback:
-                            feedback.pushInfo(f"Stage {stage}: Endpoint is on the barrier (<{2.5 * res}), trying to get a new start point...")
+                            feedback.pushInfo(f"Stage {stage}: Endpoint is on the barrier (<{2.5 * res}m), trying to get a new start point...")
                         new_start_point = TopoDrainCore._get_linedirection_start_point(
-                            new_point_barrier_raster_path, line_geom, max_offset=5
+                            new_barrier_raster_path, line_geom, max_offset=5
                         )
                         if new_start_point:
                             if feedback:
@@ -3005,25 +3031,21 @@ class TopoDrainCore:
                             line_geom = TopoDrainCore._snap_line_to_point(
                                 line_geom, new_start_point, "end"
                             )
-
                         else:
                             if feedback:
                                 feedback.pushInfo(f"Stage {stage}: No valid start point found.")
                             else:
                                 print(f"Stage {stage}: No valid start point found.")
 
-                    # For even stages, we traced from ridges to valleys (uphill)
-                    # We want to reverse these lines so all keylines go valley → ridge
-                    if stage % 2 == 0:  # Even stage: reverse direction to ensure valley → ridge
-                        reversed_coords = list(line_geom.coords)[::-1]  # Reverse coordinate order
-                        line_geom = LineString(reversed_coords)
-                        if feedback:
-                            feedback.pushInfo(f"Stage {stage}: Reversed line direction (ridge→valley to valley→ridge)")
-                            
-                    all_keylines.append(line_geom)
-
-                else:
-                        feedback.pushInfo(f"Stage {stage}: Endpoint is not within {2.5 * res}, skipping...")
+                # Perimeter not reached yet
+                # For even stages, we traced from ridges to valleys (uphill)
+                # We want to reverse these lines so all keylines go valley → ridge
+                if stage % 2 == 0:  # Even stage: reverse direction to ensure valley → ridge
+                    reversed_coords = list(line_geom.coords)[::-1]  # Reverse coordinate order
+                    line_geom = LineString(reversed_coords)
+                    if feedback:
+                        feedback.pushInfo(f"Stage {stage}: Reversed line direction (ridge→valley to valley→ridge)")    
+                all_keylines.append(line_geom)
 
             if not new_start_points:
                 if feedback:
@@ -3031,7 +3053,7 @@ class TopoDrainCore:
                 else:
                     print(f"Stage {stage}: No endpoints on {target_type}, stopping iteration...")
                 break
-                
+            
             # Create GeoDataFrame from new start points
             current_start_points = gpd.GeoDataFrame(
                 geometry=new_start_points,
@@ -3043,6 +3065,7 @@ class TopoDrainCore:
             else:
                 print(f"Stage {stage}: Generated {len(new_start_points)} new start points beyond {target_type}")
             
+            # Increment stage
             stage += 1
         
         if stage > max_iterations:
