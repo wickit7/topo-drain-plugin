@@ -8,7 +8,6 @@
 import os
 import sys
 import importlib.util
-from collections import defaultdict
 from typing import Union
 import warnings
 import uuid
@@ -19,7 +18,7 @@ import rasterio
 from rasterio.mask import mask as rio_mask
 from rasterio.sample import sample_gen
 from rasterio.features import rasterize
-from shapely.geometry import LineString, MultiLineString, Point, GeometryCollection
+from shapely.geometry import LineString, MultiLineString, Point
 from shapely.ops import linemerge, nearest_points, substring
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import savgol_filter
@@ -2339,12 +2338,16 @@ class TopoDrainCore:
 
             print(f"[IterativeConstantSlopeLine] Creating working rasters for _get_constant_slope_line...")
             # --- Create barrier raster for _get_constant_slope_line ---
+            # Get dtype from profiles to ensure consistency
+            barrier_dtype = barrier_profile['dtype']
+            dest_dtype = destination_profile['dtype']
+            
             if current_barrier_value:
-                working_barrier_data = np.where(orig_barrier_data == current_barrier_value, 1, 0).astype('uint8') # current barrier act as barrier and not as destination
-                working_destination_data = np.where((orig_dest_data == 1) | ((orig_barrier_data >= 1) & (orig_barrier_data != current_barrier_value)), 1, 0).astype('uint8')  # all other barriers act as temporary destinations except the current one
+                working_barrier_data = np.where(orig_barrier_data == current_barrier_value, 1, 0).astype(barrier_dtype) # current barrier act as barrier and not as destination
+                working_destination_data = np.where((orig_dest_data == 1) | ((orig_barrier_data >= 1) & (orig_barrier_data != current_barrier_value)), 1, 0).astype(dest_dtype)  # all other barriers act as temporary destinations except the current one
             else:
                 working_barrier_data = None # all barriers acting as temporary destinations and not as barriers
-                working_destination_data = np.where((orig_dest_data == 1) | (orig_barrier_data >= 1), 1, 0).astype('uint8') 
+                working_destination_data = np.where((orig_dest_data == 1) | (orig_barrier_data >= 1), 1, 0).astype(dest_dtype) 
                 
             # Save barrier mask
             if working_barrier_data is not None:
