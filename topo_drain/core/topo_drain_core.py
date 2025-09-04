@@ -88,6 +88,7 @@ class TopoDrainCore:
             wbt.set_working_dir(self.working_directory)
         return wbt
 
+    ## Setters for configuration
     def set_temp_directory(self, temp_dir):
         self.temp_directory = temp_dir
 
@@ -231,21 +232,8 @@ class TopoDrainCore:
         except Exception as e:
             warnings.warn(f"Error executing WhiteboxTools: {e}")
             return 1
-
-
-    @staticmethod
-    def _value_at_raster(point: Point, input_raster_path: str) -> bool:
-        """Returns cell value of raster at certain point."""
-        with rasterio.open(input_raster_path) as src:
-            try:
-                row, col = src.index(point.x, point.y)
-                if 0 <= row < src.height and 0 <= col < src.width:
-                    dest_data = src.read(1)
-                    return dest_data[row, col]
-            except:
-                pass
-        return None
     
+    ## Vector geometry functions
     @staticmethod
     def _merge_lines_by_distance(line_geometries):
         """
@@ -332,7 +320,6 @@ class TopoDrainCore:
             if best_line_idx is not None:
                 best_line = remaining_lines.pop(best_line_idx)
                 line_coords = list(best_line.coords)
-                coords_before = len(merged_coords)
                 
                 if best_connection == 'prepend_normal':
                     # Add line to start of merged (line_end connects to merged_start)
@@ -349,7 +336,6 @@ class TopoDrainCore:
                     line_coords.reverse()
                     merged_coords = merged_coords[:-1] + line_coords
                 
-                coords_after = len(merged_coords)
             else:
                 # No valid connection found, break
                 break
@@ -398,46 +384,119 @@ class TopoDrainCore:
         return smoothed
 
     @staticmethod
-    def _mask_raster(raster_path: str, mask: gpd.GeoDataFrame, out_path: str) -> str:
+    def _flatten_to_linestrings(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         """
-        Mask (clip) a raster file using a polygon mask.
+        Flatten a GeoDataFrame to individual LineString geometries by:
+        1. Converting polygons to boundaries
+        2. Extracting individual LineStrings from MultiLineStrings
+        3. Ignoring other geometry types
+        
+        Args:
+            gdf (gpd.GeoDataFrame): Input GeoDataFrame to process
+            
+        Returns:
+            gpd.GeoDataFrame: GeoDataFrame with only individual LineString geometries
+        """
+        # Convert polygons to boundaries if needed
+        if gdf.geom_type.isin(["Polygon", "MultiPolygon"]).any():
+            g = gdf.copy()
+            g["geometry"] = g.boundary
+        else:
+            g = gdf.copy()
+            
+        # Flatten to individual LineStrings
+        line_geoms = []
+        for geom in g.geometry:
+            print(f"[FlattenToLinestrings] Processing geometry: {geom.geom_type}")
+            if geom.geom_type == "LineString":
+                line_geoms.append(geom)
+            elif geom.geom_type == "MultiLineString":
+                line_geoms.extend(list(geom.geoms))  # Flatten MultiLineString to individual LineStrings
+            # Ignore other geometry types
+            
+        return gpd.GeoDataFrame(geometry=line_geoms, crs=gdf.crs)
+
+
+    @staticmethod
+    def _features_to_single_linestring(features: list[gpd.GeoDataFrame]) -> gpd.GeoDataFrame:
+        """
+        Convert features to individual LineString geometries by:
+        1. Converting polygons to boundaries
+        2. Flattening MultiLineStrings to individual LineStrings
+        3. Ignoring other geometry types
+        
+        Args:
+            features (list[gpd.GeoDataFrame]): List of GeoDataFrames to process
+            
+        Returns:
+            gpd.GeoDataFrame: Single GeoDataFrame with only LineString geometries from all input features
+        """
+        all_line_geoms = []
+        print(f"[FeaturesToSingleLinestring] Processing {len(features)} GeoDataFrames")
+        
+        for gdf in features:
+            if gdf.empty:
+                continue
+                
+            # Get CRS from first non-empty GeoDataFrame
+            crs = gdf.crs
+                
+            # Use the helper function to flatten to LineStrings
+            flattened_gdf = TopoDrainCore._flatten_to_linestrings(gdf)
+            
+            if not flattened_gdf.empty:
+                all_line_geoms.extend(flattened_gdf.geometry.tolist())
+                
+        if not all_line_geoms:
+            # Return empty GeoDataFrame with same structure
+            return gpd.GeoDataFrame(geometry=[], crs=crs)
+            
+        result_gdf = gpd.GeoDataFrame(geometry=all_line_geoms, crs=crs)
+        print(f"[FeaturesToSingleLinestring] Processed {len(result_gdf)} LineString geometries")
+        return result_gdf
+
+    @staticmethod
+    def _snap_line_to_point(line: LineString, snap_point: Point, position: str = None) -> LineString:
+        """
+        Snap the closest endpoint of a line to a given Point.
 
         Args:
-            raster_path (str): Path to the input raster (e.g., DTM GeoTIFF).
-            mask (GeoDataFrame): Polygon(s) to use as mask.
-            out_path (str): Desired path for output masked raster.
+            line (LineString): Input line geometry.
+            snap_point (Point): Point to snap to.
+            position (str, optional): "start", "end", or None. 
+                - "start" snaps the start of the line to the point, if endpoint is closer reverse line direction first.
+                - "end" snaps the end of the line to the point, if startpoint is closer reverse line direction first.
+                - None snaps the closer endpoint to the point.
 
         Returns:
-            str: Path to the masked raster.
+            LineString: Line with endpoint snapped to the given point.
         """
-        try:
-            if mask.empty:
-                raise ValueError("The provided GeoDataFrame is empty. Cannot mask raster.")
+        if not isinstance(line, LineString):
+            warnings.warn("Cannot snap endpoint for MultiLineString geometry")
+            return line
 
-            with rasterio.open(raster_path) as src:
-                out_image, out_transform = rio_mask(src, mask.geometry, crop=True)
-                out_meta = src.meta.copy()
+        coords = list(line.coords)
+        if len(coords) < 2:
+            return line
 
-            out_meta.update({
-                "height": out_image.shape[1],
-                "width": out_image.shape[2],
-                "transform": out_transform
-            })
+        dist_start = snap_point.distance(Point(coords[0]))
+        dist_end = snap_point.distance(Point(coords[-1]))
 
-            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        # Always snap to the closest endpoint
+        if dist_start <= dist_end:
+            coords[0] = (snap_point.x, snap_point.y)
+            if position == "end":
+                # Reverse line direction if snapping to end
+                coords.reverse()
+        else:
+            coords[-1] = (snap_point.x, snap_point.y)
+            if position == "start":
+                # Reverse line direction if snapping to start
+                coords.reverse()
 
-            with rasterio.open(out_path, "w", **out_meta) as dest:
-                dest.write(out_image)
-
-            return out_path
-
-        except ValueError as ve:
-            raise RuntimeError(f"Masking error: {ve}")
-        except Exception as e:
-            raise RuntimeError(f"Unexpected error during raster masking: {e}")
-
-     ## later additional parameter dictionary update_profile (e.g. nodata = 0 for destination and barrier?)
-    def _vector_to_raster(
+        return LineString(coords)
+    
+    def _vector_to_mask_raster(
         self,
         features: list[gpd.GeoDataFrame],
         reference_raster_path: str,
@@ -537,6 +596,45 @@ class TopoDrainCore:
         else:
             return output_path
 
+    ## Raster functions
+    @staticmethod
+    def _mask_raster(raster_path: str, mask: gpd.GeoDataFrame, out_path: str) -> str:
+        """
+        Mask (clip) a raster file using a polygon mask.
+
+        Args:
+            raster_path (str): Path to the input raster (e.g., DTM GeoTIFF).
+            mask (GeoDataFrame): Polygon(s) to use as mask.
+            out_path (str): Desired path for output masked raster.
+
+        Returns:
+            str: Path to the masked raster.
+        """
+        try:
+            if mask.empty:
+                raise ValueError("The provided GeoDataFrame is empty. Cannot mask raster.")
+
+            with rasterio.open(raster_path) as src:
+                out_image, out_transform = rio_mask(src, mask.geometry, crop=True)
+                out_meta = src.meta.copy()
+
+            out_meta.update({
+                "height": out_image.shape[1],
+                "width": out_image.shape[2],
+                "transform": out_transform
+            })
+
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+
+            with rasterio.open(out_path, "w", **out_meta) as dest:
+                dest.write(out_image)
+
+            return out_path
+
+        except ValueError as ve:
+            raise RuntimeError(f"Masking error: {ve}")
+        except Exception as e:
+            raise RuntimeError(f"Unexpected error during raster masking: {e}")
 
     def _invert_dtm(self, dtm_path: str, output_path: str, feedback=None) -> str:
         """
@@ -571,9 +669,8 @@ class TopoDrainCore:
         input_raster: str,
         output_path: str,
         overwrite: bool = True,
-        val_band: int = 1,
-        nodata: float = -32768
-    ) -> str:
+        val_band: int = 1
+            ) -> str:
         """
         Computes the natural logarithm of a specified band in a raster,
         and either overwrites it or appends the result as a new band.
@@ -593,6 +690,7 @@ class TopoDrainCore:
             profile = src.profile.copy()
             dtype = 'float32'
             band_count = src.count
+            nodata = profile.get('nodata', None)
 
             if not (1 <= val_band <= band_count):
                 raise ValueError(f"val_band={val_band} is out of range. Input raster has {band_count} band(s).")
@@ -621,6 +719,7 @@ class TopoDrainCore:
 
         return output_path
 
+    # Alternatively define constant value of absolute elevation at masked cells or input raster contains absolute elevation values
     @staticmethod
     def _modify_dtm_with_mask(
         dtm_path: str,
@@ -653,121 +752,6 @@ class TopoDrainCore:
             dst.write(modified.astype("float32"), 1)
 
         return output_path
-
-    @staticmethod
-    def _flatten_to_linestrings(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-        """
-        Flatten a GeoDataFrame to individual LineString geometries by:
-        1. Converting polygons to boundaries
-        2. Extracting individual LineStrings from MultiLineStrings
-        3. Ignoring other geometry types
-        
-        Args:
-            gdf (gpd.GeoDataFrame): Input GeoDataFrame to process
-            
-        Returns:
-            gpd.GeoDataFrame: GeoDataFrame with only individual LineString geometries
-        """
-        # Convert polygons to boundaries if needed
-        if gdf.geom_type.isin(["Polygon", "MultiPolygon"]).any():
-            g = gdf.copy()
-            g["geometry"] = g.boundary
-        else:
-            g = gdf.copy()
-            
-        # Flatten to individual LineStrings
-        line_geoms = []
-        for geom in g.geometry:
-            print(f"[FlattenToLinestrings] Processing geometry: {geom.geom_type}")
-            if geom.geom_type == "LineString":
-                line_geoms.append(geom)
-            elif geom.geom_type == "MultiLineString":
-                line_geoms.extend(list(geom.geoms))  # Flatten MultiLineString to individual LineStrings
-            # Ignore other geometry types
-            
-        return gpd.GeoDataFrame(geometry=line_geoms, crs=gdf.crs)
-
-    @staticmethod
-    def _features_to_single_linestring(features: list[gpd.GeoDataFrame]) -> gpd.GeoDataFrame:
-        """
-        Convert features to individual LineString geometries by:
-        1. Converting polygons to boundaries
-        2. Flattening MultiLineStrings to individual LineStrings
-        3. Ignoring other geometry types
-        
-        Args:
-            features (list[gpd.GeoDataFrame]): List of GeoDataFrames to process
-            
-        Returns:
-            gpd.GeoDataFrame: Single GeoDataFrame with only LineString geometries from all input features
-        """
-        all_line_geoms = []
-        crs = None
-        print(f"[FeaturesToSingleLinestring] Processing {len(features)} GeoDataFrames")
-        
-        for gdf in features:
-            if gdf.empty:
-                continue
-                
-            # Get CRS from first non-empty GeoDataFrame
-            if crs is None:
-                crs = gdf.crs
-                
-            # Use the helper function to flatten to LineStrings
-            flattened_gdf = TopoDrainCore._flatten_to_linestrings(gdf)
-            
-            if not flattened_gdf.empty:
-                all_line_geoms.extend(flattened_gdf.geometry.tolist())
-                
-        if not all_line_geoms:
-            # Return empty GeoDataFrame with same structure
-            return gpd.GeoDataFrame(geometry=[], crs=crs)
-            
-        result_gdf = gpd.GeoDataFrame(geometry=all_line_geoms, crs=crs)
-        print(f"[FeaturesToSingleLinestring] Processed {len(result_gdf)} LineString geometries")
-        return result_gdf
-
-    @staticmethod
-    def _snap_line_to_point(line: LineString, snap_point: Point, position: str = None) -> LineString:
-        """
-        Snap the closest endpoint of a line to a given Point.
-
-        Args:
-            line (LineString): Input line geometry.
-            snap_point (Point): Point to snap to.
-            position (str, optional): "start", "end", or None. 
-                - "start" snaps the start of the line to the point, if endpoint is closer reverse line direction first.
-                - "end" snaps the end of the line to the point, if startpoint is closer reverse line direction first.
-                - None snaps the closer endpoint to the point.
-
-        Returns:
-            LineString: Line with endpoint snapped to the given point.
-        """
-        if not isinstance(line, LineString):
-            warnings.warn("Cannot snap endpoint for MultiLineString geometry")
-            return line
-
-        coords = list(line.coords)
-        if len(coords) < 2:
-            return line
-
-        dist_start = snap_point.distance(Point(coords[0]))
-        dist_end = snap_point.distance(Point(coords[-1]))
-
-        # Always snap to the closest endpoint
-        if dist_start <= dist_end:
-            coords[0] = (snap_point.x, snap_point.y)
-            if position == "end":
-                # Reverse line direction if snapping to end
-                coords.reverse()
-        else:
-            coords[-1] = (snap_point.x, snap_point.y)
-            if position == "start":
-                # Reverse line direction if snapping to start
-                coords.reverse()
-
-        return LineString(coords)
-    
 
     def _raster_to_linestring_wbt(self, raster_path: str, snap_to_start_point: Point = None, snap_to_endpoint: Point = None, feedback=None) -> LineString:
         """
@@ -850,7 +834,8 @@ class TopoDrainCore:
         
         return single_part_line
 
-    
+
+    ## TopoDrainCore functions
     @staticmethod
     def _find_inflection_candidates(curvature: np.ndarray, window: int) -> list:
         """
@@ -1039,7 +1024,7 @@ class TopoDrainCore:
             else:
                 print(f"[ExtractValleys] Log-scaled accumulation → {facc_log_output_path}")
             try:
-                TopoDrainCore._log_raster(input_raster=facc_output_path, output_path=facc_log_output_path, nodata=float(self.nodata))
+                TopoDrainCore._log_raster(input_raster=facc_output_path, output_path=facc_log_output_path)
                 if not os.path.exists(facc_log_output_path):
                     raise RuntimeError(f"[ExtractValleys] Log-scaled accumulation output not found at {facc_log_output_path}")
             except Exception as e:
@@ -1310,7 +1295,7 @@ class TopoDrainCore:
             else:
                 print(f"[ExtractMainValleys] Rasterizing valley lines for polygon {poly_idx + 1}...")
             valley_raster_path = os.path.join(self.temp_directory, f"valley_mask_poly_{poly_idx}.tif")
-            valley_mask = self._vector_to_raster(
+            valley_mask = self._vector_to_mask_raster(
                 gdf=valley_clipped.geometry,
                 reference_raster=facc_path,
                 output_path=valley_raster_path,
@@ -1687,7 +1672,6 @@ class TopoDrainCore:
 
             return left_pt, right_pt
         
-
     @staticmethod
     def _get_linedirection_start_point( ### maybe adjust line_geom
         barrier_raster_path: str,
@@ -1826,7 +1810,6 @@ class TopoDrainCore:
                 return new_pt
             else:
                 return None
-
 
     @staticmethod
     def _create_slope_cost_raster(
@@ -2079,7 +2062,6 @@ class TopoDrainCore:
             print(f"[CutLineAtPoint] Error cutting line: {e}")
             return line  # Fallback to original line
 
-
     def _get_constant_slope_line(
         self,
         dtm_path: str,
@@ -2215,7 +2197,14 @@ class TopoDrainCore:
 
             # Check if the line segment reaches the destination
             if cut_point:
-                dest_value = self._value_at_raster(cut_point, destination_raster_path)
+                # Read the destination raster and get the value at the cut point
+                with rasterio.open(destination_raster_path) as dest_src:
+                    row, col = dest_src.index(cut_point.x, cut_point.y)
+                    if 0 <= row < dest_src.height and 0 <= col < dest_src.width:
+                        dest_data = dest_src.read(1)
+                        dest_value = dest_data[row, col]
+                    else:
+                        dest_value = None
                 if dest_value == 1:
                     print(f"[GetConstantSlopeLine] Cut point {cut_point} is a destination cell")
                     reached_destination = True
@@ -2486,8 +2475,6 @@ class TopoDrainCore:
                 print("[IterativeConstantSlopeLine] No valid line could be created")
             return None
 
-
-    ###### Maybe perimeter as seperate parameter so we can check if new start points are within the perimeter? mit Option perimeter as barrier, perimeter as destination, perimeter ignored
     def get_constant_slope_lines(
         self,
         dtm_path: str,
@@ -2534,7 +2521,7 @@ class TopoDrainCore:
         destination_processed = TopoDrainCore._features_to_single_linestring(destination_features)
 
         # Create binary destination mask
-        destination_raster_path = self._vector_to_raster([destination_processed], dtm_path, unique_values=False, flatten_lines=False, buffer_lines=True) # destination_processed are already flattened. Binary mask raster, no need of unique values
+        destination_raster_path = self._vector_to_mask_raster([destination_processed], dtm_path, unique_values=False, flatten_lines=False, buffer_lines=True) # destination_processed are already flattened. Binary mask raster, no need of unique values
 
         # Read destination mask for later processing
         with rasterio.open(destination_raster_path) as src:
@@ -2556,10 +2543,10 @@ class TopoDrainCore:
             barrier_processed = TopoDrainCore._features_to_single_linestring(barrier_features)
 
             # Create binary barrier mask (always binary: 0=free, 1=barrier)
-            barrier_raster_path = self._vector_to_raster([barrier_processed], dtm_path, unique_values=False, flatten_lines=False, buffer_lines=True)
+            barrier_raster_path = self._vector_to_mask_raster([barrier_processed], dtm_path, unique_values=False, flatten_lines=False, buffer_lines=True)
             
             # Create barrier value raster with unique values to identify which barrier feature each cell belongs to (needed for overlap analysis and allow barrier as destination option)
-            barrier_value_raster_path, barrier_id_to_geom = self._vector_to_raster([barrier_processed], dtm_path, unique_values=True, flatten_lines=False, buffer_lines=True)
+            barrier_value_raster_path, barrier_id_to_geom = self._vector_to_mask_raster([barrier_processed], dtm_path, unique_values=True, flatten_lines=False, buffer_lines=True)
 
             # Read barrier masks for processing
             with rasterio.open(barrier_raster_path) as src:
@@ -2837,8 +2824,7 @@ class TopoDrainCore:
         
         return out_gdf
     
-
-    def create_keylines(self, dtm_path, start_points, valley_lines, ridge_lines, slope, perimeter, allow_barriers_as_temp_destination=False, feedback=None):
+    def create_keylines(self, dtm_path, start_points, valley_lines, ridge_lines, slope, perimeter, feedback=None):
         """
         Create keylines using an iterative process:
         1. Trace from start points to ridges (using valleys as barriers)
@@ -2883,10 +2869,10 @@ class TopoDrainCore:
         ridge_lines_raster_path = os.path.join(self.temp_directory, "ridge_lines_mask.tif")
 
         # Rasterize valley_lines - now returns path directly
-        valley_lines_raster_path = self._vector_to_raster([valley_lines], dtm_path, output_path=valley_lines_raster_path, unique_values=False, flatten_lines=True, buffer_lines=True)
+        valley_lines_raster_path = self._vector_to_mask_raster([valley_lines], dtm_path, output_path=valley_lines_raster_path, unique_values=False, flatten_lines=True, buffer_lines=True)
 
         # Rasterize ridge_lines - now returns path directly
-        ridge_lines_raster_path = self._vector_to_raster([ridge_lines], dtm_path, output_path=ridge_lines_raster_path, unique_values=False, flatten_lines=True, buffer_lines=True)
+        ridge_lines_raster_path = self._vector_to_mask_raster([ridge_lines], dtm_path, output_path=ridge_lines_raster_path, unique_values=False, flatten_lines=True, buffer_lines=True)
         
         # Rasterize perimeter for precise endpoint checking
         perimeter_raster_path = None
@@ -2901,7 +2887,7 @@ class TopoDrainCore:
                 perimeter_line = perimeter
 
             perimeter_raster_path = os.path.join(self.temp_directory, "perimeter_mask.tif")
-            perimeter_raster_path = self._vector_to_raster(
+            perimeter_raster_path = self._vector_to_mask_raster(
                 [perimeter_line],
                 dtm_path,
                 output_path=perimeter_raster_path,

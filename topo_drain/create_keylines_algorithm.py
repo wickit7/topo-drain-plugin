@@ -47,7 +47,6 @@ class CreateKeylinesAlgorithm(QgsProcessingAlgorithm):
     INPUT_PERIMETER = 'INPUT_PERIMETER'
     OUTPUT_KEYLINES = 'OUTPUT_KEYLINES'
     SLOPE = 'SLOPE'
-    ALLOW_BARRIERS_AS_TEMP_DESTINATION = 'ALLOW_BARRIERS_AS_TEMP_DESTINATION'
 
     def __init__(self, core=None):
         super().__init__()
@@ -166,14 +165,6 @@ connections can be made."""
             )
         )
         
-        self.addParameter(
-            QgsProcessingParameterBoolean(
-                self.ALLOW_BARRIERS_AS_TEMP_DESTINATION,
-                self.tr('Allow barriers as temporary destinations (iterative tracing)'),
-                defaultValue=False
-            )
-        )
-        
         # Output parameters
         keylines_param = QgsProcessingParameterVectorDestination(
             self.OUTPUT_KEYLINES,
@@ -197,7 +188,6 @@ connections can be made."""
         
         keylines_output = self.parameterAsOutputLayer(parameters, self.OUTPUT_KEYLINES, context)
         slope = self.parameterAsDouble(parameters, self.SLOPE, context)
-        allow_barriers_as_temp_destination = self.parameterAsBool(parameters, self.ALLOW_BARRIERS_AS_TEMP_DESTINATION, context)
 
         # Extract file paths
         keylines_path = keylines_output if isinstance(keylines_output, str) else keylines_output
@@ -274,7 +264,6 @@ connections can be made."""
             ridge_lines=ridge_lines_gdf,
             slope=slope,
             perimeter=perimeter_gdf,
-            allow_barriers_as_temp_destination=allow_barriers_as_temp_destination,
             feedback=feedback
         )
 

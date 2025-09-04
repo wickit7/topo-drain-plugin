@@ -50,7 +50,6 @@ class AdjustKeylinesAfterAlgorithm(QgsProcessingAlgorithm):
     OUTPUT_ADJUSTED_KEYLINES = 'OUTPUT_ADJUSTED_KEYLINES'
     CHANGE_AFTER = 'CHANGE_AFTER'
     SLOPE_AFTER = 'SLOPE_AFTER'
-    ALLOW_BARRIERS_AS_TEMP_DESTINATION = 'ALLOW_BARRIERS_AS_TEMP_DESTINATION'
 
     def __init__(self, core=None):
         super().__init__()
@@ -181,14 +180,6 @@ and follow keyline design principles for effective water management."""
             )
         )
         
-        self.addParameter(
-            QgsProcessingParameterBoolean(
-                self.ALLOW_BARRIERS_AS_TEMP_DESTINATION,
-                self.tr('Allow barriers as temporary destinations (iterative tracing)'),
-                defaultValue=False
-            )
-        )
-        
         # Output parameters
         adjusted_keylines_param = QgsProcessingParameterVectorDestination(
             self.OUTPUT_ADJUSTED_KEYLINES,
@@ -213,7 +204,6 @@ and follow keyline design principles for effective water management."""
         adjusted_keylines_output = self.parameterAsOutputLayer(parameters, self.OUTPUT_ADJUSTED_KEYLINES, context)
         change_after = self.parameterAsDouble(parameters, self.CHANGE_AFTER, context)
         slope_after = self.parameterAsDouble(parameters, self.SLOPE_AFTER, context)
-        allow_barriers_as_temp_destination = self.parameterAsBool(parameters, self.ALLOW_BARRIERS_AS_TEMP_DESTINATION, context)
 
         # Extract file paths
         adjusted_keylines_path = adjusted_keylines_output if isinstance(adjusted_keylines_output, str) else adjusted_keylines_output
@@ -308,7 +298,6 @@ and follow keyline design principles for effective water management."""
             slope_after=slope_after,
             destination_features=destination_gdfs,
             barrier_features=barrier_gdfs if barrier_gdfs else None,
-            allow_barriers_as_temp_destination=allow_barriers_as_temp_destination,
             feedback=feedback
         )
 
