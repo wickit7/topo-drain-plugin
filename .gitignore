@@ -9,7 +9,7 @@ __pycache__/
 Thumbs.db
 
 # IDE/Editor files
-.vscode/settings.json
+.vscode/
 .idea/
 *.swp
 *.swo
