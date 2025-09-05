@@ -1,0 +1,12 @@
+# Global code owners
+* @wickit7
+
+# Core functionality
+/topo_drain/core/ @wickit7
+
+# QGIS algorithms
+/topo_drain/*_algorithm.py @wickit7
+
+# Plugin configuration
+/topo_drain/metadata.txt @wickit7
+/topo_drain/topo_drain_plugin.py @wickit7
