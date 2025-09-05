@@ -1,7 +1,32 @@
-topo_drain/core/WBT/
-topo_drain/test/
-topo_drain/Readme.txt
-topo_drain/Readme.html
-copy_to_plugin_directory.py
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# OS-specific filesx
 .DS_Store
-topo_drain/core/__pycache__/
+Thumbs.db
+
+# IDE/Editor files
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
+
+# Development/deployment scripts
+copy_to_plugin_directory.py
+
+# Generated documentation files
+topo_drain/README.txt
+topo_drain/README.html
+
+# QGIS plugin build artifacts
+*.zip
+build/
+dist/
+
+# Temporary files
+*.tmp
+*.temp
