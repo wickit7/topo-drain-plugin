@@ -9,22 +9,20 @@ description=A QGIS plugin for planning surface drainage water management.
 version=0.1
 author=Timo Wicki
 email=wickitimo@gmail.com
-about=It automates the extraction of main valleys and ridges, creates off-contour line and supports various water-retention planning methods—such as road siting, pond siting, Keyline Design, and other sponge-scape measures. 
-    Influencing surface runoff on land is complex and requires significant expertise. This tool is intended as an aid for users with experience in land surface water management - the main goal should be to slow and sink water where it falls.
+about=It automates the extraction of main valleys and ridges, creates off-contour line and supports various water-retention planning methods—such as Keyline Design. The tool can also be used for other tasks, such as planning the location and alignment of paths and roads.
+    Influencing surface runoff on land is complex and requires significant expertise. This tool is intended as an aid for users with experience in land surface water management.
     
     Core algorithms leverage WhiteboxTools (Lindsay, 2017–2020; see https://github.com/jblindsay/whitebox-tools).
-    So make shure you have installed and configured WhiteboxTools plugin for QGIS (i.e. see https://www.youtube.com/watch?v=xJXDBsNbcTg).
+    So make shure you have installed and configured the plugin "WhiteboxTools for QGIS" (i.e. see https://www.youtube.com/watch?v=xJXDBsNbcTg).
     
-    This plugin requires several Python packages (numpy, rasterio, shapely, geopandas, scipy, matplotlib). These are NOT always included in the default QGIS Python environment.
+    This plugin requires several Python packages (numpy, rasterio, shapely, geopandas, scipy). These are NOT always included in the default QGIS Python environment.
     For help installing Python packages in QGIS, see:
     - Windows: https://landscapearchaeology.org/2018/installing-python-packages-in-qgis-3-for-windows/
     - macOS: https://gis.stackexchange.com/questions/351280/installing-python-modules-for-qgis-3-on-mac
-
+    or use QGIS Plugin "QGIS Pip Manager" for installing the python packages.
 
     The plugin will be developed further on a regular basis. 
 
-
-# For example, equidistant keylines are generally more appropriate than keylines that always follow precise slope gradients, as the latter can result in overly complex keyline design layouts. Also it's safer to use keyline design for planning vegetation (agroforestry) and farming management (e.g., cultivation patterns) patterns than for swales.
 
 tracker=https://github.com/wickit7/topo-drain-plugin/issues
 repository=https://github.com/wickit7/topo-drain-plugin
@@ -37,11 +35,11 @@ hasProcessingProvider=yes
 # changelog=
 
 # Tags are comma separated with spaces allowed
-tags=keyline-design, sponge-scape, schwammland, permaculture, dem, topo-drain, hydrology, watershed-analysis, water-management, whiteboxtools
+tags=keyline-design, permaculture, sponge-scape, schwammland, surface analysis, watershed-analysis, topo-drain, water-management, whiteboxtools
 
 homepage=https://github.com/wickit7/topo-drain-plugin
 category=Analysis
-icon=icon.png
+icon=icons/topo_drain.svg
 # experimental flag
 experimental=True
 
@@ -51,12 +49,10 @@ deprecated=False
 # Since QGIS 3.8, a comma separated list of plugins to be installed
 # (or upgraded) can be specified.
 # Check the documentation for more information.
-plugin_dependencies=plugin:WhiteboxTools;python:numpy>=1.20.1,<1.27;python:rasterio>=1.1.5,<1.5;python:shapely>=1.7.0,<2.1;python:geopandas>=0.8.1,<1.1;python:matplotlib>=3.3.0,<3.9.2
-
-
+plugin_dependencies=plugin:WhiteboxTools;python:numpy;python:rasterio;python:shapely;python:geopandas;python:scipy
 
 Category of the plugin: Raster, Vector, Database or Web
-# category=plugin
+category=plugin
 
 # If the plugin can run on QGIS Server.
 server=False

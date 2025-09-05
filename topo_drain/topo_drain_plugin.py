@@ -35,11 +35,12 @@ import sys
 import inspect
 import importlib
 
-from qgis.core import QgsProcessingAlgorithm, QgsApplication, QgsProcessingUtils
+from qgis.core import QgsProcessingAlgorithm, QgsApplication, QgsProcessingUtils, QgsCoordinateReferenceSystem, QgsProject, QgsRasterLayer, QgsVectorLayer
 from qgis.PyQt.QtWidgets import QMessageBox
-from .topo_drain_provider import TopoDrainProvider
-from topo_drain.core.topo_drain_core import set_temp_and_working_dir, set_whitebox_dir
 from processing.core.ProcessingConfig import ProcessingConfig
+from .topo_drain_provider import TopoDrainProvider
+from topo_drain.core.topo_drain_core import TopoDrainCore
+from .utils import get_crs_from_project
 
 cmd_folder = os.path.split(inspect.getfile(inspect.currentframe()))[0]
 
@@ -50,6 +51,7 @@ class TopoDrainPlugin(object):
 
     def __init__(self):
         self.provider = None
+        self.core = None  # Will hold the TopoDrainCore instance
 
     def get_whiteboxtools_executable_path(self):
         # The key used by the WhiteboxTools plugin for the executable path
@@ -61,7 +63,7 @@ class TopoDrainPlugin(object):
             QMessageBox.critical(None, "TopoDrain Plugin - WhiteboxTools Error", msg)
             raise RuntimeError("WhiteboxTools executable path not found.")
         return exe_path
-
+    
     def check_python_dependencies(self):
         # Read python dependencies from requirements.txt
         dep_file = os.path.join(cmd_folder, "requirements.txt")
@@ -88,17 +90,17 @@ class TopoDrainPlugin(object):
 
     def initProcessing(self):
         """Init Processing provider for QGIS >= 3.8."""
-        self.provider = TopoDrainProvider()
-        QgsApplication.processingRegistry().addProvider(self.provider)
         temp_dir = QgsProcessingUtils.tempFolder()
         working_dir = QgsProcessingUtils.tempFolder()
-        set_temp_and_working_dir(temp_dir, working_dir)
         whitebox_executable_path = self.get_whiteboxtools_executable_path()
-        if whitebox_executable_path:
-            whitebox_dir = os.path.dirname(whitebox_executable_path)
-            set_whitebox_dir(whitebox_dir)
+        whitebox_dir = os.path.dirname(whitebox_executable_path)
+        project_crs = get_crs_from_project()
+        # Create the TopoDrainCore instance only once
+        self.core = TopoDrainCore(whitebox_directory=whitebox_dir, crs=project_crs, temp_directory=temp_dir, working_directory=working_dir)
         self.check_python_dependencies()
-
+        # Pass the core instance to the provider
+        self.provider = TopoDrainProvider(core=self.core)
+        QgsApplication.processingRegistry().addProvider(self.provider)
 
     def initGui(self):
         self.initProcessing()

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="64" height="64" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+  <!-- Simple background with rounded corners and border -->
+  <rect x="2" y="2" width="60" height="60" rx="8" ry="8" fill="#F0EBE1" stroke="#1F4F4F" stroke-width="4"/>
+  
+  <!-- Water drop in the center -->
+  <g transform="translate(32, 32)">
+    <!-- Main water drop shape - pointed top, wide bottom -->
+    <path d="M 0 -12 Q -8 -4 -8 4 Q -8 12 0 12 Q 8 12 8 4 Q 8 -4 0 -12 Z" fill="#4A8FD9"/>
+    <!-- Inner highlight -->
+    <path d="M 0 -8 Q -4 -2 -4 2 Q -4 6 0 6 Q 4 6 4 2 Q 4 -2 0 -8 Z" fill="#6BA3E6"/>
+  </g>
+</svg>
