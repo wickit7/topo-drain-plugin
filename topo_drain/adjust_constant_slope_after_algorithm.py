@@ -42,7 +42,10 @@ class AdjustConstantSlopeAfterAlgorithm(QgsProcessingAlgorithm):
     OUTPUT_ADJUSTED_LINES = 'OUTPUT_ADJUSTED_LINES'
     CHANGE_AFTER = 'CHANGE_AFTER'
     SLOPE_AFTER = 'SLOPE_AFTER'
+    SLOPE_DEVIATION_THRESHOLD = 'SLOPE_DEVIATION_THRESHOLD'
     ALLOW_BARRIERS_AS_TEMP_DESTINATION = 'ALLOW_BARRIERS_AS_TEMP_DESTINATION'
+    MAX_ITERATIONS_SLOPE = 'MAX_ITERATIONS_SLOPE'
+    MAX_ITERATIONS_BARRIER = 'MAX_ITERATIONS_BARRIER'
 
     def __init__(self, core=None):
         super().__init__()
@@ -94,6 +97,7 @@ Parameters:
 - Input Lines: Existing constant slope lines to modify (e.g., from Create Keylines)
 - Change After: Fraction of line length where slope changes (0.0-1.0, e.g., 0.5 = halfway)
 - Slope After: New slope for the second part (e.g., 0.005 for 0.5% downhill)
+- Slope Deviation Threshold: Maximum allowed slope deviation before line cutting (0.0-1.0, e.g., 0.2 for 20%)
 - Destination Features: Features that the new slope sections should reach (e.g., ridge lines)
 - Barrier Features (optional): Features to avoid during new slope tracing (e.g., valley lines)"""
         )
@@ -117,6 +121,32 @@ Parameters:
                 types=[QgsProcessing.TypeVectorLine]
             )
         )
+
+        self.addParameter(
+            QgsProcessingParameterMultipleLayers(
+                self.INPUT_DESTINATION_FEATURES,
+                self.tr('Destination Features (lines or polygons that new slope sections should reach)'),
+                layerType=QgsProcessing.TypeVectorAnyGeometry
+            )
+        )
+        
+        self.addParameter(
+            QgsProcessingParameterMultipleLayers(
+                self.INPUT_BARRIER_FEATURES,
+                self.tr('Barrier Features (lines or polygons to avoid during new slope tracing)'),
+                layerType=QgsProcessing.TypeVectorAnyGeometry,
+                optional=True
+            )
+        )
+        
+        self.addParameter(
+            QgsProcessingParameterBoolean(
+                self.ALLOW_BARRIERS_AS_TEMP_DESTINATION,
+                self.tr('Allow barriers as temporary destinations (iterative tracing)'),
+                defaultValue=False
+            )
+        )
+
         
         # Algorithm parameters
         self.addParameter(
@@ -140,29 +170,40 @@ Parameters:
                 maxValue=1.0
             )
         )
+                
+        
         
         self.addParameter(
-            QgsProcessingParameterBoolean(
-                self.ALLOW_BARRIERS_AS_TEMP_DESTINATION,
-                self.tr('Allow barriers as temporary destinations (iterative tracing)'),
-                defaultValue=False
+            QgsProcessingParameterNumber(
+                self.SLOPE_DEVIATION_THRESHOLD,
+                self.tr('Advanced: Slope Deviation Threshold (max allowed slope deviation before line cutting, 0.0-1.0, default: 0.2)'),
+                type=QgsProcessingParameterNumber.Double,
+                defaultValue=0.2,
+                minValue=0.0,
+                maxValue=1.0,
+                optional=False
+            )
+        )
+
+        self.addParameter(
+            QgsProcessingParameterNumber(
+                self.MAX_ITERATIONS_SLOPE,
+                self.tr('Advanced: Max Iterations Slope (maximum iterations for line refinement, 1-50, default: 20)'),
+                type=QgsProcessingParameterNumber.Integer,
+                defaultValue=20,
+                minValue=1,
+                maxValue=50
             )
         )
         
         self.addParameter(
-            QgsProcessingParameterMultipleLayers(
-                self.INPUT_DESTINATION_FEATURES,
-                self.tr('Destination Features (lines or polygons that new slope sections should reach)'),
-                layerType=QgsProcessing.TypeVectorAnyGeometry
-            )
-        )
-        
-        self.addParameter(
-            QgsProcessingParameterMultipleLayers(
-                self.INPUT_BARRIER_FEATURES,
-                self.tr('Barrier Features (lines or polygons to avoid during new slope tracing)'),
-                layerType=QgsProcessing.TypeVectorAnyGeometry,
-                optional=True
+            QgsProcessingParameterNumber(
+                self.MAX_ITERATIONS_BARRIER,
+                self.tr('Advanced: Max Iterations Barrier (maximum iterations when using barriers as temporary destinations, 1-50, default: 30)'),
+                type=QgsProcessingParameterNumber.Integer,
+                defaultValue=30,
+                minValue=1,
+                maxValue=50
             )
         )
         
@@ -189,6 +230,10 @@ Parameters:
         adjusted_lines_output = self.parameterAsOutputLayer(parameters, self.OUTPUT_ADJUSTED_LINES, context)
         change_after = self.parameterAsDouble(parameters, self.CHANGE_AFTER, context)
         slope_after = self.parameterAsDouble(parameters, self.SLOPE_AFTER, context)
+        slope_deviation_threshold = self.parameterAsDouble(parameters, self.SLOPE_DEVIATION_THRESHOLD, context)
+        allow_barriers_as_temp_destination = self.parameterAsBoolean(parameters, self.ALLOW_BARRIERS_AS_TEMP_DESTINATION, context)
+        max_iterations_slope = self.parameterAsInt(parameters, self.MAX_ITERATIONS_SLOPE, context)
+        max_iterations_barrier = self.parameterAsInt(parameters, self.MAX_ITERATIONS_BARRIER, context)
 
         # Extract file paths
         adjusted_lines_path = adjusted_lines_output if isinstance(adjusted_lines_output, str) else adjusted_lines_output
@@ -267,6 +312,10 @@ Parameters:
             slope_after=slope_after,
             destination_features=destination_gdfs,
             barrier_features=barrier_gdfs if barrier_gdfs else None,
+            allow_barriers_as_temp_destination=allow_barriers_as_temp_destination,
+            max_iterations_barrier=max_iterations_barrier,
+            slope_deviation_threshold=slope_deviation_threshold,
+            max_iterations_slope=max_iterations_slope,
             feedback=feedback
         )
 
