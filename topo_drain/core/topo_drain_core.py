@@ -1975,6 +1975,83 @@ class TopoDrainCore:
 
             return best_destination_raster_path, best_destination_point
 
+    def _analyze_slope_deviation_and_cut(
+        self,
+        line: LineString,
+        start_point: Point,
+        expected_slope: float,
+        deviation_threshold: float
+        ) -> Point:
+        """
+        Analyse the slope deviation of a line compared to the expected slope.
+        This method compares the assumed slope (based on euclidean distance) with the 
+        real slope (based on actual line distance), without using actual height values.
+        
+        The least cost algorithm assumes: dz/euclidean_distance = expected_slope
+        But the real line gives us: dz/real_distance = actual_slope
+        
+        Since dz is the same, we can derive: actual_slope = expected_slope * (euclidean_distance / real_distance)
+        Cut the line when actual_slope deviates too much from expected_slope.
+
+        Args:
+            line (LineString): The line to analyse.
+            start_point (Point): Original start point for reference.
+            expected_slope (float): Desired slope (e.g., 0.01 for 1% downhill) (assumed euclidean slope).
+            deviation_threshold (float): Maximum allowed relative deviation (e.g., 0.1 for 10%).
+            
+        Returns:
+            Point: The point where cutting should occur, or None if no cutting needed.
+        """
+        # Sample points along the line at regular intervals
+        line_length = line.length
+        num_samples = max(int(line_length / 5.0), 10)  # Sample every 5 meters or at least 10 points
+        
+        distances_along_line = np.linspace(0, line_length, num_samples)
+        sample_points = [line.interpolate(d) for d in distances_along_line]
+        end_point = sample_points[-1]
+
+        print(f"[AnalyzeSlopeDeviation] Analyzing {num_samples} points along {line_length:.1f}m line")
+        print(f"[AnalyzeSlopeDeviation] Start point: {start_point}, End point: {end_point}")
+        print(f"[AnalyzeSlopeDeviation] Expected slope (euclidean): {expected_slope:.4f}")
+        print(f"[AnalyzeSlopeDeviation] Deviation threshold: {deviation_threshold:.2f}")
+
+        # Calculate slope deviations based on distance ratios
+        for i, (line_distance, point) in enumerate(zip(distances_along_line, sample_points)):
+            if line_distance == 0:
+                continue  # Skip start point
+                
+            # Calculate euclidean distance from start point
+            euclidean_distance = start_point.distance(point)
+            
+            if euclidean_distance == 0:
+                continue  # Skip if no distance
+                
+            # Calculate actual slope based on distance ratio
+            # actual_slope = expected_slope * (euclidean_distance / real_distance)
+            actual_slope = expected_slope * (euclidean_distance / line_distance)
+            
+            # Calculate relative deviation from expected slope
+            if expected_slope != 0:
+                slope_deviation_ratio = actual_slope / expected_slope
+                relative_deviation = abs(slope_deviation_ratio - 1.0)
+            else:
+                relative_deviation = 0
+            
+            print(f"[AnalyzeSlopeDeviation] Point {i}: line_dist={line_distance:.1f}m, "
+                  f"euclidean_dist={euclidean_distance:.1f}m, "
+                  f"expected_slope={expected_slope:.4f}, actual_slope={actual_slope:.4f}, "
+                  f"deviation={relative_deviation:.3f}")
+
+            if relative_deviation > deviation_threshold:
+                print(f"[AnalyzeSlopeDeviation] Slope deviation {relative_deviation:.3f} exceeds threshold "
+                      f"{deviation_threshold:.3f} at line distance {line_distance:.1f}m")
+                print(f"[AnalyzeSlopeDeviation] Expected slope: {expected_slope:.4f}, Actual slope: {actual_slope:.4f}")
+                return point
+
+        # No cutting needed - line maintains acceptable slope deviation
+        print(f"[AnalyzeSlopeDeviation] Line maintains acceptable slope deviation")
+        return None
+    
     def _analyze_distance_deviation_and_cut(
         self,
         line: LineString,
@@ -2070,7 +2147,7 @@ class TopoDrainCore:
         slope: float = 0.01,
         barrier_raster_path: str = None,
         max_iterations: int = 10,
-        distance_deviation_threshold: float = 0.2,
+        deviation_threshold: float = 0.2,
         feedback=None
     ) -> LineString:
         """
@@ -2087,7 +2164,7 @@ class TopoDrainCore:
             slope (float): Desired slope for the line (e.g., 0.01 for 1% downhill or -0.01 for uphill).
             barrier_raster_path (str): Optional path to a binary raster of cells that should not be crossed (1 = barrier).
             max_iterations (int): Maximum number of iterations for line refinement.
-            distance_deviation_threshold (float): Maximum allowed deviation of line distance vs Euclidean distance (e.g., 0.1 for 10%).
+            deviation_threshold (float): Maximum allowed deviation of euclidean distance vs. real distance (e.g., 0.1 for 10%).
             feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting.
 
         Returns:
@@ -2099,7 +2176,7 @@ class TopoDrainCore:
         print(f"[GetConstantSlopeLine] Starting constant slope line tracing")
         print(f"[GetConstantSlopeLine] destination raster path: {destination_raster_path}")
         print(f"[GetConstantSlopeLine] barrier raster path: {barrier_raster_path}")
-        print(f"[GetConstantSlopeLine] slope: {slope}, max_iterations: {max_iterations}, distance_deviation_threshold: {distance_deviation_threshold}")
+        print(f"[GetConstantSlopeLine] slope: {slope}, max_iterations: {max_iterations}, deviation_threshold: {deviation_threshold}")
 
         current_start_point = start_point
         accumulated_line_coords = []
@@ -2188,13 +2265,20 @@ class TopoDrainCore:
                 break
 
             # --- Analyze distance deviation and find cut point ---
-            print(f"[GetConstantSlopeLine] Analyzing distance deviation for iteration {iteration + 1}")
-            cut_point = self._analyze_distance_deviation_and_cut(
-                line_segment, 
-                current_start_point, 
-                distance_deviation_threshold
+            print(f"[GetConstantSlopeLine] Analyzing slope deviation for iteration {iteration + 1}")
+            cut_point = self._analyze_slope_deviation_and_cut(
+                line=line_segment, 
+                start_point=current_start_point, 
+                expected_slope=slope,
+                deviation_threshold=deviation_threshold
                 )
-
+            # print(f"[GetConstantSlopeLine] Analyzing distance deviation for iteration {iteration + 1}")
+            # cut_point = self._analyze_distance_deviation_and_cut(
+            #     line=line_segment, 
+            #     start_point=current_start_point, 
+            #     deviation_threshold=deviation_threshold
+            #     )
+            
             # Check if the line segment reaches the destination
             if cut_point:
                 # Read the destination raster and get the value at the cut point

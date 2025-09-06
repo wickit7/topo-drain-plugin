@@ -17,6 +17,7 @@ Thumbs.db
 
 # Development/deployment scripts
 copy_to_plugin_directory.py
+create_plugin_zip.py
 
 # Generated documentation files
 topo_drain/README.txt
