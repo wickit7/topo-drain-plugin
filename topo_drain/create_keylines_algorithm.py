@@ -47,6 +47,10 @@ class CreateKeylinesAlgorithm(QgsProcessingAlgorithm):
     INPUT_PERIMETER = 'INPUT_PERIMETER'
     OUTPUT_KEYLINES = 'OUTPUT_KEYLINES'
     SLOPE = 'SLOPE'
+    CHANGE_AFTER = 'CHANGE_AFTER'
+    SLOPE_AFTER = 'SLOPE_AFTER'
+    SLOPE_DEVIATION_THRESHOLD = 'SLOPE_DEVIATION_THRESHOLD'
+    MAX_ITERATIONS_SLOPE = 'MAX_ITERATIONS_SLOPE'
 
     def __init__(self, core=None):
         super().__init__()
@@ -85,23 +89,17 @@ This algorithm creates comprehensive keyline networks by iteratively tracing con
 
 All output keylines will be oriented from valley to ridge (valley → ridge direction).
 
-The iterative approach ensures that keylines follow natural topographic flow patterns,
-creating comprehensive drainage and access line networks that respect the landscape's
-ridge-valley structure.
-
-This is particularly useful for:
-- Agricultural keyline design
-- Drainage planning  
-- Access road planning following natural contours
-- Watershed management
-
 Parameters:
 - Input DTM: Digital Terrain Model for slope calculations
 - Start Points: Point features where keylines should begin (typically keypoints from valleys)
 - Valley Lines: Valley line features to use as barriers/destinations during tracing
 - Ridge Lines: Ridge line features to use as barriers/destinations during tracing
-- Perimeter: Optional polygon features defining area of interest (always acts as destination)
+- Perimeter: Polygon features defining area of interest (always acts as final destination)
 - Slope: Desired slope as a decimal (e.g., 0.01 for 1% downhill, -0.01 for 1% uphill)
+- Change Slope At Distance: Creates two segments - Desired Slope from start to this point, then New Slope to end (e.g., 0.5 = change at middle)
+- New Slope After Change Point: New Slope to apply for the second segment (required if Change Slope At Distance is set)
+- Slope Deviation Threshold: Maximum allowed slope deviation before triggering slope refinement iterations (0.0-1.0, e.g., 0.2 = 20%)
+- Max Iterations Slope: Maximum iterations for slope refinement (1-50, default: 20)
 
 The algorithm alternates between tracing to ridges and valleys, creating new start points
 beyond endpoints that intersect target features, and continues until no more valid
@@ -131,7 +129,7 @@ connections can be made."""
         self.addParameter(
             QgsProcessingParameterVectorLayer(
                 self.INPUT_VALLEY_LINES,
-                self.tr('Valley Lines'),
+                self.tr('Main Valley Lines'),
                 types=[QgsProcessing.TypeVectorLine]
             )
         )
@@ -139,7 +137,7 @@ connections can be made."""
         self.addParameter(
             QgsProcessingParameterVectorLayer(
                 self.INPUT_RIDGE_LINES,
-                self.tr('Ridge Lines'),
+                self.tr('Main Ridge Lines'),
                 types=[QgsProcessing.TypeVectorLine]
             )
         )
@@ -162,6 +160,54 @@ connections can be made."""
                 defaultValue=0.01,
                 minValue=-1.0,
                 maxValue=1.0
+            )
+        )
+        
+        # Optional slope adjustment parameters
+        self.addParameter(
+            QgsProcessingParameterNumber(
+                self.CHANGE_AFTER,
+                self.tr('Change Slope At Distance (0.5 = Desired Slope from start to middle, then New Slope from middle to end)'),
+                type=QgsProcessingParameterNumber.Double,
+                defaultValue=None,
+                minValue=0.0,
+                maxValue=1.0,
+                optional=True
+            )
+        )
+        
+        self.addParameter(
+            QgsProcessingParameterNumber(
+                self.SLOPE_AFTER,
+                self.tr('New Slope After Change Point (decimal, e.g., 0.005 for 0.5% downhill)'),
+                type=QgsProcessingParameterNumber.Double,
+                defaultValue=None,
+                minValue=-1.0,
+                maxValue=1.0,
+                optional=True
+            )
+        )
+        
+        self.addParameter(
+            QgsProcessingParameterNumber(
+                self.SLOPE_DEVIATION_THRESHOLD,
+                self.tr('Advanced: Slope Deviation Threshold (max allowed deviation before slope refinement, 0.0-1.0, default: 0.2 = 20%)'),
+                type=QgsProcessingParameterNumber.Double,
+                defaultValue=0.2,
+                minValue=0.0,
+                maxValue=1.0,
+                optional=False
+            )
+        )
+        
+        self.addParameter(
+            QgsProcessingParameterNumber(
+                self.MAX_ITERATIONS_SLOPE,
+                self.tr('Advanced: Max Iterations Slope (maximum iterations for line refinement, 1-50, default: 20)'),
+                type=QgsProcessingParameterNumber.Integer,
+                defaultValue=20,
+                minValue=1,
+                maxValue=50
             )
         )
         
@@ -188,6 +234,16 @@ connections can be made."""
         
         keylines_output = self.parameterAsOutputLayer(parameters, self.OUTPUT_KEYLINES, context)
         slope = self.parameterAsDouble(parameters, self.SLOPE, context)
+        
+        # Optional slope adjustment parameters
+        change_after = self.parameterAsDouble(parameters, self.CHANGE_AFTER, context) if parameters.get(self.CHANGE_AFTER) is not None else None
+        slope_after = self.parameterAsDouble(parameters, self.SLOPE_AFTER, context) if parameters.get(self.SLOPE_AFTER) is not None else None
+        slope_deviation_threshold = self.parameterAsDouble(parameters, self.SLOPE_DEVIATION_THRESHOLD, context)
+        max_iterations_slope = self.parameterAsInt(parameters, self.MAX_ITERATIONS_SLOPE, context)
+        
+        # Validate that both change_after and slope_after are provided together
+        if (change_after is not None) != (slope_after is not None):
+            raise QgsProcessingException("Both 'Change After' and 'Slope After' parameters must be provided together or both left empty.")
 
         # Extract file paths
         keylines_path = keylines_output if isinstance(keylines_output, str) else keylines_output
@@ -256,6 +312,12 @@ connections can be made."""
         else:
             feedback.pushInfo("No perimeter layer provided (optional)")
 
+        # Report slope adjustment settings
+        if change_after is not None and slope_after is not None:
+            feedback.pushInfo(f"Slope adjustment enabled: change after {change_after*100:.1f}% to slope {slope_after}")
+        else:
+            feedback.pushInfo("No slope adjustment will be applied")
+
         feedback.pushInfo("Running keylines creation...")
         keylines_gdf = self.core.create_keylines(
             dtm_path=dtm_path,
@@ -264,6 +326,10 @@ connections can be made."""
             ridge_lines=ridge_lines_gdf,
             slope=slope,
             perimeter=perimeter_gdf,
+            change_after=change_after,
+            slope_after=slope_after,
+            slope_deviation_threshold=slope_deviation_threshold,
+            max_iterations_slope=max_iterations_slope,
             feedback=feedback
         )
 

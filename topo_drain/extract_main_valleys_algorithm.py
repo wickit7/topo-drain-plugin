@@ -20,7 +20,7 @@ pluginPath = os.path.dirname(__file__)
 
 class ExtractMainValleysAlgorithm(QgsProcessingAlgorithm):
     """
-    QGIS Processing Algorithm for extracting main valley lines based on flow accumulation and valley lines (generated with processing tool "Extract Valleys").
+    QGIS Processing Algorithm for extracting main valley lines based on flow accumulation and valley lines (generated previously with processing tool "Extract Valleys").
 
     This algorithm identifies the main valley lines (flow paths) from a complete valley (stream) network
     by selecting the tributaries with the highest flow accumulation values within a given
@@ -72,8 +72,8 @@ class ExtractMainValleysAlgorithm(QgsProcessingAlgorithm):
 
     def shortHelpString(self):
         return self.tr(
-            """QGIS Processing Algorithm for extracting main valley lines based on flow accumulation and valley lines (generated with processing tool "Extract Valleys").
-            
+            """QGIS Processing Algorithm for extracting main valley lines based on flow accumulation and valley lines (generated previously with processing tool "Extract Valleys").
+
 This algorithm identifies the main valley lines (flow paths) from a complete valley (stream) network by selecting the tributaries with the highest flow accumulation values within a given perimeter (area of interest). If more than one feature polygon is inside perimeter, the analysis is done for each polygon separately. If no perimeter is provided, it uses the extent of the valley lines.
 
 The algorithm:
@@ -210,11 +210,15 @@ Input Requirements:
         if perimeter_gdf is not None and perimeter_gdf.empty:
             feedback.reportError("No features found in perimeter input")
                                  
-        # Check for required attributes
+        # Check for required attributes (case-insensitive)
+        feedback.pushInfo(f"Checking valley lines attributes: {list(valley_lines_gdf.columns)}")
         required_attrs = ['FID', 'TRIB_ID', 'DS_LINK_ID']
-        missing_attrs = [attr for attr in required_attrs if attr not in valley_lines_gdf.columns]
+        # Convert column names to uppercase for case-insensitive comparison
+        available_attrs_upper = [col.upper() for col in valley_lines_gdf.columns]
+        feedback.pushInfo(f"Valley lines attributes (uppercase): {available_attrs_upper}")
+        missing_attrs = [attr for attr in required_attrs if attr not in available_attrs_upper]
         if missing_attrs:
-            raise QgsProcessingException(f"Valley lines missing required attributes: {missing_attrs}. Please use output from Create Valleys algorithm.")
+            raise QgsProcessingException(f"Valley lines missing required attributes: {missing_attrs}. Please use output from Create Valleys algorithm. Available attributes: {list(valley_lines_gdf.columns)}")
 
         # Call the core function
         feedback.pushInfo("Running extract main valleys...")

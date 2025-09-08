@@ -53,15 +53,29 @@ class TopoDrainPlugin(object):
         self.provider = None
         self.core = None  # Will hold the TopoDrainCore instance
 
-    def get_whiteboxtools_executable_path(self):
+    def get_whiteboxtools_executable_path(self, silent=False):
+        """
+        Get WhiteboxTools executable path from QGIS settings.
+        
+        Args:
+            silent (bool): If True, don't show warning messages
+            
+        Returns:
+            str or None: Path to WhiteboxTools executable
+        """
         # The key used by the WhiteboxTools plugin for the executable path
         WBT_EXECUTABLE_KEY = "WBT_EXECUTABLE"
         exe_path = ProcessingConfig.getSetting(WBT_EXECUTABLE_KEY)
         print(f"WhiteboxTools executable path from QGIS Settings: {exe_path}")
-        if not exe_path:
-            msg = "WhiteboxTools executable path could not be determined. Please ensure the WhiteboxTools plugin is installed and configured correctly."
-            QMessageBox.critical(None, "TopoDrain Plugin - WhiteboxTools Error", msg)
-            raise RuntimeError("WhiteboxTools executable path not found.")
+        
+        if not exe_path and not silent:
+            msg = (
+                "WhiteboxTools executable path could not be determined.\n\n"
+                "This is normal during QGIS startup if the WhiteboxTools plugin hasn't loaded yet.\n\n"
+                "The TopoDrain plugin will load successfully. WhiteboxTools will be configured automatically when first used."
+            )
+            QMessageBox.information(None, "TopoDrain Plugin - Initialization", msg)
+
         return exe_path
     
     def check_python_dependencies(self):
@@ -86,24 +100,74 @@ class TopoDrainPlugin(object):
                     "\n\nPlease install them using your QGIS Python environment before using this plugin."
                 )
                 QMessageBox.critical(None, "TopoDrain Plugin - Missing Dependencies", msg)
-                raise ImportError(msg)
-
+                return False
+        return True
+    
     def initProcessing(self):
         """Init Processing provider for QGIS >= 3.8."""
         temp_dir = QgsProcessingUtils.tempFolder()
         working_dir = QgsProcessingUtils.tempFolder()
-        whitebox_executable_path = self.get_whiteboxtools_executable_path()
-        whitebox_dir = os.path.dirname(whitebox_executable_path)
+        
+        # Try to get WhiteboxTools path silently during initialization
+        # This might fail if WhiteboxTools plugin hasn't loaded yet, which is normal
+        whitebox_executable_path = self.get_whiteboxtools_executable_path(silent=True)
+        
+        # Check if WhiteboxTools path was found
+        if whitebox_executable_path is None:
+            # Use None for whitebox_dir if executable path is not available
+            # This will be updated later when WhiteboxTools becomes available
+            whitebox_dir = None
+            print("WhiteboxTools not available during initialization - will be configured when first needed")
+        else:
+            whitebox_dir = os.path.dirname(whitebox_executable_path)
+            print(f"WhiteboxTools directory found during initialization: {whitebox_dir}")
+        
         project_crs = get_crs_from_project()
-        # Create the TopoDrainCore instance only once
+        # Create the TopoDrainCore instance - it will handle None whitebox_directory gracefully
         self.core = TopoDrainCore(whitebox_directory=whitebox_dir, crs=project_crs, temp_directory=temp_dir, working_directory=working_dir)
+        
+        # Only check dependencies after core is created
         self.check_python_dependencies()
+        
         # Pass the core instance to the provider
-        self.provider = TopoDrainProvider(core=self.core)
+        self.provider = TopoDrainProvider(core=self.core, plugin=self)
         QgsApplication.processingRegistry().addProvider(self.provider)
 
     def initGui(self):
         self.initProcessing()
+        
+    def ensure_whiteboxtools_configured(self):
+        """
+        Ensure WhiteboxTools is configured. This method can be called by algorithms
+        before they execute to make sure WhiteboxTools is available.
+        
+        Returns:
+            bool: True if WhiteboxTools is configured, False otherwise
+        """
+        if self.core is None:
+            return False
+            
+        # Check if WhiteboxTools is already configured
+        if self.core.wbt is not None and self.core.whitebox_directory is not None:
+            return True
+        
+        # Try to get WhiteboxTools executable path and update core
+        exe_path = self.get_whiteboxtools_executable_path(silent=True)
+        if exe_path:
+            whitebox_dir = os.path.dirname(exe_path)
+            print(f"Updating TopoDrainCore with WhiteboxTools directory: {whitebox_dir}")
+            # Update the core's whitebox directory
+            self.core.whitebox_directory = whitebox_dir
+            # Re-initialize WhiteboxTools
+            try:
+                self.core.wbt = self.core._init_whitebox_tools(whitebox_dir)
+                return True
+            except Exception as e:
+                print(f"Failed to initialize WhiteboxTools: {e}")
+        
+        # Show configuration message if still not available
+        self.get_whiteboxtools_executable_path(silent=False)
+        return False
 
     def unload(self):
         QgsApplication.processingRegistry().removeProvider(self.provider)

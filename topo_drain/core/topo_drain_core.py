@@ -18,7 +18,7 @@ import rasterio
 from rasterio.mask import mask as rio_mask
 from rasterio.sample import sample_gen
 from rasterio.features import rasterize
-from shapely.geometry import LineString, MultiLineString, Point
+from shapely.geometry import LineString, MultiLineString, Point, Polygon
 from shapely.ops import linemerge, nearest_points, substring
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import savgol_filter
@@ -123,6 +123,9 @@ class TopoDrainCore:
         wbt_executable = os.path.join(self.whitebox_directory, "whitebox_tools")
         if os.name == 'nt':  # Windows
             wbt_executable += ".exe"
+        
+        # Normalize path separators for consistency
+        wbt_executable = os.path.normpath(wbt_executable)
 
         arguments = [wbt_executable, f'--run={tool_name}']
 
@@ -131,7 +134,15 @@ class TopoDrainCore:
             if value is not None:
                 arguments.append(f'--{param}="{value}"')
 
-        fused_command = ' '.join(arguments)
+        # Create display command with proper quoting for paths with spaces
+        display_args = []
+        for i, arg in enumerate(arguments):
+            if i == 0 and ' ' in arg:  # Quote the executable if it contains spaces
+                display_args.append(f'"{arg}"')
+            else:
+                display_args.append(arg)
+        fused_command = ' '.join(display_args)
+        
         if feedback:
             feedback.pushInfo('WhiteboxTools command:')
             feedback.pushCommandInfo(fused_command)
@@ -192,7 +203,10 @@ class TopoDrainCore:
 
         on_stderr.buffer = ''
 
-        command, *args = QgsRunProcess.splitCommand(' '.join(arguments))
+        # Use the first argument as command and rest as arguments
+        # This properly handles paths with spaces without needing to join/split
+        command = arguments[0]
+        args = arguments[1:]
         proc = QgsBlockingProcess(command, args)
         proc.setStdOutHandler(on_stdout)
         proc.setStdErrHandler(on_stderr)
@@ -563,8 +577,8 @@ class TopoDrainCore:
                 all_shapes.append((geom, mask_value)) # Not buffering Points und Polygons
 
         # Rasterize the shapes to create the mask
-        # Use appropriate dtype based on unique_values setting
-        raster_dtype = np.uint32 if unique_values else np.uint8 # Use uint32 for unique values?
+        # Always use uint32 for simplicity and compatibility
+        raster_dtype = np.uint32
         
         mask = rasterize(
             shapes=all_shapes,
@@ -584,7 +598,8 @@ class TopoDrainCore:
             profile.update(
                 dtype=raster_dtype,
                 count=1,
-                compress='lzw'
+                compress='lzw',
+                nodata=0  # Use 0 as nodata for uint32 (works for both binary and unique value masks)
             )
 
         with rasterio.open(output_path, 'w', **profile) as dst:
@@ -1133,6 +1148,17 @@ class TopoDrainCore:
             else:
                 print(f"[ExtractValleys] Completed: {len(gdf)} features extracted.")
 
+            # Ensure FID field is present and properly named (case-sensitive)
+            if 'fid' in gdf.columns and 'FID' not in gdf.columns:
+                gdf = gdf.rename(columns={'fid': 'FID'})
+                if feedback:
+                    feedback.pushInfo("[ExtractValleys] Renamed 'fid' column to 'FID'")
+            elif 'FID' not in gdf.columns:
+                # Create FID field if it doesn't exist
+                gdf['FID'] = range(1, len(gdf) + 1)
+                if feedback:
+                    feedback.pushInfo("[ExtractValleys] Created 'FID' column")
+            
             return gdf
 
         except Exception as e:
@@ -1238,6 +1264,64 @@ class TopoDrainCore:
         else:
             print("[ExtractMainValleys] Starting main valley extraction...")
 
+        # Ensure FID field is present in valley_lines
+        if 'FID' not in valley_lines.columns:
+            if 'fid' in valley_lines.columns:
+                # Rename lowercase 'fid' to uppercase 'FID'
+                valley_lines = valley_lines.rename(columns={'fid': 'FID'})
+                if feedback:
+                    feedback.pushInfo("[ExtractMainValleys] Renamed 'fid' column to 'FID'")
+                else:
+                    print("[ExtractMainValleys] Renamed 'fid' column to 'FID'")
+            else:
+                # Create FID field if it doesn't exist
+                valley_lines = valley_lines.copy()  # Avoid modifying original
+                valley_lines['FID'] = range(1, len(valley_lines) + 1)
+                if feedback:
+                    feedback.pushInfo("[ExtractMainValleys] Created 'FID' column")
+                else:
+                    print("[ExtractMainValleys] Created 'FID' column")
+        
+        # Ensure TRIB_ID field is present in valley_lines
+        if 'TRIB_ID' not in valley_lines.columns:
+            # Check for case-insensitive variations
+            trib_id_variations = [col for col in valley_lines.columns if col.lower() == 'trib_id']
+            if trib_id_variations:
+                valley_lines = valley_lines.rename(columns={trib_id_variations[0]: 'TRIB_ID'})
+                if feedback:
+                    feedback.pushInfo(f"[ExtractMainValleys] Renamed '{trib_id_variations[0]}' column to 'TRIB_ID'")
+                else:
+                    print(f"[ExtractMainValleys] Renamed '{trib_id_variations[0]}' column to 'TRIB_ID'")
+            else:
+                # Create TRIB_ID field using FID values as fallback
+                if valley_lines.empty:
+                    raise RuntimeError("[ExtractMainValleys] Input valley_lines is empty")
+                valley_lines = valley_lines.copy() if 'FID' in valley_lines.columns else valley_lines
+                valley_lines['TRIB_ID'] = valley_lines.get('FID', range(1, len(valley_lines) + 1))
+                if feedback:
+                    feedback.pushInfo("[ExtractMainValleys] Created 'TRIB_ID' column using FID values")
+                else:
+                    print("[ExtractMainValleys] Created 'TRIB_ID' column using FID values")
+
+        # Ensure DS_LINK_ID field is present in valley_lines (optional field, can be null)
+        if 'DS_LINK_ID' not in valley_lines.columns:
+            # Check for case-insensitive variations
+            ds_link_variations = [col for col in valley_lines.columns if col.lower() == 'ds_link_id']
+            if ds_link_variations:
+                valley_lines = valley_lines.rename(columns={ds_link_variations[0]: 'DS_LINK_ID'})
+                if feedback:
+                    feedback.pushInfo(f"[ExtractMainValleys] Renamed '{ds_link_variations[0]}' column to 'DS_LINK_ID'")
+                else:
+                    print(f"[ExtractMainValleys] Renamed '{ds_link_variations[0]}' column to 'DS_LINK_ID'")
+            else:
+                # Create DS_LINK_ID field with null values (not critical for main valley extraction)
+                valley_lines = valley_lines.copy() if not isinstance(valley_lines, gpd.GeoDataFrame) or len([col for col in ['FID', 'TRIB_ID'] if col not in valley_lines.columns]) > 0 else valley_lines
+                valley_lines['DS_LINK_ID'] = None
+                if feedback:
+                    feedback.pushInfo("[ExtractMainValleys] Created 'DS_LINK_ID' column with null values")
+                else:
+                    print("[ExtractMainValleys] Created 'DS_LINK_ID' column with null values")
+
         # Create perimeter from valley_lines extent if not provided
         if perimeter is None:
             if feedback:
@@ -1247,7 +1331,6 @@ class TopoDrainCore:
             
             # Get the bounding box of valley_lines and create a polygon
             bounds = valley_lines.total_bounds  # [minx, miny, maxx, maxy]
-            from shapely.geometry import Polygon
             bbox_polygon = Polygon([
                 (bounds[0], bounds[1]),  # bottom-left
                 (bounds[2], bounds[1]),  # bottom-right
@@ -1295,13 +1378,21 @@ class TopoDrainCore:
             else:
                 print(f"[ExtractMainValleys] Rasterizing valley lines for polygon {poly_idx + 1}...")
             valley_raster_path = os.path.join(self.temp_directory, f"valley_mask_poly_{poly_idx}.tif")
-            valley_mask = self._vector_to_mask_raster(
-                gdf=valley_clipped.geometry,
-                reference_raster=facc_path,
+            valley_mask_path = self._vector_to_mask_raster(
+                features=[valley_clipped],
+                reference_raster_path=facc_path,
                 output_path=valley_raster_path,
                 flatten_lines=False,
                 buffer_lines=False
             )
+            if feedback:
+                feedback.pushInfo(f"[ExtractMainValleys] Valley mask created at {valley_mask_path}")
+            else:
+                print(f"[ExtractMainValleys] Valley mask created at {valley_mask_path}")
+
+            # Read the valley mask data from the saved raster file
+            with rasterio.open(valley_mask_path) as valley_src:
+                valley_mask = valley_src.read(1)
 
             if feedback:
                 feedback.pushInfo(f"[ExtractMainValleys] Extracting facc > 0 points for polygon {poly_idx + 1}...")
@@ -1324,9 +1415,16 @@ class TopoDrainCore:
                 feedback.pushInfo(f"[ExtractMainValleys] Performing spatial join for polygon {poly_idx + 1}...")
             else:
                 print(f"[ExtractMainValleys] Performing spatial join for polygon {poly_idx + 1}...")
+            
+            # Ensure the required columns exist in valley_clipped (they should after validation above)
+            join_columns = ["geometry"]
+            for col in ["FID", "TRIB_ID", "DS_LINK_ID"]:
+                if col in valley_clipped.columns:
+                    join_columns.append(col)
+            
             points_joined = gpd.sjoin(
                 points,
-                valley_clipped[["geometry", "FID", "TRIB_ID", "DS_LINK_ID"]],
+                valley_clipped[join_columns],
                 how="inner"
             ).drop(columns="index_right")
 
@@ -1502,10 +1600,8 @@ class TopoDrainCore:
 
         if feedback:
             feedback.pushInfo(f"[GetKeypoints] Starting keypoint detection on {len(valley_lines)} valley lines...")
-            feedback.pushInfo(f"[GetKeypoints] Using pixel resolution sampling (pixel size: {pixel_size:.2f}m)")
         else:
             print(f"[GetKeypoints] Starting keypoint detection on {len(valley_lines)} valley lines...")
-            print(f"[GetKeypoints] Using pixel resolution sampling (pixel size: {pixel_size:.2f}m)")
 
         with rasterio.open(dtm_path) as src:
             pixel_size = src.res[0]
@@ -1980,7 +2076,7 @@ class TopoDrainCore:
         line: LineString,
         start_point: Point,
         expected_slope: float,
-        deviation_threshold: float
+        slope_deviation_threshold: float
         ) -> Point:
         """
         Analyse the slope deviation of a line compared to the expected slope.
@@ -1997,7 +2093,7 @@ class TopoDrainCore:
             line (LineString): The line to analyse.
             start_point (Point): Original start point for reference.
             expected_slope (float): Desired slope (e.g., 0.01 for 1% downhill) (assumed euclidean slope).
-            deviation_threshold (float): Maximum allowed relative deviation (e.g., 0.1 for 10%).
+            slope_deviation_threshold (float): Maximum allowed relative deviation (e.g., 0.1 for 10%).
             
         Returns:
             Point: The point where cutting should occur, or None if no cutting needed.
@@ -2013,7 +2109,7 @@ class TopoDrainCore:
         print(f"[AnalyzeSlopeDeviation] Analyzing {num_samples} points along {line_length:.1f}m line")
         print(f"[AnalyzeSlopeDeviation] Start point: {start_point}, End point: {end_point}")
         print(f"[AnalyzeSlopeDeviation] Expected slope (euclidean): {expected_slope:.4f}")
-        print(f"[AnalyzeSlopeDeviation] Deviation threshold: {deviation_threshold:.2f}")
+        print(f"[AnalyzeSlopeDeviation] Slope deviation threshold: {slope_deviation_threshold:.2f}")
 
         # Calculate slope deviations based on distance ratios
         for i, (line_distance, point) in enumerate(zip(distances_along_line, sample_points)):
@@ -2042,9 +2138,9 @@ class TopoDrainCore:
                   f"expected_slope={expected_slope:.4f}, actual_slope={actual_slope:.4f}, "
                   f"deviation={relative_deviation:.3f}")
 
-            if relative_deviation > deviation_threshold:
+            if relative_deviation > slope_deviation_threshold:
                 print(f"[AnalyzeSlopeDeviation] Slope deviation {relative_deviation:.3f} exceeds threshold "
-                      f"{deviation_threshold:.3f} at line distance {line_distance:.1f}m")
+                      f"{slope_deviation_threshold:.3f} at line distance {line_distance:.1f}m")
                 print(f"[AnalyzeSlopeDeviation] Expected slope: {expected_slope:.4f}, Actual slope: {actual_slope:.4f}")
                 return point
 
@@ -2052,61 +2148,6 @@ class TopoDrainCore:
         print(f"[AnalyzeSlopeDeviation] Line maintains acceptable slope deviation")
         return None
     
-    def _analyze_distance_deviation_and_cut(
-        self,
-        line: LineString,
-        start_point: Point,
-        deviation_threshold: float
-        ) -> Point:
-        """
-        Analyse the distance deviation of a line compared to Euclidean distance from start point.
-        Because we should update cost raster, if deviation exceeds threshold.
-
-        Args:
-            line (LineString): The line to analyse.
-            start_point (Point): Original start point for reference.
-            deviation_threshold (float): Maximum allowed relative deviation (e.g., 0.1 for 10%).
-            
-        Returns:
-            Point: The point where cutting should occur, or None if no cutting needed.
-        """
-        # Sample points along the line at regular intervals
-        line_length = line.length
-        num_samples = max(int(line_length / 5.0), 10)  # Sample every 5 meters or at least 10 points
-        
-        distances_along_line = np.linspace(0, line_length, num_samples)
-        sample_points = [line.interpolate(d) for d in distances_along_line]
-        end_point = sample_points[-1]
-
-        print(f"[AnalyzeDistanceDeviation] Analyzing {num_samples} points along {line_length:.1f}m line")
-        print(f"[AnalyzeDistanceDeviation] Start point: {start_point}, End point: {end_point}")
-        print(f"[AnalyzeDistanceDeviation] Deviation threshold: {deviation_threshold:.2f}")
-        
-        # Calculate deviations
-        for i, (line_distance, point) in enumerate(zip(distances_along_line, sample_points)):
-            if line_distance == 0:
-                continue  # Skip start point
-                
-            # Calculate Euclidean distance from start point
-            euclidean_distance = start_point.distance(point)
-            
-            # Calculate deviation ratio (line_distance / euclidean_distance)
-            if euclidean_distance > 0:
-                deviation_ratio = line_distance / euclidean_distance
-                relative_deviation = abs((deviation_ratio - 1.0))  # How much more than straight line
-
-                print(f"[AnalyzeDistanceDeviation] Point {i}: line_dist={line_distance:.1f}m, "
-                      f"euclidean_dist={euclidean_distance:.1f}m, "
-                      f"deviation={relative_deviation:.3f}")
-                
-                if relative_deviation > deviation_threshold:
-                    print(f"[AnalyzeDistanceDeviation] Distance deviation {relative_deviation:.3f} exceeds threshold {deviation_threshold:.3f} at line distance {line_distance:.1f}m")
-                    return point
-        
-        # No cutting needed - line maintains acceptable distance deviation
-        print(f"[AnalyzeDistanceDeviation] Line maintains acceptable distance deviation")
-        
-        return None
 
     def _cut_line_at_point(self, line: LineString, cut_point: Point) -> LineString:
         """
@@ -2146,8 +2187,8 @@ class TopoDrainCore:
         destination_raster_path: str,
         slope: float = 0.01,
         barrier_raster_path: str = None,
-        max_iterations: int = 10,
-        deviation_threshold: float = 0.2,
+        slope_deviation_threshold: float = 0.2,
+        max_iterations_slope: int = 20,
         feedback=None
     ) -> LineString:
         """
@@ -2163,8 +2204,8 @@ class TopoDrainCore:
             destination_raster_path (str): Path to the binary raster indicating destination cells (1 = destination).
             slope (float): Desired slope for the line (e.g., 0.01 for 1% downhill or -0.01 for uphill).
             barrier_raster_path (str): Optional path to a binary raster of cells that should not be crossed (1 = barrier).
-            max_iterations (int): Maximum number of iterations for line refinement.
-            deviation_threshold (float): Maximum allowed deviation of euclidean distance vs. real distance (e.g., 0.1 for 10%).
+            slope_deviation_threshold (float): Maximum allowed relative deviation from expected slope (0.0-1.0, e.g., 0.2 for 20% deviation before line cutting). Default 0.2.
+            max_iterations_slope (int): Maximum number of iterations for line refinement.
             feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting.
 
         Returns:
@@ -2176,13 +2217,13 @@ class TopoDrainCore:
         print(f"[GetConstantSlopeLine] Starting constant slope line tracing")
         print(f"[GetConstantSlopeLine] destination raster path: {destination_raster_path}")
         print(f"[GetConstantSlopeLine] barrier raster path: {barrier_raster_path}")
-        print(f"[GetConstantSlopeLine] slope: {slope}, max_iterations: {max_iterations}, deviation_threshold: {deviation_threshold}")
+        print(f"[GetConstantSlopeLine] slope: {slope}, max_iterations_slope: {max_iterations_slope}, slope_deviation_threshold: {slope_deviation_threshold}")
 
         current_start_point = start_point
         accumulated_line_coords = []
         
-        for iteration in range(max_iterations):
-            print(f"[GetConstantSlopeLine] Iteration {iteration + 1}/{max_iterations}")
+        for iteration in range(max_iterations_slope):
+            print(f"[GetConstantSlopeLine] Iteration {iteration + 1}/{max_iterations_slope}")
             
             # --- Temporary file paths ---
             cost_raster_path = os.path.join(self.temp_directory, f"cost_iter_{iteration}.tif")
@@ -2270,15 +2311,9 @@ class TopoDrainCore:
                 line=line_segment, 
                 start_point=current_start_point, 
                 expected_slope=slope,
-                deviation_threshold=deviation_threshold
+                slope_deviation_threshold=slope_deviation_threshold
                 )
-            # print(f"[GetConstantSlopeLine] Analyzing distance deviation for iteration {iteration + 1}")
-            # cut_point = self._analyze_distance_deviation_and_cut(
-            #     line=line_segment, 
-            #     start_point=current_start_point, 
-            #     deviation_threshold=deviation_threshold
-            #     )
-            
+
             # Check if the line segment reaches the destination
             if cut_point:
                 # Read the destination raster and get the value at the cut point
@@ -2296,7 +2331,7 @@ class TopoDrainCore:
                     reached_destination = False
 
             # Check if last iteration reached
-            last_iteration = (iteration == max_iterations - 1)
+            last_iteration = (iteration == max_iterations_slope - 1)
             
             if last_iteration and cut_point is not None:
                 print(f"[GetConstantSlopeLine] Last iteration reached without finding fully valid line segment")
@@ -2355,7 +2390,9 @@ class TopoDrainCore:
         slope: float,
         barrier_raster_path: str,
         initial_barrier_value: int = None,
-        max_iterations: int = 10,
+        max_iterations_barrier: int = 10,
+        slope_deviation_threshold: float = 0.2,
+        max_iterations_slope: int = 20,
         feedback=None
     ) -> LineString:
         """
@@ -2372,6 +2409,9 @@ class TopoDrainCore:
             destination_raster_path (str): Path to the binary raster indicating destination cells (1 = destination).
             slope (float): Desired slope for the line (e.g., 0.01 for 1% downhill or -0.01 for uphill).
             barrier_raster_path (str): Path to a raster of cells that should not be crossed (different barriers have unique values 1, 2, ...).
+            initial_barrier_value (int, optional): Initial barrier value to start from. Default None.
+            max_iterations_barrier (int): Maximum number of iterations for iterative tracing (nr. of times barriers used as temporary destinations). Default 10.
+            slope_deviation_threshold (float): Maximum allowed relative deviation from expected slope (0.0-1.0, e.g., 0.2 for 20% deviation before line cutting).
             feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting.
 
         Returns:
@@ -2395,11 +2435,11 @@ class TopoDrainCore:
             barrier_profile = src.profile.copy() 
             orig_barrier_data = src.read(1).copy() # create a copy to avoid modifying the original raster
         
-        while current_iteration < max_iterations:
+        while current_iteration < max_iterations_barrier:
             if feedback:
-                feedback.pushInfo(f"[IterativeConstantSlopeLine] Iteration {current_iteration + 1}/{max_iterations}")
+                feedback.pushInfo(f"[IterativeConstantSlopeLine] Iteration {current_iteration + 1}/{max_iterations_barrier}")
             else:
-                print(f"[IterativeConstantSlopeLine] Iteration {current_iteration + 1}/{max_iterations}")
+                print(f"[IterativeConstantSlopeLine] Iteration {current_iteration + 1}/{max_iterations_barrier}")
 
             # Debug: Print start point and extracted value
             if feedback:
@@ -2459,6 +2499,8 @@ class TopoDrainCore:
                 destination_raster_path=working_destination_raster_path,
                 slope=slope,
                 barrier_raster_path=working_barrier_raster_path,
+                slope_deviation_threshold=slope_deviation_threshold,
+                max_iterations_slope=max_iterations_slope,
                 feedback=feedback
             )
 
@@ -2487,7 +2529,7 @@ class TopoDrainCore:
                     else:
                         print(f"[IterativeConstantSlopeLine] Endpoint not on destination in iteration {current_iteration + 1}, checking barriers.")
             
-            last_iteration = (current_iteration == max_iterations - 1)
+            last_iteration = (current_iteration == max_iterations_barrier - 1)
             if not final_destination_found and last_iteration:
                 if feedback:
                     feedback.pushWarning("[IterativeConstantSlopeLine] Maximum iterations reached without finding a fully valid line")
@@ -2567,6 +2609,9 @@ class TopoDrainCore:
         slope: float = 0.01,
         barrier_features: list[gpd.GeoDataFrame] = None,
         allow_barriers_as_temp_destination: bool = False,
+        max_iterations_barrier: int = 30,
+        slope_deviation_threshold: float = 0.2,
+        max_iterations_slope: int = 20,
         feedback=None
     ) -> gpd.GeoDataFrame:
         """
@@ -2582,6 +2627,9 @@ class TopoDrainCore:
             slope (float): Desired slope for the lines (e.g., 0.01 for 1% downhill).
             barrier_features (list[gpd.GeoDataFrame], optional): List of barrier features to avoid (e.g. main valley lines).
             allow_barriers_as_temp_destination (bool): If True, barriers are included as temporary destinations for iterative tracing.
+            max_iterations_barrier (int): Maximum number of iterations for iterative tracing when allowing barriers as temporary destinations. Default 30.
+            max_iterations_slope (int): Maximum number of iterations for line refinement (1-50, higher values allow more complex paths). Default 20.
+            slope_deviation_threshold (float): Maximum allowed relative deviation from expected slope (0.0-1.0, e.g., 0.2 for 20% deviation before line cutting). Default 0.2.
             feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting/logging.
             
         Returns:
@@ -2798,7 +2846,8 @@ class TopoDrainCore:
                             slope=slope,
                             barrier_raster_path=barrier_value_raster_path,  # Use barrier value raster for iterative tracing
                             initial_barrier_value=barrier_feature_id,
-                            max_iterations=30,
+                            max_iterations_barrier=max_iterations_barrier,
+                            slope_deviation_threshold=slope_deviation_threshold,
                             feedback=feedback
                         )
                     else:
@@ -2808,6 +2857,8 @@ class TopoDrainCore:
                             destination_raster_path=destination_raster_path,
                             slope=slope,
                             barrier_raster_path=barrier_raster_path,  # Use binary barrier raster for simple tracing
+                            max_iterations_slope=max_iterations_slope,
+                            slope_deviation_threshold=slope_deviation_threshold,
                             feedback=None
                         )
 
@@ -2860,7 +2911,8 @@ class TopoDrainCore:
                         slope=slope,
                         barrier_raster_path=barrier_value_raster_path,  # Use barrier value raster for iterative tracing
                         initial_barrier_value=None,  # No initial barrier value for non-overlapping points
-                        max_iterations=30,
+                        max_iterations_barrier=max_iterations_barrier,  # max iterations for iterative tracing (nr of times barriers used as temporary destinations)
+                        slope_deviation_threshold=slope_deviation_threshold,
                         feedback=feedback
                     )
                 else:
@@ -2870,6 +2922,8 @@ class TopoDrainCore:
                         destination_raster_path=destination_raster_path,
                         slope=slope,
                         barrier_raster_path=barrier_raster_path,  # Use binary barrier raster for simple tracing
+                        max_iterations_slope=max_iterations_slope,
+                        slope_deviation_threshold=slope_deviation_threshold,
                         feedback=None
                     )
 
@@ -2908,7 +2962,8 @@ class TopoDrainCore:
         
         return out_gdf
     
-    def create_keylines(self, dtm_path, start_points, valley_lines, ridge_lines, slope, perimeter, feedback=None):
+    def create_keylines(self, dtm_path, start_points, valley_lines, ridge_lines, slope, perimeter, 
+                        change_after=None, slope_after=None, slope_deviation_threshold=0.2, max_iterations_slope=20, feedback=None):
         """
         Create keylines using an iterative process:
         1. Trace from start points to ridges (using valleys as barriers)
@@ -2932,8 +2987,14 @@ class TopoDrainCore:
             Target slope for the constant slope lines (e.g., 0.01 for 1%)
         perimeter : GeoDataFrame
             Area of interest (perimeter) that always acts as destination feature (e.g. watershed, parcel polygon)
-        allow_barriers_as_temp_destination : bool
-            If True, barriers are included as temporary destinations for iterative tracing
+        change_after : float, optional
+            Fraction of line length where slope changes (0.0-1.0, e.g., 0.5 = from halfway). If None, no slope adjustment is applied.
+        slope_after : float, optional
+            New slope to apply after the change point (e.g., 0.005 for 0.5% downhill). Required if change_after is provided.
+        slope_deviation_threshold : float, optional
+            Maximum allowed relative deviation from expected slope (0.0-1.0, e.g., 0.2 for 20% deviation before line cutting). Default 0.2.
+        max_iterations_slope : int, optional
+            Maximum number of iterations for line refinement (1-50). Default 20.
         feedback : QgsProcessingFeedback
             Feedback object for progress reporting
 
@@ -2995,11 +3056,10 @@ class TopoDrainCore:
         
         # Set a maximum number of iterations to prevent infinite loops
         expected_stages = (len(valley_lines) + len(ridge_lines)) + 1  # Rough estimate
-        max_iterations = expected_stages + 10  # Set a reasonable limit based on input features (+10 for safety)
-        max_iterations = 3
+        max_iterations_keyline = expected_stages + 10  # Set a reasonable limit based on input features (+10 for safety)
 
         # Iterate until no new start points are found or max iterations reached
-        while not current_start_points.empty and stage <= max_iterations:
+        while not current_start_points.empty and stage <= max_iterations_keyline:
             # Progress: 5% at start, 95% spread over expected_stages
             progress = 5 + int((stage - 1) * (95 / expected_stages))
             if feedback:
@@ -3044,6 +3104,8 @@ class TopoDrainCore:
                 slope=use_slope,
                 barrier_features=barrier_features,
                 allow_barriers_as_temp_destination=False,
+                slope_deviation_threshold=slope_deviation_threshold,
+                max_iterations_slope=max_iterations_slope,
                 feedback=None # want to keep feedback for the main loop, not for each tracing call here
             )
 
@@ -3062,6 +3124,32 @@ class TopoDrainCore:
                 feedback.pushInfo(f"Stage lines: {stage_lines}")
             else:
                 print(f"Stage {stage} complete: {len(stage_lines)} lines to {target_type}")
+
+            # Apply slope adjustment if parameters are provided
+            if change_after is not None and slope_after is not None:
+                if feedback:
+                    feedback.pushInfo(f"Stage {stage}: Applying slope adjustment after {change_after*100:.1f}% with new slope {slope_after}")
+                else:
+                    print(f"Stage {stage}: Applying slope adjustment after {change_after*100:.1f}% with new slope {slope_after}")
+                
+                # Apply the slope adjustment using the adjust_constant_slope_after method
+                stage_lines = self.adjust_constant_slope_after(
+                    dtm_path=dtm_path,
+                    input_lines=stage_lines,
+                    change_after=change_after,
+                    slope_after=slope_after,  # Use slope_after as-is because line direction is already handled in stage_lines
+                    destination_features=destination_features,
+                    barrier_features=barrier_features,
+                    allow_barriers_as_temp_destination=False,
+                    slope_deviation_threshold=slope_deviation_threshold,
+                    max_iterations_slope=max_iterations_slope,
+                    feedback=None  # Keep feedback at main level
+                )
+                
+                if feedback:
+                    feedback.pushInfo(f"Stage {stage}: Slope adjustment complete, {len(stage_lines)} adjusted lines")
+                else:
+                    print(f"Stage {stage}: Slope adjustment complete, {len(stage_lines)} adjusted lines")
 
             # Check endpoints and create new start points if they're on target features
             new_start_points = []
@@ -3173,12 +3261,12 @@ class TopoDrainCore:
             
             # Increment stage
             stage += 1
-        
-        if stage > max_iterations:
+
+        if stage > max_iterations_keyline:
             if feedback:
-                feedback.reportError(f"Warning: Maximum iterations ({max_iterations}) reached, stopping iteration...")
+                feedback.reportError(f"Warning: Maximum iterations ({max_iterations_keyline}) reached, stopping iteration...")
             else:
-                print(f"Warning: Maximum iterations ({max_iterations}) reached, stopping iteration...")
+                print(f"Warning: Maximum iterations ({max_iterations_keyline}) reached, stopping iteration...")
 
         # Create combined GeoDataFrame
         if all_keylines:
@@ -3207,6 +3295,9 @@ class TopoDrainCore:
         destination_features: list[gpd.GeoDataFrame],
         barrier_features: list[gpd.GeoDataFrame] = None,
         allow_barriers_as_temp_destination: bool = False,
+        max_iterations_barrier: int = 30,
+        slope_deviation_threshold: float = 0.2,
+        max_iterations_slope: int = 20,
         feedback=None
     ) -> gpd.GeoDataFrame:
         """
@@ -3223,6 +3314,9 @@ class TopoDrainCore:
             destination_features (list[gpd.GeoDataFrame]): Destination features for the new slope sections, e.g. ridge lines in case of keylines.
             barrier_features (list[gpd.GeoDataFrame], optional): Barrier features to avoid, e.g. valley lines in case of keylines.
             allow_barriers_as_temp_destination (bool): If True, barriers are included as temporary destinations for iterative tracing.
+            max_iterations_barrier (int): Maximum number of iterations when using barriers as temporary destinations.
+            slope_deviation_threshold (float): Maximum allowed relative deviation from expected slope (0.0-1.0, e.g., 0.2 for 20% deviation before line cutting).
+            max_iterations_slope (int): Maximum number of iterations for line refinement.
             feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting.
             
         Returns:
@@ -3351,13 +3445,16 @@ class TopoDrainCore:
                 })
         
         # Phase 2: Trace all second parts in a single call if we have start points
-        second_part_lines = gpd.GeoDataFrame(crs=input_lines.crs)
+        second_part_lines = gpd.GeoDataFrame(geometry=[])  # Empty GeoDataFrame with geometry column
         if all_start_points:
             if feedback:
                 feedback.pushInfo(f"[AdjustConstantSlopeAfter] Phase 2: Tracing {len(all_start_points)} second parts in parallel...")
                 feedback.setProgress(50)
             else:
                 print(f"[AdjustConstantSlopeAfter] Phase 2: Tracing {len(all_start_points)} second parts in parallel...")
+            
+            # Set CRS after creation when we have geometry column
+            second_part_lines = second_part_lines.set_crs(input_lines.crs)
             
             # Create GeoDataFrame with all start points and add mapping information
             start_points_gdf = gpd.GeoDataFrame(geometry=all_start_points, crs=input_lines.crs)
@@ -3372,6 +3469,9 @@ class TopoDrainCore:
                     slope=slope_after,
                     barrier_features=barrier_features,
                     allow_barriers_as_temp_destination=allow_barriers_as_temp_destination,
+                    max_iterations_barrier=max_iterations_barrier,
+                    slope_deviation_threshold=slope_deviation_threshold,
+                    max_iterations_slope=max_iterations_slope,
                     feedback=feedback  # Pass feedback to the main tracing call
                 )
                 

@@ -20,7 +20,7 @@ pluginPath = os.path.dirname(__file__)
 
 class CreateValleysAlgorithm(QgsProcessingAlgorithm):
     """
-    QGIS Processing Algorithm for creating valley lines (stream network) from a DEM resp. DTM.
+    QGIS Processing Algorithm for creating valley lines (stream network) from a digital terrain model (DTM resp. DEM).
 
     This algorithm leverages several WhiteboxTools (WBT) processes:
     - BreachDepressionsLeastCost: Optimally breaches depressions in the DEM to prepare it for hydrological analysis, providing a lower-impact alternative to depression filling.
@@ -97,7 +97,7 @@ class CreateValleysAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(
             QgsProcessingParameterNumber(
                 self.DIST_FACC,
-                self.tr('Maximum search distance for breach paths in cells (see WBT `BreachDepressionsLeastCost`)'),
+                self.tr('Advanced: Maximum search distance for breach paths in cells (see WBT `BreachDepressionsLeastCost`)'),
                 type=QgsProcessingParameterNumber.Integer,
                 defaultValue=0
             )
@@ -203,6 +203,13 @@ class CreateValleysAlgorithm(QgsProcessingAlgorithm):
             from topo_drain.core.topo_drain_core import TopoDrainCore
             feedback.reportError("TopoDrainCore not set, creating default instance.")
             self.core = TopoDrainCore()  # fallback: create default instance (not recommended for plugin use)
+
+        # Ensure WhiteboxTools is configured before running
+        if hasattr(self, 'plugin') and self.plugin:
+            if not self.plugin.ensure_whiteboxtools_configured():
+                raise QgsProcessingException("WhiteboxTools is not configured. Please install and configure the WhiteboxTools for QGIS plugin.")
+        else:
+            feedback.pushInfo("Warning: Plugin reference not available - WhiteboxTools configuration cannot be checked")
 
         feedback.pushInfo("Running extract valleys...")
         valleys_gdf = self.core.extract_valleys(

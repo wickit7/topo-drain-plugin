@@ -98,7 +98,7 @@ class CreateRidgesAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(
             QgsProcessingParameterNumber(
                 self.DIST_FACC,
-                self.tr('Maximum search distance for breach paths in cells (see WBT `BreachDepressionsLeastCost`)'),
+                self.tr('Advanced: Maximum search distance for breach paths in cells (see WBT `BreachDepressionsLeastCost`)'),
                 type=QgsProcessingParameterNumber.Integer,
                 defaultValue=0
             )

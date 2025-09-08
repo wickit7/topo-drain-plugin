@@ -45,6 +45,11 @@ class CreateConstantSlopeLinesAlgorithm(QgsProcessingAlgorithm):
     OUTPUT_SLOPE_LINES = 'OUTPUT_SLOPE_LINES'
     SLOPE = 'SLOPE'
     ALLOW_BARRIERS_AS_TEMP_DESTINATION = 'ALLOW_BARRIERS_AS_TEMP_DESTINATION'
+    CHANGE_AFTER = 'CHANGE_AFTER'
+    SLOPE_AFTER = 'SLOPE_AFTER'
+    SLOPE_DEVIATION_THRESHOLD = 'SLOPE_DEVIATION_THRESHOLD'
+    MAX_ITERATIONS_SLOPE = 'MAX_ITERATIONS_SLOPE'
+    MAX_ITERATIONS_BARRIER = 'MAX_ITERATIONS_BARRIER'
 
     def __init__(self, core=None):
         super().__init__()
@@ -84,9 +89,10 @@ The algorithm performs the following steps:
 2. Handles barrier features by rasterizing them and offsetting overlapping start points
 3. Uses WhiteboxTools cost-distance analysis to find optimal paths
 4. Traces least-cost pathways from start points to destination features
-5. Returns the traced constant slope lines as vector features
+5. Optionally adjusts slope after a specified distance along each line
+6. Returns the traced constant slope lines as vector features
 
-This is useful for creating drainage lines, access paths, or other linear features that need
+This is useful for creating drainage lines, roads and paths, or other linear features that need
 to maintain a specific gradient across the terrain.
 
 Parameters:
@@ -94,7 +100,13 @@ Parameters:
 - Start Points: Point features where slope lines should begin (e.g., keypoints)
 - Destination Features: Line or polygon features that slope lines should reach (e.g. main ridge lines, area of interest)
 - Barrier Features (optional): Line or polygon features to avoid during tracing (e.g. main valley lines)
-- Slope: Desired slope as a decimal (e.g., 0.01 for 1% downhill, -0.01 for 1% uphill)"""
+- Slope: Desired slope as a decimal (e.g., 0.01 for 1% downhill, -0.01 for 1% uphill)
+- Change Slope At Distance (optional): Creates two segments - Desired Slope from start to this point, then New Slope to end (e.g., 0.5 = change at middle)
+- New Slope After Change Point (optional): New Slope to apply for the second segment (required if Change Slope At Distance is set)
+- Slope Deviation Threshold: Maximum allowed slope deviation before triggering slope refinement iterations (0.0-1.0, e.g., 0.2 = 20%)
+- Max Iterations Slope: Maximum iterations for slope refinement (1-50, default: 20)
+- Max Iterations Barrier: Maximum iterations when using barriers as temporary destinations (1-50, default: 30)
+"""
         )
 
     def icon(self):
@@ -133,6 +145,14 @@ Parameters:
                 optional=True
             )
         )
+
+        self.addParameter(
+            QgsProcessingParameterBoolean(
+                self.ALLOW_BARRIERS_AS_TEMP_DESTINATION,
+                self.tr('Allow Barriers as Temporary Destination (enables zig-zag tracing between barriers)'),
+                defaultValue=False
+            )
+        )
         
         # Algorithm parameters
         self.addParameter(
@@ -146,11 +166,63 @@ Parameters:
             )
         )
         
+
+        # Slope adjustment parameters
         self.addParameter(
-            QgsProcessingParameterBoolean(
-                self.ALLOW_BARRIERS_AS_TEMP_DESTINATION,
-                self.tr('Allow Barriers as Temporary Destination (enables iterative tracing)'),
-                defaultValue=False
+            QgsProcessingParameterNumber(
+                self.CHANGE_AFTER,
+                self.tr('Change Slope At Distance (0.5 = Desired Slope from start to middle, then New Slope from middle to end)'),
+                type=QgsProcessingParameterNumber.Double,
+                defaultValue=None,
+                minValue=0.0,
+                maxValue=1.0,
+                optional=True
+            )
+        )
+        
+        self.addParameter(
+            QgsProcessingParameterNumber(
+                self.SLOPE_AFTER,
+                self.tr('New Slope After Change Point (decimal, e.g., 0.005 for 0.5%)'),
+                type=QgsProcessingParameterNumber.Double,
+                defaultValue=None,
+                minValue=-1.0,
+                maxValue=1.0,
+                optional=True
+            )
+        )
+        
+        # Advanced parameters
+        self.addParameter(
+            QgsProcessingParameterNumber(
+                self.SLOPE_DEVIATION_THRESHOLD,
+                self.tr('Advanced: Slope Deviation Threshold (max allowed deviation before slope refinement, 0.0-1.0, default: 0.2 = 20%)'),
+                type=QgsProcessingParameterNumber.Double,
+                defaultValue=0.2,
+                minValue=0.0,
+                maxValue=1.0
+            )
+        )
+        
+        self.addParameter(
+            QgsProcessingParameterNumber(
+                self.MAX_ITERATIONS_SLOPE,
+                self.tr('Advanced: Max Iterations Slope (maximum iterations for line refinement, 1-50, default: 20)'),
+                type=QgsProcessingParameterNumber.Integer,
+                defaultValue=20,
+                minValue=1,
+                maxValue=50
+            )
+        )
+        
+        self.addParameter(
+            QgsProcessingParameterNumber(
+                self.MAX_ITERATIONS_BARRIER,
+                self.tr('Advanced: Max Iterations Barrier (maximum iterations when using barriers as temporary destinations, 1-50, default: 30)'),
+                type=QgsProcessingParameterNumber.Integer,
+                defaultValue=30,
+                minValue=1,
+                maxValue=50
             )
         )
         
@@ -177,6 +249,25 @@ Parameters:
         slope_lines_output = self.parameterAsOutputLayer(parameters, self.OUTPUT_SLOPE_LINES, context)
         slope = self.parameterAsDouble(parameters, self.SLOPE, context)
         allow_barriers_as_temp_destination = self.parameterAsBoolean(parameters, self.ALLOW_BARRIERS_AS_TEMP_DESTINATION, context)
+        
+        # Read slope adjustment parameters
+        change_after = self.parameterAsDouble(parameters, self.CHANGE_AFTER, context) if self.CHANGE_AFTER in parameters and parameters[self.CHANGE_AFTER] is not None else None
+        slope_after = self.parameterAsDouble(parameters, self.SLOPE_AFTER, context) if self.SLOPE_AFTER in parameters and parameters[self.SLOPE_AFTER] is not None else None
+        slope_deviation_threshold = self.parameterAsDouble(parameters, self.SLOPE_DEVIATION_THRESHOLD, context)
+        max_iterations_slope = self.parameterAsInt(parameters, self.MAX_ITERATIONS_SLOPE, context)
+        max_iterations_barrier = self.parameterAsInt(parameters, self.MAX_ITERATIONS_BARRIER, context)
+
+        # Validate slope adjustment parameters
+        if change_after is not None and slope_after is None:
+            raise QgsProcessingException("Slope After Change Point is required when Change Slope After is specified")
+        if slope_after is not None and change_after is None:
+            raise QgsProcessingException("Change Slope After is required when Slope After Change Point is specified")
+        
+        # Provide feedback about slope adjustment
+        if change_after is not None and slope_after is not None:
+            feedback.pushInfo(f"Slope adjustment will be applied after {change_after*100:.1f}% of line length with new slope {slope_after}")
+        else:
+            feedback.pushInfo("No slope adjustment will be applied")
 
         # Extract file paths
         slope_lines_path = slope_lines_output if isinstance(slope_lines_output, str) else slope_lines_output
@@ -241,11 +332,38 @@ Parameters:
             slope=slope,
             barrier_features=barrier_gdfs if barrier_gdfs else None,
             allow_barriers_as_temp_destination=allow_barriers_as_temp_destination,
+            max_iterations_barrier=max_iterations_barrier,
+            slope_deviation_threshold=slope_deviation_threshold,
+            max_iterations_slope=max_iterations_slope,
             feedback=feedback
         )
 
         if slope_lines_gdf.empty:
             raise QgsProcessingException("No slope lines were created")
+
+        # Apply slope adjustment if parameters are provided
+        if change_after is not None and slope_after is not None:
+            feedback.pushInfo(f"Applying slope adjustment after {change_after*100:.1f}% with new slope {slope_after}")
+            
+            # Apply the slope adjustment using the adjust_constant_slope_after method
+            slope_lines_gdf = self.core.adjust_constant_slope_after(
+                dtm_path=dtm_path,
+                input_lines=slope_lines_gdf,
+                change_after=change_after,
+                slope_after=slope_after,
+                destination_features=destination_gdfs,
+                barrier_features=barrier_gdfs if barrier_gdfs else None,
+                allow_barriers_as_temp_destination=allow_barriers_as_temp_destination,
+                max_iterations_barrier=max_iterations_barrier,
+                slope_deviation_threshold=slope_deviation_threshold,
+                max_iterations_slope=max_iterations_slope,
+                feedback=feedback
+            )
+            
+            feedback.pushInfo(f"Slope adjustment complete, {len(slope_lines_gdf)} adjusted lines")
+            
+            if slope_lines_gdf.empty:
+                raise QgsProcessingException("No lines remained after slope adjustment")
 
         # Ensure the slope lines GeoDataFrame has the correct CRS
         slope_lines_gdf = slope_lines_gdf.set_crs(self.core.crs, allow_override=True)
