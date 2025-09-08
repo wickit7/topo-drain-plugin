@@ -158,7 +158,7 @@ Simplified Parameters:
         self.addParameter(
             QgsProcessingParameterNumber(
                 self.POLYORDER,
-                self.tr('Polynomial order for smoothing'),
+                self.tr('Advanced: Polynomial order for smoothing'),
                 type=QgsProcessingParameterNumber.Integer,
                 defaultValue=2,
                 minValue=1,
@@ -170,7 +170,7 @@ Simplified Parameters:
         self.addParameter(
             QgsProcessingParameterNumber(
                 self.SMOOTHING_WINDOW,
-                self.tr('Smoothing window size (must be odd and larger than Polynomial order)'),
+                self.tr('Advanced: Smoothing window size (must be odd and larger than Polynomial order)'),
                 type=QgsProcessingParameterNumber.Integer,
                 defaultValue=9,
                 minValue=3,

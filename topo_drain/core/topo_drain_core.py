@@ -18,7 +18,7 @@ import rasterio
 from rasterio.mask import mask as rio_mask
 from rasterio.sample import sample_gen
 from rasterio.features import rasterize
-from shapely.geometry import LineString, MultiLineString, Point
+from shapely.geometry import LineString, MultiLineString, Point, Polygon
 from shapely.ops import linemerge, nearest_points, substring
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import savgol_filter
@@ -123,6 +123,9 @@ class TopoDrainCore:
         wbt_executable = os.path.join(self.whitebox_directory, "whitebox_tools")
         if os.name == 'nt':  # Windows
             wbt_executable += ".exe"
+        
+        # Normalize path separators for consistency
+        wbt_executable = os.path.normpath(wbt_executable)
 
         arguments = [wbt_executable, f'--run={tool_name}']
 
@@ -131,7 +134,15 @@ class TopoDrainCore:
             if value is not None:
                 arguments.append(f'--{param}="{value}"')
 
-        fused_command = ' '.join(arguments)
+        # Create display command with proper quoting for paths with spaces
+        display_args = []
+        for i, arg in enumerate(arguments):
+            if i == 0 and ' ' in arg:  # Quote the executable if it contains spaces
+                display_args.append(f'"{arg}"')
+            else:
+                display_args.append(arg)
+        fused_command = ' '.join(display_args)
+        
         if feedback:
             feedback.pushInfo('WhiteboxTools command:')
             feedback.pushCommandInfo(fused_command)
@@ -192,7 +203,10 @@ class TopoDrainCore:
 
         on_stderr.buffer = ''
 
-        command, *args = QgsRunProcess.splitCommand(' '.join(arguments))
+        # Use the first argument as command and rest as arguments
+        # This properly handles paths with spaces without needing to join/split
+        command = arguments[0]
+        args = arguments[1:]
         proc = QgsBlockingProcess(command, args)
         proc.setStdOutHandler(on_stdout)
         proc.setStdErrHandler(on_stderr)
@@ -563,8 +577,8 @@ class TopoDrainCore:
                 all_shapes.append((geom, mask_value)) # Not buffering Points und Polygons
 
         # Rasterize the shapes to create the mask
-        # Use appropriate dtype based on unique_values setting
-        raster_dtype = np.uint32 if unique_values else np.uint8 # Use uint32 for unique values?
+        # Always use uint32 for simplicity and compatibility
+        raster_dtype = np.uint32
         
         mask = rasterize(
             shapes=all_shapes,
@@ -584,7 +598,8 @@ class TopoDrainCore:
             profile.update(
                 dtype=raster_dtype,
                 count=1,
-                compress='lzw'
+                compress='lzw',
+                nodata=0  # Use 0 as nodata for uint32 (works for both binary and unique value masks)
             )
 
         with rasterio.open(output_path, 'w', **profile) as dst:
@@ -1133,6 +1148,17 @@ class TopoDrainCore:
             else:
                 print(f"[ExtractValleys] Completed: {len(gdf)} features extracted.")
 
+            # Ensure FID field is present and properly named (case-sensitive)
+            if 'fid' in gdf.columns and 'FID' not in gdf.columns:
+                gdf = gdf.rename(columns={'fid': 'FID'})
+                if feedback:
+                    feedback.pushInfo("[ExtractValleys] Renamed 'fid' column to 'FID'")
+            elif 'FID' not in gdf.columns:
+                # Create FID field if it doesn't exist
+                gdf['FID'] = range(1, len(gdf) + 1)
+                if feedback:
+                    feedback.pushInfo("[ExtractValleys] Created 'FID' column")
+            
             return gdf
 
         except Exception as e:
@@ -1238,6 +1264,64 @@ class TopoDrainCore:
         else:
             print("[ExtractMainValleys] Starting main valley extraction...")
 
+        # Ensure FID field is present in valley_lines
+        if 'FID' not in valley_lines.columns:
+            if 'fid' in valley_lines.columns:
+                # Rename lowercase 'fid' to uppercase 'FID'
+                valley_lines = valley_lines.rename(columns={'fid': 'FID'})
+                if feedback:
+                    feedback.pushInfo("[ExtractMainValleys] Renamed 'fid' column to 'FID'")
+                else:
+                    print("[ExtractMainValleys] Renamed 'fid' column to 'FID'")
+            else:
+                # Create FID field if it doesn't exist
+                valley_lines = valley_lines.copy()  # Avoid modifying original
+                valley_lines['FID'] = range(1, len(valley_lines) + 1)
+                if feedback:
+                    feedback.pushInfo("[ExtractMainValleys] Created 'FID' column")
+                else:
+                    print("[ExtractMainValleys] Created 'FID' column")
+        
+        # Ensure TRIB_ID field is present in valley_lines
+        if 'TRIB_ID' not in valley_lines.columns:
+            # Check for case-insensitive variations
+            trib_id_variations = [col for col in valley_lines.columns if col.lower() == 'trib_id']
+            if trib_id_variations:
+                valley_lines = valley_lines.rename(columns={trib_id_variations[0]: 'TRIB_ID'})
+                if feedback:
+                    feedback.pushInfo(f"[ExtractMainValleys] Renamed '{trib_id_variations[0]}' column to 'TRIB_ID'")
+                else:
+                    print(f"[ExtractMainValleys] Renamed '{trib_id_variations[0]}' column to 'TRIB_ID'")
+            else:
+                # Create TRIB_ID field using FID values as fallback
+                if valley_lines.empty:
+                    raise RuntimeError("[ExtractMainValleys] Input valley_lines is empty")
+                valley_lines = valley_lines.copy() if 'FID' in valley_lines.columns else valley_lines
+                valley_lines['TRIB_ID'] = valley_lines.get('FID', range(1, len(valley_lines) + 1))
+                if feedback:
+                    feedback.pushInfo("[ExtractMainValleys] Created 'TRIB_ID' column using FID values")
+                else:
+                    print("[ExtractMainValleys] Created 'TRIB_ID' column using FID values")
+
+        # Ensure DS_LINK_ID field is present in valley_lines (optional field, can be null)
+        if 'DS_LINK_ID' not in valley_lines.columns:
+            # Check for case-insensitive variations
+            ds_link_variations = [col for col in valley_lines.columns if col.lower() == 'ds_link_id']
+            if ds_link_variations:
+                valley_lines = valley_lines.rename(columns={ds_link_variations[0]: 'DS_LINK_ID'})
+                if feedback:
+                    feedback.pushInfo(f"[ExtractMainValleys] Renamed '{ds_link_variations[0]}' column to 'DS_LINK_ID'")
+                else:
+                    print(f"[ExtractMainValleys] Renamed '{ds_link_variations[0]}' column to 'DS_LINK_ID'")
+            else:
+                # Create DS_LINK_ID field with null values (not critical for main valley extraction)
+                valley_lines = valley_lines.copy() if not isinstance(valley_lines, gpd.GeoDataFrame) or len([col for col in ['FID', 'TRIB_ID'] if col not in valley_lines.columns]) > 0 else valley_lines
+                valley_lines['DS_LINK_ID'] = None
+                if feedback:
+                    feedback.pushInfo("[ExtractMainValleys] Created 'DS_LINK_ID' column with null values")
+                else:
+                    print("[ExtractMainValleys] Created 'DS_LINK_ID' column with null values")
+
         # Create perimeter from valley_lines extent if not provided
         if perimeter is None:
             if feedback:
@@ -1247,7 +1331,6 @@ class TopoDrainCore:
             
             # Get the bounding box of valley_lines and create a polygon
             bounds = valley_lines.total_bounds  # [minx, miny, maxx, maxy]
-            from shapely.geometry import Polygon
             bbox_polygon = Polygon([
                 (bounds[0], bounds[1]),  # bottom-left
                 (bounds[2], bounds[1]),  # bottom-right
@@ -1295,13 +1378,21 @@ class TopoDrainCore:
             else:
                 print(f"[ExtractMainValleys] Rasterizing valley lines for polygon {poly_idx + 1}...")
             valley_raster_path = os.path.join(self.temp_directory, f"valley_mask_poly_{poly_idx}.tif")
-            valley_mask = self._vector_to_mask_raster(
-                gdf=valley_clipped.geometry,
-                reference_raster=facc_path,
+            valley_mask_path = self._vector_to_mask_raster(
+                features=[valley_clipped],
+                reference_raster_path=facc_path,
                 output_path=valley_raster_path,
                 flatten_lines=False,
                 buffer_lines=False
             )
+            if feedback:
+                feedback.pushInfo(f"[ExtractMainValleys] Valley mask created at {valley_mask_path}")
+            else:
+                print(f"[ExtractMainValleys] Valley mask created at {valley_mask_path}")
+
+            # Read the valley mask data from the saved raster file
+            with rasterio.open(valley_mask_path) as valley_src:
+                valley_mask = valley_src.read(1)
 
             if feedback:
                 feedback.pushInfo(f"[ExtractMainValleys] Extracting facc > 0 points for polygon {poly_idx + 1}...")
@@ -1324,9 +1415,16 @@ class TopoDrainCore:
                 feedback.pushInfo(f"[ExtractMainValleys] Performing spatial join for polygon {poly_idx + 1}...")
             else:
                 print(f"[ExtractMainValleys] Performing spatial join for polygon {poly_idx + 1}...")
+            
+            # Ensure the required columns exist in valley_clipped (they should after validation above)
+            join_columns = ["geometry"]
+            for col in ["FID", "TRIB_ID", "DS_LINK_ID"]:
+                if col in valley_clipped.columns:
+                    join_columns.append(col)
+            
             points_joined = gpd.sjoin(
                 points,
-                valley_clipped[["geometry", "FID", "TRIB_ID", "DS_LINK_ID"]],
+                valley_clipped[join_columns],
                 how="inner"
             ).drop(columns="index_right")
 
@@ -1502,10 +1600,8 @@ class TopoDrainCore:
 
         if feedback:
             feedback.pushInfo(f"[GetKeypoints] Starting keypoint detection on {len(valley_lines)} valley lines...")
-            feedback.pushInfo(f"[GetKeypoints] Using pixel resolution sampling (pixel size: {pixel_size:.2f}m)")
         else:
             print(f"[GetKeypoints] Starting keypoint detection on {len(valley_lines)} valley lines...")
-            print(f"[GetKeypoints] Using pixel resolution sampling (pixel size: {pixel_size:.2f}m)")
 
         with rasterio.open(dtm_path) as src:
             pixel_size = src.res[0]
@@ -3349,13 +3445,16 @@ class TopoDrainCore:
                 })
         
         # Phase 2: Trace all second parts in a single call if we have start points
-        second_part_lines = gpd.GeoDataFrame(crs=input_lines.crs)
+        second_part_lines = gpd.GeoDataFrame(geometry=[])  # Empty GeoDataFrame with geometry column
         if all_start_points:
             if feedback:
                 feedback.pushInfo(f"[AdjustConstantSlopeAfter] Phase 2: Tracing {len(all_start_points)} second parts in parallel...")
                 feedback.setProgress(50)
             else:
                 print(f"[AdjustConstantSlopeAfter] Phase 2: Tracing {len(all_start_points)} second parts in parallel...")
+            
+            # Set CRS after creation when we have geometry column
+            second_part_lines = second_part_lines.set_crs(input_lines.crs)
             
             # Create GeoDataFrame with all start points and add mapping information
             start_points_gdf = gpd.GeoDataFrame(geometry=all_start_points, crs=input_lines.crs)

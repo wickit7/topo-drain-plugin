@@ -19,7 +19,7 @@ pluginPath = os.path.dirname(__file__)
 
 class ExtractMainRidgesAlgorithm(QgsProcessingAlgorithm):
     """
-    QGIS Processing Algorithm for extracting main ridge lines based on flow accumulation and ridge lines (generated with processing tool "Extract Ridges").
+    QGIS Processing Algorithm for extracting main ridge lines based on flow accumulation and ridge lines (generated previously with processing tool "Extract Ridges").
 
     This algorithm identifies the main ridge lines (watershed divides) from a complete ridge network
     by selecting the ridges with the highest flow accumulation values within a given
@@ -71,7 +71,7 @@ class ExtractMainRidgesAlgorithm(QgsProcessingAlgorithm):
 
     def shortHelpString(self):
         return self.tr(
-            """QGIS Processing Algorithm for extracting main ridge lines based on flow accumulation and ridge lines (generated with processing tool "Extract Ridges").
+            """QGIS Processing Algorithm for extracting main ridge lines based on flow accumulation and ridge lines (generated previously with processing tool "Extract Ridges").
             
 This algorithm identifies the main ridge lines (watershed divides) from a complete ridge network by selecting the ridges with the highest flow accumulation values within a given perimeter (area of interest). If more than one feature polygon is inside perimeter, the analysis is done for each polygon separately. If no perimeter is provided, it uses the extent of the ridge lines.
 
@@ -209,11 +209,15 @@ Input Requirements:
         if perimeter_gdf is not None and perimeter_gdf.empty:
             feedback.reportError("No features found in perimeter input")
 
-        # Check for required attributes
+        # Check for required attributes (case-insensitive)
+        feedback.pushInfo(f"Checking ridge lines attributes: {list(ridge_lines_gdf.columns)}")
         required_attrs = ['FID', 'TRIB_ID', 'DS_LINK_ID']
-        missing_attrs = [attr for attr in required_attrs if attr not in ridge_lines_gdf.columns]
+        # Convert column names to uppercase for case-insensitive comparison
+        available_attrs_upper = [col.upper() for col in ridge_lines_gdf.columns]
+        feedback.pushInfo(f"Ridge lines attributes (uppercase): {available_attrs_upper}")
+        missing_attrs = [attr for attr in required_attrs if attr not in available_attrs_upper]
         if missing_attrs:
-            raise QgsProcessingException(f"Ridge lines missing required attributes: {missing_attrs}. Please use output from Create Ridges algorithm.")
+            raise QgsProcessingException(f"Ridge lines missing required attributes: {missing_attrs}. Please use output from Create Ridges algorithm. Available attributes: {list(ridge_lines_gdf.columns)}")
 
         # Call the core function
         feedback.pushInfo("Running extract main ridges...")

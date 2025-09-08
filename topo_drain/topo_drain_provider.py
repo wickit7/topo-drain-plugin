@@ -45,12 +45,13 @@ from .adjust_constant_slope_after_algorithm import AdjustConstantSlopeAfterAlgor
 pluginPath = os.path.dirname(__file__)
 
 class TopoDrainProvider(QgsProcessingProvider):
-    def __init__(self, core=None):
+    def __init__(self, core=None, plugin=None):
         """
-        Default constructor. Accepts a TopoDrainCore instance.
+        Default constructor. Accepts a TopoDrainCore instance and plugin reference.
         """
         super().__init__()
         self.core = core
+        self.plugin = plugin
 
     def unload(self):
         """
@@ -63,29 +64,37 @@ class TopoDrainProvider(QgsProcessingProvider):
         """
         Loads all algorithms belonging to this provider.
         """
-        # Use the shared core instance
+        # Use the shared core instance and pass plugin reference for WhiteboxTools config
         create_valleys_alg = CreateValleysAlgorithm(core=self.core)
+        create_valleys_alg.plugin = self.plugin
         self.addAlgorithm(create_valleys_alg)
         
         create_ridges_alg = CreateRidgesAlgorithm(core=self.core)
+        create_ridges_alg.plugin = self.plugin
         self.addAlgorithm(create_ridges_alg)
         
         create_constant_slope_lines_alg = CreateConstantSlopeLinesAlgorithm(core=self.core)
+        create_constant_slope_lines_alg.plugin = self.plugin
         self.addAlgorithm(create_constant_slope_lines_alg)
         
         create_keylines_alg = CreateKeylinesAlgorithm(core=self.core)
+        create_keylines_alg.plugin = self.plugin
         self.addAlgorithm(create_keylines_alg)
         
         extract_main_valleys_alg = ExtractMainValleysAlgorithm(core=self.core)
+        extract_main_valleys_alg.plugin = self.plugin
         self.addAlgorithm(extract_main_valleys_alg)
         
         extract_main_ridges_alg = ExtractMainRidgesAlgorithm(core=self.core)
+        extract_main_ridges_alg.plugin = self.plugin
         self.addAlgorithm(extract_main_ridges_alg)
         
         get_keypoints_alg = GetKeypointsAlgorithm(core=self.core)
+        get_keypoints_alg.plugin = self.plugin
         self.addAlgorithm(get_keypoints_alg)
         
         adjust_constant_slope_after_alg = AdjustConstantSlopeAfterAlgorithm(core=self.core)
+        adjust_constant_slope_after_alg.plugin = self.plugin
         self.addAlgorithm(adjust_constant_slope_after_alg)
         
         # add additional algorithms here

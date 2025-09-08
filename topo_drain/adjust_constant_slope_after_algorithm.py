@@ -95,11 +95,14 @@ Use cases:
 Parameters:
 - Input DTM: Digital Terrain Model for slope calculations
 - Input Lines: Existing constant slope lines to modify (e.g., from Create Keylines)
-- Change After: Fraction of line length where slope changes (0.0-1.0, e.g., 0.5 = halfway)
-- Slope After: New slope for the second part (e.g., 0.005 for 0.5% downhill)
-- Slope Deviation Threshold: Maximum allowed slope deviation before line cutting (0.0-1.0, e.g., 0.2 for 20%)
+- Change Slope At Distance: Creates two segments - Original Slope from start to this point, then New Slope to end (e.g., 0.5 = change at middle)
+- New Slope After Change Point: New Slope for the second segment (e.g., 0.005 for 0.5% downhill)
 - Destination Features: Features that the new slope sections should reach (e.g., ridge lines)
-- Barrier Features (optional): Features to avoid during new slope tracing (e.g., valley lines)"""
+- Barrier Features (optional): Features to avoid during new slope tracing (e.g., valley lines)
+- Slope Deviation Threshold: Maximum allowed slope deviation before triggering slope refinement iterations (0.0-1.0, e.g., 0.2 = 20%)
+- Max Iterations Slope: Maximum iterations for slope refinement (1-50, default: 20)
+- Max Iterations Barrier: Maximum iterations when using barriers as temporary destinations (1-50, default: 30)
+"""
         )
 
     def icon(self):
@@ -142,7 +145,7 @@ Parameters:
         self.addParameter(
             QgsProcessingParameterBoolean(
                 self.ALLOW_BARRIERS_AS_TEMP_DESTINATION,
-                self.tr('Allow barriers as temporary destinations (iterative tracing)'),
+                self.tr('Allow Barriers as Temporary Destination (enables zig-zag tracing between barriers)'),
                 defaultValue=False
             )
         )
@@ -152,7 +155,7 @@ Parameters:
         self.addParameter(
             QgsProcessingParameterNumber(
                 self.CHANGE_AFTER,
-                self.tr('Change After (fraction of line length, 0.0-1.0, e.g., 0.5 = halfway)'),
+                self.tr('Change Slope At Distance (0.5 = Original Slope from start to middle, then New Slope from middle to end)'),
                 type=QgsProcessingParameterNumber.Double,
                 defaultValue=0.5,
                 minValue=0.0,
@@ -163,7 +166,7 @@ Parameters:
         self.addParameter(
             QgsProcessingParameterNumber(
                 self.SLOPE_AFTER,
-                self.tr('Slope After (decimal, e.g., 0.005 for 0.5% downhill, -0.005 for 0.5% uphill)'),
+                self.tr('New Slope After Change Point (decimal, e.g., 0.005 for 0.5% downhill, -0.005 for 0.5% uphill)'),
                 type=QgsProcessingParameterNumber.Double,
                 defaultValue=0.005,
                 minValue=-1.0,
@@ -171,12 +174,10 @@ Parameters:
             )
         )
                 
-        
-        
         self.addParameter(
             QgsProcessingParameterNumber(
                 self.SLOPE_DEVIATION_THRESHOLD,
-                self.tr('Advanced: Slope Deviation Threshold (max allowed slope deviation before line cutting, 0.0-1.0, default: 0.2)'),
+                self.tr('Advanced: Slope Deviation Threshold (max allowed deviation before slope refinement, 0.0-1.0, default: 0.2 = 20%)'),
                 type=QgsProcessingParameterNumber.Double,
                 defaultValue=0.2,
                 minValue=0.0,

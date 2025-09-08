@@ -89,26 +89,17 @@ This algorithm creates comprehensive keyline networks by iteratively tracing con
 
 All output keylines will be oriented from valley to ridge (valley → ridge direction).
 
-The iterative approach ensures that keylines follow natural topographic flow patterns,
-creating comprehensive drainage and access line networks that respect the landscape's
-ridge-valley structure.
-
-This is particularly useful for:
-- Agricultural keyline design
-- Drainage planning  
-- Access road planning following natural contours
-- Watershed management
-
 Parameters:
 - Input DTM: Digital Terrain Model for slope calculations
 - Start Points: Point features where keylines should begin (typically keypoints from valleys)
 - Valley Lines: Valley line features to use as barriers/destinations during tracing
 - Ridge Lines: Ridge line features to use as barriers/destinations during tracing
-- Perimeter: Optional polygon features defining area of interest (always acts as destination)
+- Perimeter: Polygon features defining area of interest (always acts as final destination)
 - Slope: Desired slope as a decimal (e.g., 0.01 for 1% downhill, -0.01 for 1% uphill)
-- Change After: Optional fraction of line length where slope changes (0.0-1.0, e.g., 0.5 for halfway)
-- Slope After: Optional new slope to apply after change point (required if Change After is specified)
-- Slope Deviation Threshold: Maximum allowed slope deviation before line cutting (0.0-1.0, e.g., 0.2 for 20%)
+- Change Slope At Distance: Creates two segments - Desired Slope from start to this point, then New Slope to end (e.g., 0.5 = change at middle)
+- New Slope After Change Point: New Slope to apply for the second segment (required if Change Slope At Distance is set)
+- Slope Deviation Threshold: Maximum allowed slope deviation before triggering slope refinement iterations (0.0-1.0, e.g., 0.2 = 20%)
+- Max Iterations Slope: Maximum iterations for slope refinement (1-50, default: 20)
 
 The algorithm alternates between tracing to ridges and valleys, creating new start points
 beyond endpoints that intersect target features, and continues until no more valid
@@ -138,7 +129,7 @@ connections can be made."""
         self.addParameter(
             QgsProcessingParameterVectorLayer(
                 self.INPUT_VALLEY_LINES,
-                self.tr('Valley Lines'),
+                self.tr('Main Valley Lines'),
                 types=[QgsProcessing.TypeVectorLine]
             )
         )
@@ -146,7 +137,7 @@ connections can be made."""
         self.addParameter(
             QgsProcessingParameterVectorLayer(
                 self.INPUT_RIDGE_LINES,
-                self.tr('Ridge Lines'),
+                self.tr('Main Ridge Lines'),
                 types=[QgsProcessing.TypeVectorLine]
             )
         )
@@ -176,7 +167,7 @@ connections can be made."""
         self.addParameter(
             QgsProcessingParameterNumber(
                 self.CHANGE_AFTER,
-                self.tr('Change After (fraction of line length where slope changes, e.g., 0.5 for halfway)'),
+                self.tr('Change Slope At Distance (0.5 = Desired Slope from start to middle, then New Slope from middle to end)'),
                 type=QgsProcessingParameterNumber.Double,
                 defaultValue=None,
                 minValue=0.0,
@@ -188,7 +179,7 @@ connections can be made."""
         self.addParameter(
             QgsProcessingParameterNumber(
                 self.SLOPE_AFTER,
-                self.tr('Slope After (new slope after change point, e.g., 0.005 for 0.5% downhill)'),
+                self.tr('New Slope After Change Point (decimal, e.g., 0.005 for 0.5% downhill)'),
                 type=QgsProcessingParameterNumber.Double,
                 defaultValue=None,
                 minValue=-1.0,
@@ -200,7 +191,7 @@ connections can be made."""
         self.addParameter(
             QgsProcessingParameterNumber(
                 self.SLOPE_DEVIATION_THRESHOLD,
-                self.tr('Advanced: Slope Deviation Threshold (max allowed slope deviation before line cutting (iteration), 0.0-1.0, default: 0.2)'),
+                self.tr('Advanced: Slope Deviation Threshold (max allowed deviation before slope refinement, 0.0-1.0, default: 0.2 = 20%)'),
                 type=QgsProcessingParameterNumber.Double,
                 defaultValue=0.2,
                 minValue=0.0,

@@ -92,7 +92,7 @@ The algorithm performs the following steps:
 5. Optionally adjusts slope after a specified distance along each line
 6. Returns the traced constant slope lines as vector features
 
-This is useful for creating drainage lines, access paths, or other linear features that need
+This is useful for creating drainage lines, roads and paths, or other linear features that need
 to maintain a specific gradient across the terrain.
 
 Parameters:
@@ -101,9 +101,12 @@ Parameters:
 - Destination Features: Line or polygon features that slope lines should reach (e.g. main ridge lines, area of interest)
 - Barrier Features (optional): Line or polygon features to avoid during tracing (e.g. main valley lines)
 - Slope: Desired slope as a decimal (e.g., 0.01 for 1% downhill, -0.01 for 1% uphill)
-- Change Slope After (optional): Fraction of line length where slope changes (0.0-1.0, e.g., 0.5 = halfway)
-- New Slope After Change Point (optional): New slope to apply after the change point (required if Change Slope After is set)
-- Slope Deviation Threshold: Maximum allowed slope deviation before line cutting (0.0-1.0, e.g., 0.2 = 20%)"""
+- Change Slope At Distance (optional): Creates two segments - Desired Slope from start to this point, then New Slope to end (e.g., 0.5 = change at middle)
+- New Slope After Change Point (optional): New Slope to apply for the second segment (required if Change Slope At Distance is set)
+- Slope Deviation Threshold: Maximum allowed slope deviation before triggering slope refinement iterations (0.0-1.0, e.g., 0.2 = 20%)
+- Max Iterations Slope: Maximum iterations for slope refinement (1-50, default: 20)
+- Max Iterations Barrier: Maximum iterations when using barriers as temporary destinations (1-50, default: 30)
+"""
         )
 
     def icon(self):
@@ -146,7 +149,7 @@ Parameters:
         self.addParameter(
             QgsProcessingParameterBoolean(
                 self.ALLOW_BARRIERS_AS_TEMP_DESTINATION,
-                self.tr('Allow Barriers as Temporary Destination (enables iterative tracing)'),
+                self.tr('Allow Barriers as Temporary Destination (enables zig-zag tracing between barriers)'),
                 defaultValue=False
             )
         )
@@ -168,7 +171,7 @@ Parameters:
         self.addParameter(
             QgsProcessingParameterNumber(
                 self.CHANGE_AFTER,
-                self.tr('Change Slope After (fraction of line length, 0.0-1.0, e.g., 0.5 for halfway)'),
+                self.tr('Change Slope At Distance (0.5 = Desired Slope from start to middle, then New Slope from middle to end)'),
                 type=QgsProcessingParameterNumber.Double,
                 defaultValue=None,
                 minValue=0.0,
@@ -193,7 +196,7 @@ Parameters:
         self.addParameter(
             QgsProcessingParameterNumber(
                 self.SLOPE_DEVIATION_THRESHOLD,
-                self.tr('Advanced: Slope Deviation Threshold (max allowed slope deviation before line cutting, 0.0-1.0, default: 0.2)'),
+                self.tr('Advanced: Slope Deviation Threshold (max allowed deviation before slope refinement, 0.0-1.0, default: 0.2 = 20%)'),
                 type=QgsProcessingParameterNumber.Double,
                 defaultValue=0.2,
                 minValue=0.0,
