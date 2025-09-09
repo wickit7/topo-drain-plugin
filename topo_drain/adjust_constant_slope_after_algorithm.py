@@ -244,6 +244,11 @@ Parameters:
         dtm_crs = get_crs_from_layer(dtm_layer)
         feedback.pushInfo(f"DTM Layer crs: {dtm_crs}")
 
+        if not self.core:
+            from topo_drain.core.topo_drain_core import TopoDrainCore
+            feedback.reportError("TopoDrainCore not set, creating default instance.")
+            self.core = TopoDrainCore()  # fallback: create default instance (not recommended for plugin us
+
         # Check if self.core.crs matches dtm_crs, warn and update if not
         if dtm_crs:
             if self.core and hasattr(self.core, "crs"):
@@ -252,10 +257,13 @@ Parameters:
                     self.core.crs = dtm_crs
 
         feedback.pushInfo("Processing constant slope line adjustment via TopoDrainCore...")
-        if not self.core:
-            from topo_drain.core.topo_drain_core import TopoDrainCore
-            feedback.reportError("TopoDrainCore not set, creating default instance.")
-            self.core = TopoDrainCore()  # fallback: create default instance (not recommended for plugin use)
+
+        # Ensure WhiteboxTools is configured before running
+        if hasattr(self, 'plugin') and self.plugin:
+            if not self.plugin.ensure_whiteboxtools_configured():
+                raise QgsProcessingException("WhiteboxTools is not configured. Please install and configure the WhiteboxTools for QGIS plugin.")
+        else:
+            feedback.pushInfo("Warning: Plugin reference not available - WhiteboxTools configuration cannot be checked")
 
         # Convert QGIS layers to GeoDataFrames
         feedback.pushInfo("Converting input lines to GeoDataFrame...")

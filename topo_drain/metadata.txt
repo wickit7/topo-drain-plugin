@@ -6,7 +6,7 @@
 name=TopoDrain
 qgisMinimumVersion=3.0
 description=A QGIS plugin for planning surface drainage water management like Keyline-Design.
-version=0.1.2
+version=0.1.3
 author=Timo Wicki
 email=wickitimo@gmail.com
 about=It automates the extraction of main valleys and ridges, creates off-contour line and supports creating Keyline Designs and other water-retention planning measures. The tool can also be used for other tasks, such as planning the location and alignment of paths and roads.
@@ -31,7 +31,10 @@ repository=https://github.com/wickit7/topo-drain-plugin
 
 hasProcessingProvider=yes
 # Uncomment the following line and add your changelog:
-changelog=0.1.2 - Bug fixes and robustness improvements
+changelog=0.1.3 - Critical QGIS crash fixes and plugin stability improvements
+    * CRITICAL FIX: Eliminated QGIS crashes caused by QMessageBox dialogs during algorithm execution
+    * Better Windows compatibility and plugin loading reliability
+    0.1.2 - Bug fixes and robustness improvements
     * Fixed runtime errors in valley mask processing and GeoDataFrame creation
     * Enhanced field validation: automatic handling of missing FID, TRIB_ID, and DS_LINK_ID fields
     * Improved Windows compatibility for WhiteboxTools execution

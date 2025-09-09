@@ -63,7 +63,10 @@ class CreateKeylinesAlgorithm(QgsProcessingAlgorithm):
         return QCoreApplication.translate('Processing', string)
 
     def createInstance(self):
-        return CreateKeylinesAlgorithm(core=self.core)
+        instance = CreateKeylinesAlgorithm(core=self.core)
+        if hasattr(self, 'plugin'):
+            instance.plugin = self.plugin
+        return instance
 
     def name(self):
         return 'create_keylines'
@@ -253,6 +256,12 @@ connections can be made."""
         dtm_crs = get_crs_from_layer(dtm_layer)
         feedback.pushInfo(f"DTM Layer crs: {dtm_crs}")
 
+        feedback.pushInfo("Processing keylines via TopoDrainCore...")
+        if not self.core:
+            from topo_drain.core.topo_drain_core import TopoDrainCore
+            feedback.reportError("TopoDrainCore not set, creating default instance.")
+            self.core = TopoDrainCore()  # fallback: create default instance (not recommended for plugin use)
+
         # Check if self.core.crs matches dtm_crs, warn and update if not
         if dtm_crs:
             if self.core and hasattr(self.core, "crs"):
@@ -260,11 +269,15 @@ connections can be made."""
                     feedback.reportError(f"Warning: TopoDrainCore CRS ({self.core.crs}) does not match DTM CRS ({dtm_crs}). Updating TopoDrainCore CRS to match DTM.")
                     self.core.crs = dtm_crs
 
-        feedback.pushInfo("Processing keylines via TopoDrainCore...")
-        if not self.core:
-            from topo_drain.core.topo_drain_core import TopoDrainCore
-            feedback.reportError("TopoDrainCore not set, creating default instance.")
-            self.core = TopoDrainCore()  # fallback: create default instance (not recommended for plugin use)
+        # Ensure WhiteboxTools is configured before running
+        if hasattr(self, 'plugin') and self.plugin:
+            try:
+                if not self.plugin.ensure_whiteboxtools_configured():
+                    feedback.pushWarning("WhiteboxTools is not configured. Please install and configure the WhiteboxTools for QGIS plugin.")
+            except Exception as e:
+                feedback.pushWarning(f"Could not check WhiteboxTools configuration: {e}")
+        else:
+            feedback.pushInfo("Plugin reference not available - WhiteboxTools configuration cannot be verified")
 
         # Convert QGIS layers to GeoDataFrames
         feedback.pushInfo("Converting start points to GeoDataFrame...")
