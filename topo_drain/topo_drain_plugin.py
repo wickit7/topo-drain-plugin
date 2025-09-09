@@ -165,8 +165,8 @@ class TopoDrainPlugin(object):
             except Exception as e:
                 print(f"Failed to initialize WhiteboxTools: {e}")
         
-        # Show configuration message if still not available
-        self.get_whiteboxtools_executable_path(silent=False)
+        # DO NOT show GUI dialogs during algorithm execution - this causes crashes
+        # Simply return False to indicate WhiteboxTools is not configured
         return False
 
     def unload(self):

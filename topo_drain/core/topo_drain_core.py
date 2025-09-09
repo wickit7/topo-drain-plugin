@@ -53,10 +53,15 @@ class TopoDrainCore:
         print("[TopoDrainCore] Initializing TopoDrainCore...")
         self._thisdir = os.path.dirname(__file__)
         print(f"[TopoDrainCore] Module directory: {self._thisdir}")
-        self.default_whitebox_dir = os.path.join(self._thisdir, "WBT")
-        print(f"[TopoDrainCore] Default WhiteboxTools directory: {self.default_whitebox_dir}")
-        self.whitebox_directory = whitebox_directory or self.default_whitebox_dir
-        print(f"[TopoDrainCore] Using WhiteboxTools directory: {self.whitebox_directory}")
+        
+        # Handle None whitebox_directory gracefully
+        if whitebox_directory is None:
+            print("[TopoDrainCore] No WhiteboxTools directory provided - will configure later")
+            self.whitebox_directory = None  # Keep as None to trigger lazy loading
+        else:
+            self.whitebox_directory = whitebox_directory
+        print(f"[TopoDrainCore] WhiteboxTools directory: {self.whitebox_directory if self.whitebox_directory else 'Not set (will configure later)'}")
+        
         self.nodata = nodata if nodata is not None else -32768
         print(f"[TopoDrainCore] NoData value set to: {self.nodata}")
         self.crs = crs if crs is not None else "EPSG:2056"
@@ -65,28 +70,53 @@ class TopoDrainCore:
         print(f"[TopoDrainCore] Temp directory set to: {self.temp_directory if self.temp_directory else 'Not set'}")
         self.working_directory = working_directory if working_directory is not None else None
         print(f"[TopoDrainCore] Working directory set to: {self.working_directory if self.working_directory else 'Not set'}")
+        
+        # Try to initialize WhiteboxTools, but don't fail if it's not available
         self.wbt = self._init_whitebox_tools(self.whitebox_directory)
         print(f"[TopoDrainCore] WhiteboxTools initialized: {self.wbt is not None}")
         print("[TopoDrainCore] Initialization complete.")
 
     def _init_whitebox_tools(self, whitebox_directory):
-        if whitebox_directory not in sys.path:
-            sys.path.insert(0, whitebox_directory)
-        if whitebox_directory == self.default_whitebox_dir:
-            from topo_drain.core.WBT.whitebox_tools import WhiteboxTools
-        else:
+        """
+        Initialize WhiteboxTools with graceful fallback for plugin loading order issues.
+        Returns None if WhiteboxTools cannot be initialized (will be configured later).
+        """
+        if whitebox_directory is None:
+            print("[TopoDrainCore] WhiteboxTools directory not provided - will be configured when available")
+            return None
+            
+        try:
+            if whitebox_directory not in sys.path:
+                sys.path.insert(0, whitebox_directory)
+                
+            # Try to import from the provided location
             wbt_path = os.path.join(whitebox_directory, "whitebox_tools.py")
+            if not os.path.exists(wbt_path):
+                print(f"[TopoDrainCore] WhiteboxTools not found at {wbt_path}")
+                print("[TopoDrainCore] WhiteboxTools will be configured when available")
+                return None
+                
             spec = importlib.util.spec_from_file_location("whitebox_tools", wbt_path)
             if spec is None or spec.loader is None:
-                raise ImportError(f"Could not load WhiteboxTools from {wbt_path}")
+                print(f"[TopoDrainCore] Could not create spec for WhiteboxTools from {wbt_path}")
+                return None
+                
             whitebox_tools_mod = importlib.util.module_from_spec(spec)
             sys.modules["whitebox_tools"] = whitebox_tools_mod
             spec.loader.exec_module(whitebox_tools_mod)
             WhiteboxTools = whitebox_tools_mod.WhiteboxTools
-        wbt = WhiteboxTools()
-        if self.working_directory:
-            wbt.set_working_dir(self.working_directory)
-        return wbt
+            print(f"[TopoDrainCore] Using WhiteboxTools from directory: {whitebox_directory}")
+                
+            wbt = WhiteboxTools()
+            if self.working_directory:
+                wbt.set_working_dir(self.working_directory)
+            print("[TopoDrainCore] WhiteboxTools successfully initialized")
+            return wbt
+            
+        except Exception as e:
+            print(f"[TopoDrainCore] WhiteboxTools initialization failed: {e}")
+            print("[TopoDrainCore] WhiteboxTools will be configured when available")
+            return None
 
     ## Setters for configuration
     def set_temp_directory(self, temp_dir):
@@ -115,7 +145,17 @@ class TopoDrainCore:
 
         Returns:
             int: Return code (0 = success)
+            
+        Raises:
+            RuntimeError: If WhiteboxTools is not properly configured
         """
+        # Check if WhiteboxTools is available
+        if self.wbt is None or self.whitebox_directory is None:
+            error_msg = "WhiteboxTools is not properly configured. Please ensure WhiteboxTools plugin is loaded and configured."
+            if feedback:
+                feedback.reportError(error_msg)
+            raise RuntimeError(error_msg)
+            
         if feedback is None and QGIS_AVAILABLE:
             feedback = QgsProcessingFeedback()
 
@@ -664,7 +704,7 @@ class TopoDrainCore:
             str: Path to inverted DTM.
         """
         if self.wbt is None:
-            raise RuntimeError("WhiteboxTools not initialized.")
+            raise RuntimeError("WhiteboxTools not initialized. Check WhiteboxTools configuration: QGIS settings -> Options -> Processing -> Provider -> WhiteboxTools -> WhiteboxTools executable.")
 
         ret = self._execute_wbt(
             'multiply',
@@ -783,7 +823,7 @@ class TopoDrainCore:
             LineString or MultiLineString, or None if empty.
         """
         if self.wbt is None:
-            raise RuntimeError("WhiteboxTools not initialized.")
+            raise RuntimeError("WhiteboxTools not initialized. Check WhiteboxTools configuration: QGIS settings -> Options -> Processing -> Provider -> WhiteboxTools -> WhiteboxTools executable.")
 
         vector_path = raster_path.replace(".tif", ".shp")
         ret = self._execute_wbt(
@@ -935,7 +975,7 @@ class TopoDrainCore:
                 Extracted stream (valley) network with attributes.
         """
         if self.wbt is None:
-            raise RuntimeError("WhiteboxTools not initialized.")
+            raise RuntimeError("WhiteboxTools not initialized. Check WhiteboxTools configuration: QGIS settings -> Options -> Processing -> Provider -> WhiteboxTools -> WhiteboxTools executable.")
 
         if feedback:
             feedback.pushInfo("[ExtractValleys] Starting valley extraction process...")
@@ -1207,7 +1247,7 @@ class TopoDrainCore:
                 Extracted ridge (divide) network as vector geometries.
         """
         if self.wbt is None:
-            raise RuntimeError("WhiteboxTools not initialized.")
+            raise RuntimeError("WhiteboxTools not initialized. Check WhiteboxTools configuration: QGIS settings -> Options -> Processing -> Provider -> WhiteboxTools -> WhiteboxTools executable.")
 
         # 1) Invert the DTM
         print("[ExtractRidges] Inverting DTM…")
@@ -2212,7 +2252,7 @@ class TopoDrainCore:
             LineString: Refined constant slope path as a Shapely LineString, or None if no path found.
         """
         if self.wbt is None:
-            raise RuntimeError("WhiteboxTools not initialized.")
+            raise RuntimeError("WhiteboxTools not initialized. Check WhiteboxTools configuration: QGIS settings -> Options -> Processing -> Provider -> WhiteboxTools -> WhiteboxTools executable.")
 
         print(f"[GetConstantSlopeLine] Starting constant slope line tracing")
         print(f"[GetConstantSlopeLine] destination raster path: {destination_raster_path}")
@@ -2418,7 +2458,7 @@ class TopoDrainCore:
             LineString: Least-cost slope path as a Shapely LineString, or None if no path found.
         """
         if self.wbt is None:
-            raise RuntimeError("WhiteboxTools not initialized.")
+            raise RuntimeError("WhiteboxTools not initialized. Check WhiteboxTools configuration: QGIS settings -> Options -> Processing -> Provider -> WhiteboxTools -> WhiteboxTools executable.")
         
         current_iteration = 0
         current_start_point = start_point

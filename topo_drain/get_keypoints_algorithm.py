@@ -220,6 +220,12 @@ Simplified Parameters:
         valley_crs = get_crs_from_source(valley_lines_source)
         feedback.pushInfo(f"Valley lines CRS: {valley_crs}")
 
+        feedback.pushInfo("Processing get_keypoints via TopoDrainCore...")
+        if not self.core:
+            from .core.topo_drain_core import TopoDrainCore
+            feedback.reportError("TopoDrainCore not set, creating default instance.")
+            self.core = TopoDrainCore()  # fallback: create default instance (not recommended for plugin use)
+
         # Check if self.core.crs matches valley_crs, warn and update if not
         if valley_crs:
             if self.core and hasattr(self.core, "crs"):
@@ -227,11 +233,12 @@ Simplified Parameters:
                     feedback.reportError(f"Warning: TopoDrainCore CRS ({self.core.crs}) does not match valley lines CRS ({valley_crs}). Updating TopoDrainCore CRS to match valley lines.")
                     self.core.crs = valley_crs
 
-        feedback.pushInfo("Processing get_keypoints via TopoDrainCore...")
-        if not self.core:
-            from .core.topo_drain_core import TopoDrainCore
-            feedback.reportError("TopoDrainCore not set, creating default instance.")
-            self.core = TopoDrainCore()  # fallback: create default instance (not recommended for plugin use)
+        # Ensure WhiteboxTools is configured before running
+        if hasattr(self, 'plugin') and self.plugin:
+            if not self.plugin.ensure_whiteboxtools_configured():
+                raise QgsProcessingException("WhiteboxTools is not configured. Please install and configure the WhiteboxTools for QGIS plugin.")
+        else:
+            feedback.pushInfo("Warning: Plugin reference not available - WhiteboxTools configuration cannot be checked")
 
         # Load input data as GeoDataFrame
         feedback.pushInfo("Loading valley lines...")
