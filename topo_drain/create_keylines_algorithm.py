@@ -15,7 +15,7 @@ from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterRasterLayer
                        QgsProcessingParameterFeatureSource)
 import os
 import geopandas as gpd
-from .utils import get_crs_from_layer
+from .utils import get_crs_from_layer, update_core_crs_if_needed
 
 pluginPath = os.path.dirname(__file__)
 
@@ -252,22 +252,9 @@ connections can be made."""
         keylines_path = keylines_output if isinstance(keylines_output, str) else keylines_output
 
         feedback.pushInfo("Reading CRS from DTM...")
-        # Read CRS from the DTM using QGIS layer
-        dtm_crs = get_crs_from_layer(dtm_layer)
+        # Read CRS from the DTM using QGIS layer with safe fallback
+        dtm_crs = get_crs_from_layer(dtm_layer, fallback_crs="EPSG:2056")
         feedback.pushInfo(f"DTM Layer crs: {dtm_crs}")
-
-        feedback.pushInfo("Processing keylines via TopoDrainCore...")
-        if not self.core:
-            from topo_drain.core.topo_drain_core import TopoDrainCore
-            feedback.reportError("TopoDrainCore not set, creating default instance.")
-            self.core = TopoDrainCore()  # fallback: create default instance (not recommended for plugin use)
-
-        # Check if self.core.crs matches dtm_crs, warn and update if not
-        if dtm_crs:
-            if self.core and hasattr(self.core, "crs"):
-                if self.core.crs != dtm_crs:
-                    feedback.reportError(f"Warning: TopoDrainCore CRS ({self.core.crs}) does not match DTM CRS ({dtm_crs}). Updating TopoDrainCore CRS to match DTM.")
-                    self.core.crs = dtm_crs
 
         # Ensure WhiteboxTools is configured before running
         if hasattr(self, 'plugin') and self.plugin:
@@ -277,7 +264,32 @@ connections can be made."""
             except Exception as e:
                 feedback.pushWarning(f"Could not check WhiteboxTools configuration: {e}")
         else:
-            feedback.pushInfo("Plugin reference not available - WhiteboxTools configuration cannot be verified")
+            # Try to automatically find and connect to the TopoDrain plugin
+            feedback.pushInfo("Plugin reference not available - attempting to connect to TopoDrain plugin")
+            try:
+                from qgis.utils import plugins
+                if 'topo_drain' in plugins:
+                    topo_drain_plugin = plugins['topo_drain']
+                    # Set the plugin reference for this instance
+                    self.plugin = topo_drain_plugin
+                    feedback.pushInfo("Successfully connected to TopoDrain plugin")
+                    
+                    # Now try to configure WhiteboxTools
+                    if hasattr(topo_drain_plugin, 'ensure_whiteboxtools_configured'):
+                        if not topo_drain_plugin.ensure_whiteboxtools_configured():
+                            feedback.pushWarning("WhiteboxTools is not configured. Please install and configure the WhiteboxTools for QGIS plugin.")
+                        else:
+                            feedback.pushInfo("WhiteboxTools configuration verified")
+                    else:
+                        feedback.pushWarning("TopoDrain plugin found but configuration method not available")
+                else:
+                    feedback.pushWarning("TopoDrain plugin not found in QGIS registry - cannot verify WhiteboxTools configuration")
+            except Exception as e:
+                feedback.pushWarning(f"Could not connect to TopoDrain plugin: {e} - continuing without WhiteboxTools verification")
+
+        # Update core CRS if needed (dtm_crs is guaranteed to be valid)
+        update_core_crs_if_needed(self.core, dtm_crs, feedback)
+
 
         # Convert QGIS layers to GeoDataFrames
         feedback.pushInfo("Converting start points to GeoDataFrame...")
@@ -287,35 +299,62 @@ connections can be made."""
         
         feedback.pushInfo(f"Start points: {len(start_points_gdf)} features")
 
-        # Convert valley lines to GeoDataFrame
+        # Convert valley lines to GeoDataFrame with Windows-safe CRS handling
         feedback.pushInfo("Converting valley lines to GeoDataFrame...")
         if not valley_lines_layer or not valley_lines_layer.source():
             raise QgsProcessingException("No valley lines layer provided")
         
-        valley_lines_gdf = gpd.read_file(valley_lines_layer.source())
+        try:
+            # Read without CRS first to avoid Windows PROJ crashes
+            valley_lines_gdf = gpd.read_file(valley_lines_layer.source(), crs=None)
+            # Manually set the safe CRS
+            valley_lines_gdf.crs = dtm_crs
+            feedback.pushInfo(f"Successfully loaded {len(valley_lines_gdf)} valley line features with safe CRS: {dtm_crs}")
+        except Exception as e:
+            feedback.pushInfo(f"Failed to load valley lines with safe CRS handling: {e}")
+            raise QgsProcessingException(f"Failed to load valley lines: {e}")
+            
         if valley_lines_gdf.empty:
             raise QgsProcessingException("No valley lines found in input layer")
         
         valley_lines_gdf = valley_lines_gdf.to_crs(self.core.crs)
         feedback.pushInfo(f"Valley lines: {len(valley_lines_gdf)} features")
 
-        # Convert ridge lines to GeoDataFrame
+        # Convert ridge lines to GeoDataFrame with Windows-safe CRS handling
         feedback.pushInfo("Converting ridge lines to GeoDataFrame...")
         if not ridge_lines_layer or not ridge_lines_layer.source():
             raise QgsProcessingException("No ridge lines layer provided")
         
-        ridge_lines_gdf = gpd.read_file(ridge_lines_layer.source())
+        try:
+            # Read without CRS first to avoid Windows PROJ crashes
+            ridge_lines_gdf = gpd.read_file(ridge_lines_layer.source(), crs=None)
+            # Manually set the safe CRS
+            ridge_lines_gdf.crs = dtm_crs
+            feedback.pushInfo(f"Successfully loaded {len(ridge_lines_gdf)} ridge line features with safe CRS: {dtm_crs}")
+        except Exception as e:
+            feedback.pushInfo(f"Failed to load ridge lines with safe CRS handling: {e}")
+            raise QgsProcessingException(f"Failed to load ridge lines: {e}")
+            
         if ridge_lines_gdf.empty:
             raise QgsProcessingException("No ridge lines found in input layer")
         
         ridge_lines_gdf = ridge_lines_gdf.to_crs(self.core.crs)
         feedback.pushInfo(f"Ridge lines: {len(ridge_lines_gdf)} features")
 
-        # Convert perimeter to GeoDataFrame (optional)
+        # Convert perimeter to GeoDataFrame (optional) with Windows-safe CRS handling
         perimeter_gdf = None
         if perimeter_layer and perimeter_layer.source():
             feedback.pushInfo("Converting perimeter to GeoDataFrame...")
-            perimeter_gdf = gpd.read_file(perimeter_layer.source())
+            try:
+                # Read without CRS first to avoid Windows PROJ crashes
+                perimeter_gdf = gpd.read_file(perimeter_layer.source(), crs=None)
+                # Manually set the safe CRS
+                perimeter_gdf.crs = dtm_crs
+                feedback.pushInfo(f"Successfully loaded {len(perimeter_gdf)} perimeter features with safe CRS: {dtm_crs}")
+            except Exception as e:
+                feedback.pushInfo(f"Failed to load perimeter with safe CRS handling: {e}")
+                raise QgsProcessingException(f"Failed to load perimeter: {e}")
+                
             if not perimeter_gdf.empty:
                 perimeter_gdf = perimeter_gdf.to_crs(self.core.crs)
                 feedback.pushInfo(f"Perimeter: {len(perimeter_gdf)} features")

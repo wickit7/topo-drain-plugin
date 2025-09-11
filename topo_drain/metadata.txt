@@ -19,7 +19,7 @@ about=It automates the extraction of main valleys and ridges, creates off-contou
     For help installing Python packages in QGIS, see:
     - Windows: https://landscapearchaeology.org/2018/installing-python-packages-in-qgis-3-for-windows/
     - macOS: https://gis.stackexchange.com/questions/351280/installing-python-modules-for-qgis-3-on-mac
-    or use QGIS Plugin "QGIS Pip Manager" for installing the python packages.
+    or use QGIS Plugin "qpip" for installing the python packages.
 
     A series of manual videos will follow soon: How to install a plugin with dependencies; how to use the tool, i.e. how to create a keyline design.
 
@@ -31,7 +31,10 @@ repository=https://github.com/wickit7/topo-drain-plugin
 
 hasProcessingProvider=yes
 # Uncomment the following line and add your changelog:
-changelog=0.1.3 - Critical QGIS crash fixes and plugin stability improvements
+changelog=0.1.4 - Bug fixes and attribute renaming
+    * Handle fid attribute issue windows/mac by renaming it to LINK_ID
+    * Handle crs issue
+    0.1.3 - Critical QGIS crash fixes and plugin stability improvements
     * CRITICAL FIX: Eliminated QGIS crashes caused by QMessageBox dialogs during algorithm execution
     * Better Windows compatibility and plugin loading reliability
     0.1.2 - Bug fixes and robustness improvements
@@ -65,7 +68,9 @@ deprecated=False
 # Since QGIS 3.8, a comma separated list of plugins to be installed
 # (or upgraded) can be specified.
 # Check the documentation for more information.
-plugin_dependencies=plugin:WhiteboxTools for QGIS;python:numpy;python:rasterio;python:shapely;python:geopandas;python:scipy
+# The plugin name should match the exact folder name in QGIS plugins directory
+plugin_dependencies=plugin:wbt_for_qgis;python:numpy;python:rasterio;python:shapely;python:geopandas;python:scipy
+#plugin_dependencies=wbt_for_qgis
 
 # If the plugin can run on QGIS Server.
 server=False

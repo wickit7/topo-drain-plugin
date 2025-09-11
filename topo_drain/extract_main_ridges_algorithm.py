@@ -13,7 +13,7 @@ from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterVectorLayer
                        QgsProcessing, QgsProcessingParameterFeatureSource, QgsProcessingException)
 import os
 import geopandas as gpd
-from .utils import get_crs_from_layer
+from .utils import get_crs_from_layer, update_core_crs_if_needed
 
 pluginPath = os.path.dirname(__file__)
 
@@ -55,7 +55,10 @@ class ExtractMainRidgesAlgorithm(QgsProcessingAlgorithm):
         return QCoreApplication.translate('Processing', string)
 
     def createInstance(self):
-        return ExtractMainRidgesAlgorithm(core=self.core)
+        instance = ExtractMainRidgesAlgorithm(core=self.core)
+        if hasattr(self, 'plugin'):
+            instance.plugin = self.plugin
+        return instance
 
     def name(self):
         return 'extract_main_ridges'
@@ -81,13 +84,17 @@ The algorithm:
 - Identifies point with highest flow accumulation for each ridge (defined by attribute TRIB_ID)
 - Selects the top N ridges by maximum flow accumulation
 - Merges line segments belonging to each selected ridge (using attribut DS_LINK_ID)
+- Adds RANK attribute (1=highest flow accumulation, 2=second highest, etc.)
 
 This is useful for identifying the most significant watershed divides (ridges) in a watershed or study area, focusing analysis on the primary ridges resp. drainage divides.
 
 Input Requirements:
-- Ridge Lines: Should have 'FID', 'TRIB_ID', and 'DS_LINK_ID' attributes (e.g., from Create Ridges algorithm)
+- Ridge Lines: Must have 'LINK_ID', 'TRIB_ID', and 'DS_LINK_ID' attributes (from Create Ridges algorithm). LINK_ID is the standard cross-platform identifier.
 - Flow Accumulation Raster: Raster showing accumulated flow (e.g., from Create Ridges algorithm, based on inverted DTM)
-- Perimeter (optional): Polygon defining the study area boundary. If not provided, uses the extent of ridge lines"""
+- Perimeter (optional): Polygon defining the study area boundary. If not provided, uses the extent of ridge lines
+
+OUTPUT_MAIN_RIDGES:
+Line layer containing main ridge lines with attributes: LINK_ID, TRIB_ID, RANK, POLYGON_ID, DS_LINK_ID"""
         )
     
     def icon(self):
@@ -98,7 +105,7 @@ Input Requirements:
         self.addParameter(
             QgsProcessingParameterVectorLayer(
                 self.INPUT_RIDGE_LINES,
-                self.tr('Input Ridge Lines (must have FID, TRIB_ID, DS_LINK_ID attributes)'),
+                self.tr('Input Ridge Lines (must have LINK_ID, TRIB_ID, DS_LINK_ID attributes)'),
                 types=[QgsProcessing.TypeVectorLine]
             )
         )
@@ -174,21 +181,9 @@ Input Requirements:
         main_ridges_file_path = main_ridges_output_layer if isinstance(main_ridges_output_layer, str) else main_ridges_output_layer
 
         feedback.pushInfo("Reading CRS from ridge lines...")
-        # Read CRS from the ridge lines layer
-        ridge_crs = get_crs_from_layer(ridge_lines_layer)
+        # Read CRS from the ridge lines layer with safe fallback
+        ridge_crs = get_crs_from_layer(ridge_lines_layer, fallback_crs="EPSG:2056")
         feedback.pushInfo(f"Ridge lines CRS: {ridge_crs}")
-
-        if not self.core:
-            from topo_drain.core.topo_drain_core import TopoDrainCore
-            feedback.reportError("TopoDrainCore not set, creating default instance.")
-            self.core = TopoDrainCore()  # fallback: create default instance (not recommended for plugin use)
-
-        # Check if self.core.crs matches ridge_crs, warn and update if not
-        if ridge_crs:
-            if self.core and hasattr(self.core, "crs"):
-                if self.core.crs != ridge_crs:
-                    feedback.reportError(f"Warning: TopoDrainCore CRS ({self.core.crs}) does not match ridge lines CRS ({ridge_crs}). Updating TopoDrainCore CRS to match ridge lines.")
-                    self.core.crs = ridge_crs
 
         feedback.pushInfo("Processing extract_main_ridges via TopoDrainCore...")
 
@@ -197,11 +192,43 @@ Input Requirements:
             if not self.plugin.ensure_whiteboxtools_configured():
                 raise QgsProcessingException("WhiteboxTools is not configured. Please install and configure the WhiteboxTools for QGIS plugin.")
         else:
-            feedback.pushInfo("Warning: Plugin reference not available - WhiteboxTools configuration cannot be checked")
+            # Try to automatically find and connect to the TopoDrain plugin
+            feedback.pushInfo("Plugin reference not available - attempting to connect to TopoDrain plugin")
+            try:
+                from qgis.utils import plugins
+                if 'topo_drain' in plugins:
+                    topo_drain_plugin = plugins['topo_drain']
+                    # Set the plugin reference for this instance
+                    self.plugin = topo_drain_plugin
+                    feedback.pushInfo("Successfully connected to TopoDrain plugin")
+                    
+                    # Now try to configure WhiteboxTools
+                    if hasattr(topo_drain_plugin, 'ensure_whiteboxtools_configured'):
+                        if not topo_drain_plugin.ensure_whiteboxtools_configured():
+                            feedback.pushWarning("WhiteboxTools is not configured. Please install and configure the WhiteboxTools for QGIS plugin.")
+                        else:
+                            feedback.pushInfo("WhiteboxTools configuration verified")
+                    else:
+                        feedback.pushWarning("TopoDrain plugin found but configuration method not available")
+                else:
+                    feedback.pushWarning("TopoDrain plugin not found in QGIS registry - cannot verify WhiteboxTools configuration")
+            except Exception as e:
+                feedback.pushWarning(f"Could not connect to TopoDrain plugin: {e} - continuing without WhiteboxTools verification")
 
-        # Load input data as GeoDataFrame
+        # Update core CRS if needed (ridge_crs is guaranteed to be valid)
+        update_core_crs_if_needed(self.core, ridge_crs, feedback)
+
+        # Load input data as GeoDataFrame with Windows-safe CRS handling
         feedback.pushInfo("Loading ridge lines...")
-        ridge_lines_gdf = gpd.read_file(ridge_lines_path)
+        try:
+            # Read without CRS first to avoid Windows PROJ crashes
+            ridge_lines_gdf = gpd.read_file(ridge_lines_path, crs=None)
+            # Manually set the safe CRS
+            ridge_lines_gdf.crs = ridge_crs
+            feedback.pushInfo(f"Successfully loaded {len(ridge_lines_gdf)} ridge line features with safe CRS: {ridge_crs}")
+        except Exception as e:
+            feedback.pushInfo(f"Failed to load ridge lines with safe CRS handling: {e}")
+            raise QgsProcessingException(f"Failed to load ridge lines: {e}")
 
         if ridge_lines_gdf.empty:
             raise QgsProcessingException("No features found in ridge lines input")
@@ -210,7 +237,15 @@ Input Requirements:
         perimeter_gdf = None
         if perimeter_layer:
             feedback.pushInfo("Loading perimeter...")
-            perimeter_gdf = gpd.GeoDataFrame.from_features(perimeter_layer.getFeatures())
+            try:
+                # Use from_features to avoid CRS issues, then set safe CRS
+                perimeter_gdf = gpd.GeoDataFrame.from_features(perimeter_layer.getFeatures())
+                if not perimeter_gdf.empty:
+                    perimeter_gdf.crs = ridge_crs  # Use same safe CRS as ridge lines
+                    feedback.pushInfo(f"Successfully loaded {len(perimeter_gdf)} perimeter features with safe CRS")
+            except Exception as e:
+                feedback.pushInfo(f"Failed to load perimeter with safe CRS handling: {e}")
+                raise QgsProcessingException(f"Failed to load perimeter: {e}")
         else:
             feedback.pushInfo("No perimeter provided, will use ridge lines extent")
 
@@ -219,7 +254,7 @@ Input Requirements:
 
         # Check for required attributes (case-insensitive)
         feedback.pushInfo(f"Checking ridge lines attributes: {list(ridge_lines_gdf.columns)}")
-        required_attrs = ['FID', 'TRIB_ID', 'DS_LINK_ID']
+        required_attrs = ['LINK_ID', 'TRIB_ID', 'DS_LINK_ID']
         # Convert column names to uppercase for case-insensitive comparison
         available_attrs_upper = [col.upper() for col in ridge_lines_gdf.columns]
         feedback.pushInfo(f"Ridge lines attributes (uppercase): {available_attrs_upper}")
