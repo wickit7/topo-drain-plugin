@@ -12,13 +12,14 @@ from qgis.PyQt.QtGui import QIcon
 from qgis.core import (QgsProcessing,
                        QgsProcessingException,
                        QgsProcessingAlgorithm,
+                       QgsProcessingParameterVectorLayer,
                        QgsProcessingParameterFeatureSource,
                        QgsProcessingParameterRasterLayer,
                        QgsProcessingParameterVectorDestination,
                        QgsProcessingParameterNumber)
 import geopandas as gpd
 import os
-from .utils import get_crs_from_source
+from .utils import get_crs_from_layer, update_core_crs_if_needed
 
 pluginPath = os.path.dirname(__file__)
 
@@ -65,7 +66,10 @@ class GetKeypointsAlgorithm(QgsProcessingAlgorithm):
         return QCoreApplication.translate('Processing', string)
 
     def createInstance(self):
-        return GetKeypointsAlgorithm(core=self.core)
+        instance = GetKeypointsAlgorithm(core=self.core)
+        if hasattr(self, 'plugin'):
+            instance.plugin = self.plugin
+        return instance
 
     def name(self):
         return 'get_keypoints'
@@ -96,11 +100,11 @@ The algorithm:
 This is useful for identifying significant morphological features along drainage channels, such as knickpoints, channel transitions, or locations suitable for water retention structures in keyline design applications.
 
 Input Requirements:
-- Valley Lines: Should have 'FID' attribute (e.g., from Create Valleys algorithm)
+- Valley Lines: Must have 'LINK_ID' attribute (from Create Valleys algorithm). LINK_ID is the standard cross-platform identifier.
 - DTM: Digital Terrain Model for elevation profile extraction
 
 OUTPUT_KEYPOINTS:
-Point layer containing detected keypoints with attributes: valley_id, elev_index, rank, curvature
+Point layer containing detected keypoints with attributes: VALLEY_ID, ELEV_INDEX, RANK, CURVATURE
 
 Simplified Parameters:
 - Maximum keypoints: Limits output per valley line
@@ -119,7 +123,7 @@ Simplified Parameters:
         self.addParameter(
             QgsProcessingParameterFeatureSource(
                 self.INPUT_VALLEY_LINES,
-                self.tr('Input Main Valley Lines (must have FID attribute)'),
+                self.tr('Input Main Valley Lines (must have LINK_ID attribute)'),
                 [QgsProcessing.TypeVectorLine]
             )
         )
@@ -215,30 +219,41 @@ Simplified Parameters:
         keypoints_output_layer = self.parameterAsOutputLayer(parameters, self.OUTPUT_KEYPOINTS, context)
         keypoints_file_path = keypoints_output_layer if isinstance(keypoints_output_layer, str) else keypoints_output_layer
 
-        feedback.pushInfo("Reading CRS from valley source...")
-        # Read CRS from the valley lines source using unified function
-        valley_crs = get_crs_from_source(valley_lines_source)
-        feedback.pushInfo(f"Valley lines CRS: {valley_crs}")
+        feedback.pushInfo("Reading CRS from DTM layer...")
+        # Read CRS from the DTM layer with safe fallback (since we can't get CRS from source directly)
+        dtm_crs = get_crs_from_layer(dtm_layer, fallback_crs="EPSG:2056")
+        feedback.pushInfo(f"DTM CRS: {dtm_crs}")
 
-        feedback.pushInfo("Processing get_keypoints via TopoDrainCore...")
-        if not self.core:
-            from .core.topo_drain_core import TopoDrainCore
-            feedback.reportError("TopoDrainCore not set, creating default instance.")
-            self.core = TopoDrainCore()  # fallback: create default instance (not recommended for plugin use)
-
-        # Check if self.core.crs matches valley_crs, warn and update if not
-        if valley_crs:
-            if self.core and hasattr(self.core, "crs"):
-                if self.core.crs != valley_crs and valley_crs != "":
-                    feedback.reportError(f"Warning: TopoDrainCore CRS ({self.core.crs}) does not match valley lines CRS ({valley_crs}). Updating TopoDrainCore CRS to match valley lines.")
-                    self.core.crs = valley_crs
+        # Update core CRS if needed (dtm_crs is guaranteed to be valid)
+        update_core_crs_if_needed(self.core, dtm_crs, feedback)
 
         # Ensure WhiteboxTools is configured before running
         if hasattr(self, 'plugin') and self.plugin:
             if not self.plugin.ensure_whiteboxtools_configured():
                 raise QgsProcessingException("WhiteboxTools is not configured. Please install and configure the WhiteboxTools for QGIS plugin.")
         else:
-            feedback.pushInfo("Warning: Plugin reference not available - WhiteboxTools configuration cannot be checked")
+            # Try to automatically find and connect to the TopoDrain plugin
+            feedback.pushInfo("Plugin reference not available - attempting to connect to TopoDrain plugin")
+            try:
+                from qgis.utils import plugins
+                if 'topo_drain' in plugins:
+                    topo_drain_plugin = plugins['topo_drain']
+                    # Set the plugin reference for this instance
+                    self.plugin = topo_drain_plugin
+                    feedback.pushInfo("Successfully connected to TopoDrain plugin")
+                    
+                    # Now try to configure WhiteboxTools
+                    if hasattr(topo_drain_plugin, 'ensure_whiteboxtools_configured'):
+                        if not topo_drain_plugin.ensure_whiteboxtools_configured():
+                            feedback.pushWarning("WhiteboxTools is not configured. Please install and configure the WhiteboxTools for QGIS plugin.")
+                        else:
+                            feedback.pushInfo("WhiteboxTools configuration verified")
+                    else:
+                        feedback.pushWarning("TopoDrain plugin found but configuration method not available")
+                else:
+                    feedback.pushWarning("TopoDrain plugin not found in QGIS registry - cannot verify WhiteboxTools configuration")
+            except Exception as e:
+                feedback.pushWarning(f"Could not connect to TopoDrain plugin: {e} - continuing without WhiteboxTools verification")
 
         # Load input data as GeoDataFrame
         feedback.pushInfo("Loading valley lines...")
@@ -247,9 +262,9 @@ Simplified Parameters:
         if valley_lines_gdf.empty:
             raise QgsProcessingException("No features found in valley lines input")
 
-        # Check for FID attribute
-        if 'FID' not in valley_lines_gdf.columns:
-            raise QgsProcessingException("Valley lines must have an 'FID' attribute")
+        # Check for LINK_ID attribute (required)
+        if 'LINK_ID' not in valley_lines_gdf.columns:
+            raise QgsProcessingException("Valley lines must have a 'LINK_ID' attribute. Please use valley lines generated by the Create Valleys algorithm.")
 
         # Run keypoint detection
         feedback.pushInfo("Running keypoint detection...")

@@ -14,7 +14,7 @@ from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterRasterLayer
                        QgsProcessing, QgsProcessingException)
 import os
 import geopandas as gpd
-from .utils import get_crs_from_layer
+from .utils import get_crs_from_layer, update_core_crs_if_needed
 
 pluginPath = os.path.dirname(__file__)
 
@@ -29,7 +29,7 @@ class CreateValleysAlgorithm(QgsProcessingAlgorithm):
     - ExtractStreams: Extracts stream networks from the flow accumulation raster based on a user-defined threshold, identifying significant flow paths.
     - RasterStreamsToVector: Converts rasterized stream networks into vector line features for further analysis or export.
     - StreamLinkIdentifier: Assigns unique identifiers to each stream segment (link) in the raster stream network.
-    - VectorStreamNetworkAnalysis: Analyzes the vectorized stream network, calculating stream order (e.g., HORTON), tributary IDs (TRIB_ID), and additional attributes such as the downstream link ID (DS_LINK_ID) for each stream segment (FID).
+    - VectorStreamNetworkAnalysis: Analyzes the vectorized stream network, calculating stream order (e.g., HORTON), tributary IDs (TRIB_ID), and additional attributes such as the downstream link ID (DS_LINK_ID) for each stream segment (LINK_ID).
 
     For more customization, you can use individual WhiteboxTools algorithms directly in the QGIS Processing Toolbox (WhiteBox Plugin) step by step.
     """
@@ -50,11 +50,15 @@ class CreateValleysAlgorithm(QgsProcessingAlgorithm):
 
     def set_core(self, core):
         self.core = core
+        
     def tr(self, string):
         return QCoreApplication.translate('Processing', string)
 
     def createInstance(self):
-        return CreateValleysAlgorithm(core=self.core)
+        instance = CreateValleysAlgorithm(core=self.core)
+        if hasattr(self, 'plugin'):
+            instance.plugin = self.plugin
+        return instance
 
     def name(self):
         return 'create_valleys'
@@ -78,7 +82,7 @@ class CreateValleysAlgorithm(QgsProcessingAlgorithm):
                 - ExtractStreams: Extracts stream networks from the flow accumulation raster based on a user-defined threshold, identifying significant flow paths.
                 - RasterStreamsToVector: Converts rasterized stream networks into vector line features for further analysis or export.
                 - StreamLinkIdentifier: Assigns unique identifiers to each stream segment (link) in the raster stream network.
-                - VectorStreamNetworkAnalysis: Analyzes the vectorized stream network, calculating stream order (e.g., HORTON), tributary IDs (TRIB_ID), and additional attributes such as the downstream link ID (DS_LINK_ID) for each stream segment (FID).
+                - VectorStreamNetworkAnalysis: Analyzes the vectorized stream network, calculating stream order (e.g., HORTON), tributary IDs (TRIB_ID), and additional attributes such as the downstream link ID (DS_LINK_ID) for each stream segment (LINK_ID).
                 For more customization, you can use individual WhiteboxTools algorithms directly in the QGIS Processing Toolbox (WhiteBox Plugin) step by step."""
         )
 
@@ -188,28 +192,40 @@ class CreateValleysAlgorithm(QgsProcessingAlgorithm):
 
         feedback.pushInfo("Reading CRS from DTM...")
         # Read CRS from the DTM using QGIS layer
-        dtm_crs = get_crs_from_layer(dtm_layer)
+        dtm_crs = get_crs_from_layer(dtm_layer, fallback_crs="EPSG:2056")
         feedback.pushInfo(f"DTM Layer crs: {dtm_crs}")
-
-        feedback.pushInfo("Processing extract_valleys via TopoDrainCore...")
-        if not self.core:
-            from topo_drain.core.topo_drain_core import TopoDrainCore
-            feedback.reportError("TopoDrainCore not set, creating default instance.")
-            self.core = TopoDrainCore()  # fallback: create default instance (not recommended for plugin use)
-
-        # Check if self.core.crs matches dtm_crs, warn and update if not
-        if dtm_crs:
-            if self.core and hasattr(self.core, "crs"):
-                if self.core.crs != dtm_crs:
-                    feedback.reportError(f"Warning: TopoDrainCore CRS ({self.core.crs}) does not match DTM CRS ({dtm_crs}). Updating TopoDrainCore CRS to match DTM.")
-                    self.core.crs = dtm_crs
 
         # Ensure WhiteboxTools is configured before running
         if hasattr(self, 'plugin') and self.plugin:
             if not self.plugin.ensure_whiteboxtools_configured():
                 raise QgsProcessingException("WhiteboxTools is not configured. Please install and configure the WhiteboxTools for QGIS plugin.")
         else:
-            feedback.pushInfo("Warning: Plugin reference not available - WhiteboxTools configuration cannot be checked")
+            # Try to automatically find and connect to the TopoDrain plugin
+            feedback.pushInfo("Plugin reference not available - attempting to connect to TopoDrain plugin")
+            try:
+                from qgis.utils import plugins
+                if 'topo_drain' in plugins:
+                    topo_drain_plugin = plugins['topo_drain']
+                    # Set the plugin reference for this instance
+                    self.plugin = topo_drain_plugin
+                    feedback.pushInfo("Successfully connected to TopoDrain plugin")
+                    
+                    # Now try to configure WhiteboxTools
+                    if hasattr(topo_drain_plugin, 'ensure_whiteboxtools_configured'):
+                        if not topo_drain_plugin.ensure_whiteboxtools_configured():
+                            feedback.pushWarning("WhiteboxTools is not configured. Please install and configure the WhiteboxTools for QGIS plugin.")
+                        else:
+                            feedback.pushInfo("WhiteboxTools configuration verified")
+                    else:
+                        feedback.pushWarning("TopoDrain plugin found but configuration method not available")
+                else:
+                    feedback.pushWarning("TopoDrain plugin not found in QGIS registry - cannot verify WhiteboxTools configuration")
+            except Exception as e:
+                feedback.pushWarning(f"Could not connect to TopoDrain plugin: {e} - continuing without WhiteboxTools verification")
+
+        # Update core CRS if needed (dtm_crs is guaranteed to be valid)
+        update_core_crs_if_needed(self.core, dtm_crs, feedback)
+
 
         feedback.pushInfo("Running extract valleys...")
         valleys_gdf = self.core.extract_valleys(
