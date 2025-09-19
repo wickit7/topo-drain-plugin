@@ -1957,6 +1957,49 @@ class TopoDrainCore:
                 return None
 
     @staticmethod
+    def _reverse_line_direction(input_geometry):
+        """
+        Reverse the coordinate direction of LineString geometries.
+        
+        Can handle single LineString or GeoDataFrame with multiple LineString geometries.
+        
+        Args:
+            input_geometry: Either a single LineString or a GeoDataFrame with LineString geometries
+            
+        Returns:
+            Same type as input but with reversed coordinate direction:
+            - LineString: Returns reversed LineString
+            - GeoDataFrame: Returns GeoDataFrame with all LineString geometries reversed
+        """
+        if isinstance(input_geometry, LineString):
+            # Handle single LineString
+            if hasattr(input_geometry, 'coords') and len(input_geometry.coords) >= 2:
+                reversed_coords = list(input_geometry.coords)[::-1]
+                return LineString(reversed_coords)
+            else:
+                return input_geometry
+                
+        elif hasattr(input_geometry, 'geometry') and hasattr(input_geometry, 'iterrows'):
+            # Handle GeoDataFrame
+            result_gdf = input_geometry.copy()
+            reversed_geometries = []
+            
+            for _, row in input_geometry.iterrows():
+                line_geom = row.geometry
+                if isinstance(line_geom, LineString) and hasattr(line_geom, 'coords') and len(line_geom.coords) >= 2:
+                    reversed_coords = list(line_geom.coords)[::-1]
+                    reversed_geometries.append(LineString(reversed_coords))
+                else:
+                    reversed_geometries.append(line_geom)
+                    
+            result_gdf.geometry = reversed_geometries
+            return result_gdf
+            
+        else:
+            # Return input unchanged if not a recognized type
+            return input_geometry
+
+    @staticmethod
     def _create_slope_cost_raster(
         dtm_path: str,
         start_point: Point,
@@ -3128,7 +3171,11 @@ class TopoDrainCore:
                 destination_features = [valley_lines] 
                 barrier_features = [ridge_lines]
                 target_type = "valleys"
-                use_slope = -slope  # Invert slope for uphill tracing
+                # For even stages with slope adjustment: trace with -slope_after, then adjust to -slope
+                if change_after is not None and slope_after is not None:
+                    use_slope = -slope_after  # Trace with final slope (negative for ridge→valley)
+                else:
+                    use_slope = -slope  # Invert slope for uphill tracing (no adjustment)
             
             # Always add perimeter als destination feature if provided
             if perimeter is not None:
@@ -3181,24 +3228,59 @@ class TopoDrainCore:
                 else:
                     print(f"Stage {stage}: Applying slope adjustment after {change_after*100:.1f}% with new slope {slope_after}")
                 
-                # Apply the slope adjustment using the adjust_constant_slope_after method
-                stage_lines = self.adjust_constant_slope_after(
-                    dtm_path=dtm_path,
-                    input_lines=stage_lines,
-                    change_after=change_after,
-                    slope_after=slope_after,  # Use slope_after as-is because line direction is already handled in stage_lines
-                    destination_features=destination_features,
-                    barrier_features=barrier_features,
-                    allow_barriers_as_temp_destination=False,
-                    slope_deviation_threshold=slope_deviation_threshold,
-                    max_iterations_slope=max_iterations_slope,
-                    feedback=None  # Keep feedback at main level
-                )
-                
+                # For even stages, we need to handle slope direction properly
+                if stage % 2 == 0:  # Even stage: lines traced ridge→valley with -slope_after
+                    # For even stages with slope adjustment:
+                    # 1. Lines were traced ridge→valley with -slope_after
+                    # 2. Apply slope adjustment to change from -slope_after to -slope at (1-change_after)
+                    # 3. Then reverse final lines to valley→ridge orientation
+                    
+                    if feedback:
+                        feedback.pushInfo(f"Stage {stage}: Even stage - applying slope adjustment from -slope_after to -slope...")
+                    
+                    # Apply slope adjustment: change from -slope_after to -slope
+                    # The adjust_constant_slope_after function expects positive slopes, so we pass the absolute values
+                    # and handle the direction through the destination/barrier configuration
+                    adjusted_lines = self.adjust_constant_slope_after(
+                        dtm_path=dtm_path,
+                        input_lines=stage_lines,  # Lines are ridge→valley with -slope_after
+                        change_after=(1-change_after),  # Change at (1-change_after) distance
+                        slope_after=-slope,  # Change to -slope (ridge→valley direction)
+                        destination_features=destination_features,
+                        barrier_features=barrier_features,
+                        allow_barriers_as_temp_destination=False,
+                        slope_deviation_threshold=slope_deviation_threshold,
+                        max_iterations_slope=max_iterations_slope,
+                        feedback=None  # Keep feedback at main level
+                    )
+                    
+                    # update stage lines
+                    stage_lines = adjusted_lines
+
+                else:  # Odd stage: lines are already valley→ridge oriented
+                    # Apply the slope adjustment directly
+                    adjusted_lines = self.adjust_constant_slope_after(
+                        dtm_path=dtm_path,
+                        input_lines=stage_lines,
+                        change_after=change_after,
+                        slope_after=slope_after,  # Applies correctly in valley→ridge direction
+                        destination_features=destination_features,
+                        barrier_features=barrier_features,
+                        allow_barriers_as_temp_destination=False,
+                        slope_deviation_threshold=slope_deviation_threshold,
+                        max_iterations_slope=max_iterations_slope,
+                        feedback=None  # Keep feedback at main level
+                    )
+
+                    # update stage lines
+                    stage_lines = adjusted_lines
+                    
                 if feedback:
                     feedback.pushInfo(f"Stage {stage}: Slope adjustment complete, {len(stage_lines)} adjusted lines")
                 else:
                     print(f"Stage {stage}: Slope adjustment complete, {len(stage_lines)} adjusted lines")
+
+
 
             # Check endpoints and create new start points if they're on target features
             new_start_points = []
@@ -3212,9 +3294,10 @@ class TopoDrainCore:
             else:
                 print(f"Stage {stage}: Checking endpoints on {target_type} using raster-based detection...")
 
-            # Iterate through each line in the stage_lines GeoDataFrame
+            # Iterate through each line in the stage_lines GeoDataFrame (for endpoint processing)
+            # Note: stage_lines is oriented correctly for endpoint detection
             with rasterio.open(dtm_path) as dtm_src:
-                for _, line_row in stage_lines.iterrows():
+                for line_idx, line_row in stage_lines.iterrows():
                     line_geom = line_row.geometry
                     if hasattr(line_geom, 'coords') and len(line_geom.coords) >= 2:
                         end_point = Point(line_geom.coords[-1])
@@ -3243,15 +3326,16 @@ class TopoDrainCore:
                                 if feedback:
                                     feedback.pushInfo(f"Stage {stage}: Endpoint is on perimeter raster cell, adding line and skipping further tracing.")
                                 
-                                # For even stages, we traced from ridges to valleys (uphill)
-                                # We want to reverse these lines so all keylines go valley → ridge
-                                if stage % 2 == 0:  # Even stage: reverse direction to ensure valley → ridge
-                                    reversed_coords = list(line_geom.coords)[::-1]  # Reverse coordinate order
-                                    line_geom = LineString(reversed_coords)
+                                # adjust line orientation for even stages to ensure valley→ridge direction
+                                if stage % 2 == 0:  
+                                    final_line_geom = TopoDrainCore._reverse_line_direction(line_geom)
                                     if feedback:
-                                        feedback.pushInfo(f"Stage {stage}: Reversed line direction (ridge→valley to valley→ridge)")    
-                                # Add final line to all_keylines
-                                all_keylines.append(line_geom)
+                                        feedback.pushInfo(f"Stage {stage}: Reversed line direction (ridge→valley to valley→ridge)")
+                                else:
+                                    final_line_geom = line_geom
+
+                                # Add final line to all_keylines (now correctly oriented valley → ridge)
+                                all_keylines.append(final_line_geom)
                                 continue  # Skip further processing for this line
                                 
                         # Check if endpoint is on barrier using raster lookup
@@ -3281,14 +3365,17 @@ class TopoDrainCore:
                                 else:
                                     print(f"Stage {stage}: No valid start point found.")
 
-                        # For even stages, we traced from ridges to valleys (uphill)
-                        # We want to reverse these lines so all keylines go valley → ridge
-                        if stage % 2 == 0:  # Even stage: reverse direction to ensure valley → ridge
-                            reversed_coords = list(line_geom.coords)[::-1]  # Reverse coordinate order
-                            line_geom = LineString(reversed_coords)
+                        # No slope adjustment - use the (possibly extended) line from endpoint processing
+                        if stage % 2 == 0:
+                            # Even stage without slope adjustment: reverse ridge→valley to valley→ridge
+                            final_line_geom = TopoDrainCore._reverse_line_direction(line_geom)
                             if feedback:
-                                feedback.pushInfo(f"Stage {stage}: Reversed line direction (ridge→valley to valley→ridge)")    
-                        all_keylines.append(line_geom)
+                                feedback.pushInfo(f"Stage {stage}: Reversed line direction (ridge→valley to valley→ridge)")
+                        else:
+                            final_line_geom = line_geom  # Odd stage already valley→ridge
+                    
+                        # Add line to all_keylines (now correctly oriented valley → ridge)
+                        all_keylines.append(final_line_geom)
 
             if not new_start_points:
                 if feedback:
