@@ -1741,7 +1741,7 @@ class TopoDrainCore:
         barrier_raster_path: str,
         point: Point,
         line_geom: LineString,
-        max_offset: int = 7
+        max_offset: int = 10
     ) -> tuple[Point, Point]:
         """
         Determine two start points to the left and right of a given point, orthogonal to an input line.
@@ -1821,7 +1821,7 @@ class TopoDrainCore:
     def _get_linedirection_start_point(
         barrier_raster_path: str,
         line_geom: LineString,
-        max_offset: int = 7,
+        max_offset: int = 10,
         reverse: bool = False
     ) -> Point:
         """
@@ -2686,7 +2686,7 @@ class TopoDrainCore:
                     next_start_point = TopoDrainCore._get_linedirection_start_point(
                         barrier_raster_path=barrier_raster_path,
                         line_geom=line_segment,
-                        max_offset=7,  # adjust as needed
+                        max_offset=10,  # adjust as needed
                         reverse=True  # always go backward were the line came from
                     )
                 else:
@@ -3397,7 +3397,7 @@ class TopoDrainCore:
                             if feedback:
                                 feedback.pushInfo(f"Stage {stage}: Endpoint is on barrier raster cell, trying to get a new start point...")
                             new_start_point = TopoDrainCore._get_linedirection_start_point(
-                                new_barrier_raster_path, line_geom, max_offset=7
+                                new_barrier_raster_path, line_geom, max_offset=10
                             )
                             if new_start_point:
                                 if feedback:

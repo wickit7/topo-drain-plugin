@@ -33,6 +33,7 @@ hasProcessingProvider=yes
 # Uncomment the following line and add your changelog:
 changelog=0.1.5 - Create keylines bug fixes and code improvements
     * Bug fix slope adjustment processing for keyline creation with "new slop"e after "change after"
+    * Allow starting keyline from ridge line
     0.1.4 - Bug fixes and attribute renaming
     * Handle fid attribute issue windows/mac by renaming it to LINK_ID
     * Handle crs issue
