@@ -1741,7 +1741,7 @@ class TopoDrainCore:
         barrier_raster_path: str,
         point: Point,
         line_geom: LineString,
-        max_offset: int = 5
+        max_offset: int = 10
     ) -> tuple[Point, Point]:
         """
         Determine two start points to the left and right of a given point, orthogonal to an input line.
@@ -1818,10 +1818,10 @@ class TopoDrainCore:
             return left_pt, right_pt
         
     @staticmethod
-    def _get_linedirection_start_point( ### maybe adjust line_geom
+    def _get_linedirection_start_point(
         barrier_raster_path: str,
         line_geom: LineString,
-        max_offset: int = 5,
+        max_offset: int = 10,
         reverse: bool = False
     ) -> Point:
         """
@@ -1829,6 +1829,7 @@ class TopoDrainCore:
 
         The function searches from the endpoint of the line along its direction until it finds
         a non-barrier cell. If reverse=True, follows the line geometry backwards from the endpoint.
+        For forward mode, prioritizes perpendicular direction to the local barrier orientation.
 
         Args:
             barrier_raster_path (str): Path to binary raster (GeoTIFF) with 1 = barrier, 0 = free.
@@ -1910,20 +1911,52 @@ class TopoDrainCore:
                 new_pt = find_valid_point_along_line()
                 
             else:
-                # For forward, use tangent vector approach as before
-                print("[GetLinedirectionStartPoint] Forward mode: using tangent vector extrapolation")
+                # For forward, use mean direction of the last two line segments
+                print("[GetLinedirectionStartPoint] Forward mode: using line direction")
                 
-                # Create tangent vector based on line direction
-                dx = end_point[0] - ref_point[0]
-                dy = end_point[1] - ref_point[1]
+                tangent = None
                 
-                norm = np.linalg.norm([dx, dy])
-                if norm > 0:
-                    tangent = np.array([dx, dy]) / norm
-                    print(f"[GetLinedirectionStartPoint] Tangent vector: {tangent}")
-                else:
-                    print("[GetLinedirectionStartPoint] Zero-length tangent vector, cannot proceed.")
-                    return None
+                # Use simple mean direction of last two line segments
+                if tangent is None:
+                    print("[GetLinedirectionStartPoint] Using mean direction of last two line segments")
+                    
+                    # Calculate tangent vectors for the last two segments (if available)
+                    num_segments_to_use = min(2, len(coords) - 1)
+                    tangent_vectors = []
+                    
+                    for i in range(num_segments_to_use):
+                        seg_end_idx = len(coords) - 1 - i  # Start from the end
+                        seg_start_idx = seg_end_idx - 1
+                        
+                        if seg_start_idx >= 0:
+                            dx = coords[seg_end_idx][0] - coords[seg_start_idx][0]
+                            dy = coords[seg_end_idx][1] - coords[seg_start_idx][1]
+                            
+                            segment_length = np.sqrt(dx*dx + dy*dy)
+                            
+                            if segment_length > 0:
+                                # Normalize to unit vector
+                                unit_vector = np.array([dx, dy]) / segment_length
+                                tangent_vectors.append(unit_vector)
+                    
+                    if not tangent_vectors:
+                        print("[GetLinedirectionStartPoint] No valid segments found for tangent calculation.")
+                        return None
+                    
+                    # Calculate simple mean of tangent vectors (unweighted average)
+                    if len(tangent_vectors) > 0:
+                        mean_tangent = np.mean(tangent_vectors, axis=0)
+                        norm = np.linalg.norm(mean_tangent)
+                        
+                        if norm > 0:
+                            tangent = mean_tangent / norm
+                            print(f"[GetLinedirectionStartPoint] Mean tangent vector from {len(tangent_vectors)} segments: {tangent}")
+                        else:
+                            print("[GetLinedirectionStartPoint] Zero-length mean tangent vector, cannot proceed.")
+                            return None
+                    else:
+                        print("[GetLinedirectionStartPoint] No tangent vectors calculated.")
+                        return None
 
                 def find_valid_point_forward():
                     for i in range(1, max_offset + 1):
@@ -2653,7 +2686,7 @@ class TopoDrainCore:
                     next_start_point = TopoDrainCore._get_linedirection_start_point(
                         barrier_raster_path=barrier_raster_path,
                         line_geom=line_segment,
-                        max_offset=5,  # adjust as needed
+                        max_offset=10,  # adjust as needed
                         reverse=True  # always go backward were the line came from
                     )
                 else:
@@ -3054,10 +3087,10 @@ class TopoDrainCore:
         
         return out_gdf
     
-    def create_keylines(self, dtm_path, start_points, valley_lines, ridge_lines, slope, perimeter, 
+    def create_keylines_core(self, dtm_path, start_points, valley_lines, ridge_lines, slope, perimeter, 
                         change_after=None, slope_after=None, slope_deviation_threshold=0.2, max_iterations_slope=20, feedback=None):
         """
-        Create keylines using an iterative process:
+        Core keylines creation logic using an iterative process:
         1. Trace from start points to ridges (using valleys as barriers)
         2. Check if endpoints are on ridges, create new start points beyond ridges
         3. Trace from new start points to valleys (using ridges as barriers)
@@ -3095,6 +3128,21 @@ class TopoDrainCore:
         GeoDataFrame
             Combined keylines from all stages, all oriented from valley to ridge.
         """
+        if feedback:
+            feedback.pushInfo("Starting iterative keyline core creation process...")
+            feedback.setProgress(5)
+        else:
+            print("Starting iterative keyline core creation process...")
+            print("Progress: 5%")
+        # Create raster .tif files for valley_lines and ridge_lines to use in _get_linedirection_start_point
+        valley_lines_raster_path = os.path.join(self.temp_directory, "valley_lines_mask.tif")
+        ridge_lines_raster_path = os.path.join(self.temp_directory, "ridge_lines_mask.tif")
+
+        # Rasterize valley_lines - now returns path directly
+        valley_lines_raster_path = self._vector_to_mask_raster([valley_lines], dtm_path, output_path=valley_lines_raster_path, unique_values=False, flatten_lines=True, buffer_lines=True)
+
+        # Rasterize ridge_lines - now returns path directly
+        ridge_lines_raster_path = self._vector_to_mask_raster([ridge_lines], dtm_path, output_path=ridge_lines_raster_path, unique_values=False, flatten_lines=True, buffer_lines=True)
         if feedback:
             feedback.pushInfo("Starting iterative keyline creation process...")
             feedback.setProgress(5)
@@ -3349,7 +3397,7 @@ class TopoDrainCore:
                             if feedback:
                                 feedback.pushInfo(f"Stage {stage}: Endpoint is on barrier raster cell, trying to get a new start point...")
                             new_start_point = TopoDrainCore._get_linedirection_start_point(
-                                new_barrier_raster_path, line_geom, max_offset=5
+                                new_barrier_raster_path, line_geom, max_offset=10
                             )
                             if new_start_point:
                                 if feedback:
@@ -3420,6 +3468,195 @@ class TopoDrainCore:
             print(f"Keyline creation complete: {len(combined_gdf)} total keylines from {stage-1} stages")
             print("Progress: 100%")
             
+        return combined_gdf
+
+    def create_keylines(self, dtm_path, start_points, valley_lines, ridge_lines, slope, perimeter, 
+                        change_after=None, slope_after=None, slope_deviation_threshold=0.2, max_iterations_slope=20, feedback=None):
+        """
+        Create keylines using an iterative process, handling start points on either valley or ridge lines:
+        1. Classify start points based on their location (valley lines, ridge lines, or neutral)
+        2. Process valley/neutral start points normally (valley → ridge → valley...)
+        3. Process ridge start points with swapped valley/ridge roles (ridge → valley → ridge...)
+        4. Combine results from both processing paths
+
+        All output keylines will be oriented from valley to ridge (valley → ridge direction).
+
+        Parameters:
+        -----------
+        dtm_path : str
+            Path to the digital terrain model (GeoTIFF)
+        start_points : GeoDataFrame
+            Input keypoints to start keyline creation from (can be on valley lines, ridge lines, or neutral)
+        valley_lines : GeoDataFrame
+            Valley line features to use as barriers/destinations
+        ridge_lines : GeoDataFrame
+            Ridge line features to use as barriers/destinations
+        slope : float
+            Target slope for the constant slope lines (e.g., 0.01 for 1%)
+        perimeter : GeoDataFrame
+            Area of interest (perimeter) that always acts as destination feature (e.g. watershed, parcel polygon)
+        change_after : float, optional
+            Fraction of line length where slope changes (0.0-1.0, e.g., 0.5 = from halfway). If None, no slope adjustment is applied.
+        slope_after : float, optional
+            New slope to apply after the change point (e.g., 0.005 for 0.5% downhill). Required if change_after is provided.
+        slope_deviation_threshold : float, optional
+            Maximum allowed relative deviation from expected slope (0.0-1.0, e.g., 0.2 for 20% deviation before line cutting). Default 0.2.
+        max_iterations_slope : int, optional
+            Maximum number of iterations for line refinement (1-50). Default 20.
+        feedback : QgsProcessingFeedback
+            Feedback object for progress reporting
+
+        Returns:
+        --------
+        GeoDataFrame
+            Combined keylines from all stages, all oriented from valley to ridge.
+        """
+        if feedback:
+            feedback.pushInfo("Starting keyline creation with start point classification...")
+        else:
+            print("Starting keyline creation with start point classification...")
+        
+        # Create raster masks for valley and ridge lines to classify start points
+        valley_lines_raster_path = os.path.join(self.temp_directory, "valley_lines_classification.tif")
+        ridge_lines_raster_path = os.path.join(self.temp_directory, "ridge_lines_classification.tif")
+        
+        # Rasterize valley and ridge lines for start point classification
+        valley_lines_raster_path = self._vector_to_mask_raster([valley_lines], dtm_path, output_path=valley_lines_raster_path, unique_values=False, flatten_lines=True, buffer_lines=True)
+        ridge_lines_raster_path = self._vector_to_mask_raster([ridge_lines], dtm_path, output_path=ridge_lines_raster_path, unique_values=False, flatten_lines=True, buffer_lines=True)
+        
+        # Read masks for start point classification
+        with rasterio.open(valley_lines_raster_path) as src:
+            valley_mask = src.read(1)
+        with rasterio.open(ridge_lines_raster_path) as src:
+            ridge_mask = src.read(1)
+            
+        # Classify start points based on their location
+        valley_start_points = []
+        ridge_start_points = []
+        neutral_start_points = []
+        
+        if feedback:
+            feedback.pushInfo(f"Classifying {len(start_points)} start points...")
+        else:
+            print(f"Classifying {len(start_points)} start points...")
+        
+        with rasterio.open(dtm_path) as dtm_src:
+            for idx, row in start_points.iterrows():
+                point = row.geometry
+                
+                # Get raster coordinates for the point
+                point_r, point_c = dtm_src.index(point.x, point.y)
+                
+                # Check if point is within raster bounds
+                if not (0 <= point_r < dtm_src.height and 0 <= point_c < dtm_src.width):
+                    if feedback:
+                        feedback.pushInfo(f"Warning: Start point {idx} is outside raster bounds, treating as neutral")
+                    neutral_start_points.append(row)
+                    continue
+                
+                # Check if point is on valley or ridge mask
+                valley_value = int(valley_mask[point_r, point_c])
+                ridge_value = int(ridge_mask[point_r, point_c])
+                
+                if valley_value == 1 and ridge_value == 1:
+                    # Point is on both valley and ridge - treat as neutral with warning
+                    if feedback:
+                        feedback.pushInfo(f"Warning: Start point {idx} is on both valley and ridge lines, treating as neutral")
+                    neutral_start_points.append(row)
+                elif valley_value == 1:
+                    # Point is on valley line
+                    valley_start_points.append(row)
+                elif ridge_value == 1:
+                    # Point is on ridge line
+                    ridge_start_points.append(row)
+                else:
+                    # Point is on neither - neutral point
+                    neutral_start_points.append(row)
+        
+        # Create GeoDataFrames for each category
+        valley_start_gdf = gpd.GeoDataFrame(valley_start_points, crs=start_points.crs) if valley_start_points else gpd.GeoDataFrame(crs=start_points.crs)
+        ridge_start_gdf = gpd.GeoDataFrame(ridge_start_points, crs=start_points.crs) if ridge_start_points else gpd.GeoDataFrame(crs=start_points.crs)
+        neutral_start_gdf = gpd.GeoDataFrame(neutral_start_points, crs=start_points.crs) if neutral_start_points else gpd.GeoDataFrame(crs=start_points.crs)
+        
+        # Report classification results
+        if feedback:
+            feedback.pushInfo(f"Start point classification: {len(valley_start_gdf)} on valleys, {len(ridge_start_gdf)} on ridges, {len(neutral_start_gdf)} neutral")
+            if len(neutral_start_gdf) > 0:
+                feedback.pushInfo(f"Warning: {len(neutral_start_gdf)} neutral start points should ideally be positioned on either ridge or valley lines")
+        else:
+            print(f"Start point classification: {len(valley_start_gdf)} on valleys, {len(ridge_start_gdf)} on ridges, {len(neutral_start_gdf)} neutral")
+            if len(neutral_start_gdf) > 0:
+                print(f"Warning: {len(neutral_start_gdf)} neutral start points should ideally be positioned on either ridge or valley lines")
+        
+        all_keylines = []
+        
+        # Process valley start points and neutral points (treat neutral as valley starts)
+        if not valley_start_gdf.empty or not neutral_start_gdf.empty:
+            # Combine valley and neutral start points
+            valley_and_neutral = []
+            if not valley_start_gdf.empty:
+                valley_and_neutral.extend([row for _, row in valley_start_gdf.iterrows()])
+            if not neutral_start_gdf.empty:
+                valley_and_neutral.extend([row for _, row in neutral_start_gdf.iterrows()])
+            
+            valley_neutral_gdf = gpd.GeoDataFrame(valley_and_neutral, crs=start_points.crs)
+            
+            if feedback:
+                feedback.pushInfo(f"Processing {len(valley_neutral_gdf)} valley/neutral start points...")
+            
+            valley_keylines = self.create_keylines_core(
+                dtm_path=dtm_path,
+                start_points=valley_neutral_gdf,
+                valley_lines=valley_lines,
+                ridge_lines=ridge_lines,
+                slope=slope,
+                perimeter=perimeter,
+                change_after=change_after,
+                slope_after=slope_after,
+                slope_deviation_threshold=slope_deviation_threshold,
+                max_iterations_slope=max_iterations_slope,
+                feedback=feedback
+            )
+            
+            if not valley_keylines.empty:
+                all_keylines.extend([geom for geom in valley_keylines.geometry])
+        
+        # Process ridge start points (swap valley and ridge roles)
+        if not ridge_start_gdf.empty:
+            if feedback:
+                feedback.pushInfo(f"Processing {len(ridge_start_gdf)} ridge start points (with swapped valley/ridge roles)...")
+            
+            ridge_keylines = self.create_keylines_core(
+                dtm_path=dtm_path,
+                start_points=ridge_start_gdf,
+                valley_lines=ridge_lines,  # Swap: use ridge_lines as valley_lines
+                ridge_lines=valley_lines,  # Swap: use valley_lines as ridge_lines
+                slope=-slope_after if slope_after is not None else -slope, # Start with slope after, since we are going ridge→valley first
+                perimeter=perimeter,
+                change_after=(1-change_after) if change_after is not None else None, # Invert change_after for swapped roles
+                slope_after=-slope, # Invert slope_after to slope for swapped roles
+                slope_deviation_threshold=slope_deviation_threshold,
+                max_iterations_slope=max_iterations_slope,
+                feedback=feedback
+            )
+            
+            if not ridge_keylines.empty:
+                # Reverse the line direction to ensure valley→ridge orientation
+                # (ridge_keylines are currently ridge→valley due to swapped roles)
+                reversed_ridge_keylines = TopoDrainCore._reverse_line_direction(ridge_keylines)
+                all_keylines.extend([geom for geom in reversed_ridge_keylines.geometry])
+        
+        # Combine all keylines
+        if all_keylines:
+            combined_gdf = gpd.GeoDataFrame(geometry=all_keylines, crs=start_points.crs)
+        else:
+            combined_gdf = gpd.GeoDataFrame(crs=start_points.crs)
+        
+        if feedback:
+            feedback.pushInfo(f"Keyline creation complete: {len(combined_gdf)} total keylines from {len(valley_start_gdf)} valley, {len(ridge_start_gdf)} ridge, and {len(neutral_start_gdf)} neutral start points")
+        else:
+            print(f"Keyline creation complete: {len(combined_gdf)} total keylines from {len(valley_start_gdf)} valley, {len(ridge_start_gdf)} ridge, and {len(neutral_start_gdf)} neutral start points")
+        
         return combined_gdf
 
     def adjust_constant_slope_after(

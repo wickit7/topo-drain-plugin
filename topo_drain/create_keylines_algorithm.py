@@ -94,19 +94,25 @@ All output keylines will be oriented from valley to ridge (valley → ridge dire
 
 Parameters:
 - Input DTM: Digital Terrain Model for slope calculations
-- Start Points: Point features where keylines should begin (typically keypoints from valleys)
+- Start Points: Point features where keylines should begin (start points can be positioned on valley lines, on ridge lines, or mixed - the algorithm automatically detects and handles each type appropriately)
 - Valley Lines: Valley line features to use as barriers/destinations during tracing
 - Ridge Lines: Ridge line features to use as barriers/destinations during tracing
 - Perimeter: Polygon features defining area of interest (always acts as final destination)
-- Slope: Desired slope as a decimal (e.g., 0.01 for 1% downhill, -0.01 for 1% uphill)
-- Change Slope At Distance: Creates two segments - Desired Slope from start to this point, then New Slope to end (e.g., 0.5 = change at middle)
-- New Slope After Change Point: New Slope to apply for the second segment (required if Change Slope At Distance is set)
+- Slope: Desired slope as a decimal (e.g., 0.01 for 1% downhill, -0.01 for 1% uphill) - always defined from valley to ridge perspective, regardless of where start points are located
+- Change Slope At Distance: Creates two segments - Desired Slope from start to this point, then New Slope to end (e.g., 0.5 = change at middle) - always defined from valley to ridge perspective, regardless of where start points are located
+- New Slope After Change Point: New Slope to apply for the second segment (required if Change Slope At Distance is set) - always defined from valley to ridge perspective, regardless of where start points are located
 - Slope Deviation Threshold: Maximum allowed slope deviation before triggering slope refinement iterations (0.0-1.0, e.g., 0.2 = 20%)
 - Max Iterations Slope: Maximum iterations for slope refinement (1-50, default: 20)
 
+Example Use Cases:
+• Agricultural Keyline Design: Use slope of about 1% downhill (slope = 0.01) with start points on valley lines to create water-harvesting keylines that move water across the landscape towards ridges
+• Advanced Slope Control: Set "Change Slope At Distance" to e.g. 0.5 (middle of line) and New Slope to 0.0 to create keylines that start steep (1%) then level out (0%) for better water infiltration
+• Starting on ridge line (start point)?: Think in perspective valley to ridge! -->  For 0.5% uphill from ridge for 40% of length then 1% uphill to valley --> use: slope=0.01, change_after=0.6 (because 1-0.4=0.6), slope_after=0.005
+
 The algorithm alternates between tracing to ridges and valleys, creating new start points
 beyond endpoints that intersect target features, and continues until no more valid
-connections can be made."""
+connections can be made. Ensure that a valley line is followed by a ridge line and then 
+another valley line, alternating between the two."""
         )
 
     def icon(self):
@@ -124,7 +130,7 @@ connections can be made."""
         self.addParameter(
             QgsProcessingParameterFeatureSource(
                 self.INPUT_START_POINTS,
-                self.tr('Start Points (keypoints)'),
+                self.tr('Start Points (lying on valley or ridge lines, e.g. keypoints on valley lines)'),
                 types=[QgsProcessing.TypeVectorPoint]
             )
         )
@@ -158,7 +164,7 @@ connections can be made."""
         self.addParameter(
             QgsProcessingParameterNumber(
                 self.SLOPE,
-                self.tr('Desired Slope (decimal, e.g., 0.01 for 1% downhill, -0.01 for 1% uphill)'),
+                self.tr('Desired Slope (decimal, e.g., 0.01 for 1% downhill, -0.01 for 1% uphill) - always valley to ridge perspective!'),
                 type=QgsProcessingParameterNumber.Double,
                 defaultValue=0.01,
                 minValue=-1.0,
@@ -170,7 +176,7 @@ connections can be made."""
         self.addParameter(
             QgsProcessingParameterNumber(
                 self.CHANGE_AFTER,
-                self.tr('Change Slope At Distance (0.5 = Desired Slope from start to middle, then New Slope from middle to end)'),
+                self.tr('Change Slope At Distance (0.5 = Desired Slope from start to middle, then New Slope from middle to end) - valley to ridge perspective!'),
                 type=QgsProcessingParameterNumber.Double,
                 defaultValue=None,
                 minValue=0.0,
@@ -182,7 +188,7 @@ connections can be made."""
         self.addParameter(
             QgsProcessingParameterNumber(
                 self.SLOPE_AFTER,
-                self.tr('New Slope After Change Point (decimal, e.g., 0.005 for 0.5% downhill)'),
+                self.tr('New Slope After Change Point (decimal, e.g., 0.005 for 0.5% downhill) - valley to ridge perspective!'),
                 type=QgsProcessingParameterNumber.Double,
                 defaultValue=None,
                 minValue=-1.0,
