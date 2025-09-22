@@ -5,12 +5,12 @@
 [general]
 name=TopoDrain
 qgisMinimumVersion=3.0
-description=A QGIS plugin for planning surface drainage water management like Keyline-Design.
+description=!!Experimental!! - wait for stable release! A QGIS plugin for planning surface drainage water management like Keyline-Design.
 version=0.1.5
 author=Timo Wicki
 email=wickitimo@gmail.com
-about=!!Experimental!! - wait for stable release! It automates the extraction of main valleys and ridges, creates off-contour line and supports creating Keyline Designs and other water-retention planning measures. The tool can also be used for other tasks, such as planning the location and alignment of paths and roads.
-    Influencing surface runoff on land is complex and requires significant expertise. This tool is intended as an aid for users with experience in land surface water management.
+about=It automates the extraction of main valleys and ridges, creates off-contour line and supports creating Keyline Designs and other water-retention planning measures. The tool can also be used for other tasks, such as planning the location and alignment of paths and roads.
+    DISCLAIMER: Influencing surface runoff on land is complex and requires significant expertise. This tool is intended as an aid for users with experience in land surface water management.
     
     Core algorithms leverage WhiteboxTools (Lindsay, 2017–2020; see https://github.com/jblindsay/whitebox-tools).
     So make shure you have installed and configured the plugin "WhiteboxTools for QGIS" (i.e. see https://www.youtube.com/watch?v=xJXDBsNbcTg).
