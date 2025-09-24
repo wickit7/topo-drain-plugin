@@ -249,3 +249,49 @@ def update_core_crs_if_needed(core, input_crs, feedback=None):
     
     return False
 
+
+def clean_qvariant_data(gdf):
+    """
+    Clean QVariant objects from GeoDataFrame to avoid field type errors during saving.
+    Converts QVariant values to appropriate Python native types.
+    
+    Args:
+        gdf (GeoDataFrame): Input GeoDataFrame that may contain QVariant objects
+        
+    Returns:
+        GeoDataFrame: Cleaned GeoDataFrame with native Python types
+    """
+    try:
+        from qgis.PyQt.QtCore import QVariant
+    except ImportError:
+        # If QVariant is not available, return the GeoDataFrame as-is
+        return gdf
+        
+    cleaned_gdf = gdf.copy()
+    
+    for column in cleaned_gdf.columns:
+        if column == 'geometry':
+            continue
+            
+        # Check if column contains QVariant objects
+        has_qvariant = False
+        for value in cleaned_gdf[column]:
+            if isinstance(value, QVariant):
+                has_qvariant = True
+                break
+        
+        if has_qvariant:
+            # Convert QVariant values to native Python types
+            def convert_qvariant(value):
+                if isinstance(value, QVariant):
+                    if value.isNull():
+                        return None
+                    else:
+                        # Get the actual value from QVariant
+                        return value.value()
+                return value
+            
+            cleaned_gdf[column] = cleaned_gdf[column].apply(convert_qvariant)
+    
+    return cleaned_gdf
+
