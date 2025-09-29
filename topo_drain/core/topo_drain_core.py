@@ -1300,6 +1300,13 @@ class TopoDrainCore:
         using only points uniquely associated with one TRIB_ID (to avoid confluent points).
         Now processes each polygon in the perimeter separately, selecting nr_main features for each.
         If perimeter is not provided, uses the extent of valley_lines as perimeter.
+        
+        Current Logic Analysis:
+        1. Binary rasterization: All valley lines are rasterized to a binary mask (1=valley, 0=background)
+        2. Spatial join: Points from raster cells are spatially joined with valley line geometries
+        3. Ambiguity removal: When a point intersects multiple TRIB_IDs, it gets completely discarded
+        4. Selection: Top tributaries are selected based on remaining (non-ambiguous) points (which makes sure tributaries with highest flow accumulation are selected)
+
         """
         if feedback:
             feedback.pushInfo("[ExtractMainValleys] Starting main valley extraction...")
@@ -1463,6 +1470,8 @@ class TopoDrainCore:
                 feedback.pushInfo(f"[ExtractMainValleys] Filtering ambiguous facc points for polygon {poly_idx + 1}...")
             else:
                 print(f"[ExtractMainValleys] Filtering ambiguous facc points for polygon {poly_idx + 1}...")
+            
+            # Removes any point that belongs to multiple TRIB_IDs
             points_joined["geom_wkt"] = points_joined.geometry.apply(lambda geom: geom.wkt)
             geom_counts = points_joined.groupby("geom_wkt")["TRIB_ID"].nunique()
             valid_geoms = geom_counts[geom_counts == 1].index
