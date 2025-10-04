@@ -15,7 +15,7 @@ from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterRasterLayer
                        QgsProcessingParameterBoolean)
 import os
 import geopandas as gpd
-from .utils import get_crs_from_layer, update_core_crs_if_needed
+from .utils import get_crs_from_layer, update_core_crs_if_needed, clean_qvariant_data
 
 pluginPath = os.path.dirname(__file__)
 
@@ -317,6 +317,10 @@ Parameters:
         if start_points_gdf.empty:
             raise QgsProcessingException("No start points found in input layer")
         
+        # Clean QVariant objects from start points data to avoid field type errors
+        feedback.pushInfo("Cleaning start points data types...")
+        start_points_gdf = clean_qvariant_data(start_points_gdf)
+        
         feedback.pushInfo(f"Start points: {len(start_points_gdf)} features")
 
         # Convert destination layers to GeoDataFrames with Windows-safe CRS handling
@@ -407,6 +411,10 @@ Parameters:
         # Ensure the slope lines GeoDataFrame has the correct CRS
         slope_lines_gdf = slope_lines_gdf.set_crs(self.core.crs, allow_override=True)
         feedback.pushInfo(f"Slope lines CRS: {slope_lines_gdf.crs}")
+
+        # Clean any QVariant objects from the GeoDataFrame before saving
+        feedback.pushInfo("Cleaning slope lines data types before saving...")
+        slope_lines_gdf = clean_qvariant_data(slope_lines_gdf)
 
         # Save result
         try:

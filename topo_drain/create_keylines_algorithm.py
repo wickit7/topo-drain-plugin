@@ -15,7 +15,7 @@ from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterRasterLayer
                        QgsProcessingParameterFeatureSource)
 import os
 import geopandas as gpd
-from .utils import get_crs_from_layer, update_core_crs_if_needed
+from .utils import get_crs_from_layer, update_core_crs_if_needed, clean_qvariant_data
 
 pluginPath = os.path.dirname(__file__)
 
@@ -303,6 +303,10 @@ another valley line, alternating between the two."""
         if start_points_gdf.empty:
             raise QgsProcessingException("No start points found in input layer")
         
+        # Clean QVariant objects from start points data to avoid field type errors
+        feedback.pushInfo("Cleaning start points data types...")
+        start_points_gdf = clean_qvariant_data(start_points_gdf)
+        
         feedback.pushInfo(f"Start points: {len(start_points_gdf)} features")
 
         # Convert valley lines to GeoDataFrame with Windows-safe CRS handling
@@ -397,6 +401,10 @@ another valley line, alternating between the two."""
         # Ensure the keylines GeoDataFrame has the correct CRS
         keylines_gdf = keylines_gdf.set_crs(self.core.crs, allow_override=True)
         feedback.pushInfo(f"Keylines CRS: {keylines_gdf.crs}")
+
+        # Clean any QVariant objects from the GeoDataFrame before saving
+        feedback.pushInfo("Cleaning keylines data types before saving...")
+        keylines_gdf = clean_qvariant_data(keylines_gdf)
 
         # Save result
         try:

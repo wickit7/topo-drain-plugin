@@ -15,7 +15,7 @@ from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterRasterLayer
                        QgsProcessingParameterFeatureSource)
 import os
 import geopandas as gpd
-from .utils import get_crs_from_layer, update_core_crs_if_needed
+from .utils import get_crs_from_layer, update_core_crs_if_needed, clean_qvariant_data
 
 pluginPath = os.path.dirname(__file__)
 
@@ -285,6 +285,10 @@ Parameters:
         input_lines_gdf = gpd.GeoDataFrame.from_features(input_lines_source.getFeatures())
         if input_lines_gdf.empty:
             raise QgsProcessingException("No input lines found in input layer")
+
+        # Clean QVariant objects from input lines data to avoid field type errors
+        feedback.pushInfo("Cleaning input lines data types...")
+        input_lines_gdf = clean_qvariant_data(input_lines_gdf)
         
         # Set CRS from the source layer if GeoDataFrame doesn't have one
         if input_lines_gdf.crs is None:
@@ -367,6 +371,10 @@ Parameters:
         # Ensure the adjusted lines GeoDataFrame has the correct CRS
         adjusted_lines_gdf = adjusted_lines_gdf.set_crs(self.core.crs, allow_override=True)
         feedback.pushInfo(f"Adjusted lines CRS: {adjusted_lines_gdf.crs}")
+
+        # Clean any QVariant objects from the GeoDataFrame before saving
+        feedback.pushInfo("Cleaning adjusted lines data types before saving...")
+        adjusted_lines_gdf = clean_qvariant_data(adjusted_lines_gdf)
 
         # Save result
         try:

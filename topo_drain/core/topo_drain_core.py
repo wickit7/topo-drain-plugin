@@ -1300,6 +1300,13 @@ class TopoDrainCore:
         using only points uniquely associated with one TRIB_ID (to avoid confluent points).
         Now processes each polygon in the perimeter separately, selecting nr_main features for each.
         If perimeter is not provided, uses the extent of valley_lines as perimeter.
+        
+        Current Logic Analysis:
+        1. Binary rasterization: All valley lines are rasterized to a binary mask (1=valley, 0=background)
+        2. Spatial join: Points from raster cells are spatially joined with valley line geometries
+        3. Ambiguity removal: When a point intersects multiple TRIB_IDs, it gets completely discarded
+        4. Selection: Top tributaries are selected based on remaining (non-ambiguous) points (which makes sure tributaries with highest flow accumulation are selected)
+
         """
         if feedback:
             feedback.pushInfo("[ExtractMainValleys] Starting main valley extraction...")
@@ -1378,6 +1385,7 @@ class TopoDrainCore:
         with rasterio.open(facc_path) as src:
             facc = src.read(1)
             transform = src.transform
+            cell_size = src.res[0]
 
         # Process each polygon in the perimeter separately
         all_merged_records = []
@@ -1409,6 +1417,8 @@ class TopoDrainCore:
             else:
                 print(f"[ExtractMainValleys] Rasterizing valley lines for polygon {poly_idx + 1}...")
             valley_raster_path = os.path.join(self.temp_directory, f"valley_mask_poly_{poly_idx}.tif")
+           
+           # All valley lines are rasterized together into a single binary mask (1 = valley cell, 0 = background)
             valley_mask_path = self._vector_to_mask_raster(
                 features=[valley_clipped],
                 reference_raster_path=facc_path,
@@ -1438,6 +1448,7 @@ class TopoDrainCore:
                     print(f"[ExtractMainValleys] No valley cells with flow accumulation > 0 found in polygon {poly_idx + 1}, skipping...")
                 continue
 
+            # Points are created at the center coordinates of the raster cells containing valley lines with facc > 0
             coords = [rasterio.transform.xy(transform, row, col) for row, col in zip(rows, cols)]
             points = gpd.GeoDataFrame(geometry=gpd.points_from_xy(*zip(*coords)), crs=self.crs)
             points["facc"] = facc[rows, cols]
@@ -1453,16 +1464,28 @@ class TopoDrainCore:
                 if col in valley_clipped.columns:
                     join_columns.append(col)
             
+            # Spatial Join with Original Vector Lines using buffered points to ensure all valley lines within raster cells are captured
+            # Buffer points by half the cell resolution to catch all lines passing through the raster cell
+            buffer_distance = cell_size / 2.0  # Half cell size ensures we capture lines at cell edges
+            
+            points_buffered = points.copy()
+            points_buffered.geometry = points.geometry.buffer(buffer_distance)
+            
             points_joined = gpd.sjoin(
-                points,
+                points_buffered,
                 valley_clipped[join_columns],
                 how="inner"
             ).drop(columns="index_right")
+            
+            # Restore original point geometries for further processing
+            points_joined.geometry = points.geometry[points_joined.index]
 
             if feedback:
                 feedback.pushInfo(f"[ExtractMainValleys] Filtering ambiguous facc points for polygon {poly_idx + 1}...")
             else:
                 print(f"[ExtractMainValleys] Filtering ambiguous facc points for polygon {poly_idx + 1}...")
+            
+            # Removes any point that belongs to multiple TRIB_IDs. Prevents "Flow Accumulation Theft" at confluences.
             points_joined["geom_wkt"] = points_joined.geometry.apply(lambda geom: geom.wkt)
             geom_counts = points_joined.groupby("geom_wkt")["TRIB_ID"].nunique()
             valid_geoms = geom_counts[geom_counts == 1].index
