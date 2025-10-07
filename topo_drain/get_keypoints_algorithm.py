@@ -19,7 +19,7 @@ from qgis.core import (QgsProcessing,
                        QgsProcessingParameterNumber)
 import geopandas as gpd
 import os
-from .utils import get_crs_from_layer, update_core_crs_if_needed, clean_qvariant_data
+from .utils import get_crs_from_layer, update_core_crs_if_needed, ensure_whiteboxtools_configured, save_gdf_to_file, load_gdf_from_qgis_source, get_raster_ext
 
 pluginPath = os.path.dirname(__file__)
 
@@ -191,6 +191,10 @@ Simplified Parameters:
         )
 
     def processAlgorithm(self, parameters, context, feedback):
+        # Ensure WhiteboxTools is configured before running
+        if not ensure_whiteboxtools_configured(self, feedback):
+            return {}
+        
         # Validate and read input parameters
         valley_lines_source = self.parameterAsSource(parameters, self.INPUT_VALLEY_LINES, context)
         dtm_layer = self.parameterAsRasterLayer(parameters, self.INPUT_DTM, context)
@@ -208,12 +212,14 @@ Simplified Parameters:
             feedback.reportError(f"Smoothing window ({smoothing_window}) must be odd. Adjusting to {new_window}.")
             smoothing_window = new_window
 
-        # Get file paths
+        # Get DTM path and validate format
         dtm_path = dtm_layer.source()
-        
-        # Validate file existence
-        if not dtm_path or not os.path.exists(dtm_path):
-            raise QgsProcessingException(f"DTM file not found: {dtm_path}")
+        dtm_ext = get_raster_ext(dtm_path, feedback)
+
+        # Validate raster format compatibility with GDAL driver mapping
+        supported_raster_formats = list(self.core.gdal_driver_mapping.keys())
+        if hasattr(self.core, 'gdal_driver_mapping') and dtm_ext not in self.core.gdal_driver_mapping:
+            raise QgsProcessingException(f"DTM raster format '{dtm_ext}' is not supported. Supported formats: {supported_raster_formats}")
 
         # Get output file path using parameterAsOutputLayer
         keypoints_output_layer = self.parameterAsOutputLayer(parameters, self.OUTPUT_KEYPOINTS, context)
@@ -227,44 +233,12 @@ Simplified Parameters:
         # Update core CRS if needed (dtm_crs is guaranteed to be valid)
         update_core_crs_if_needed(self.core, dtm_crs, feedback)
 
-        # Ensure WhiteboxTools is configured before running
-        if hasattr(self, 'plugin') and self.plugin:
-            if not self.plugin.ensure_whiteboxtools_configured():
-                raise QgsProcessingException("WhiteboxTools is not configured. Please install and configure the WhiteboxTools for QGIS plugin.")
-        else:
-            # Try to automatically find and connect to the TopoDrain plugin
-            feedback.pushInfo("Plugin reference not available - attempting to connect to TopoDrain plugin")
-            try:
-                from qgis.utils import plugins
-                if 'topo_drain' in plugins:
-                    topo_drain_plugin = plugins['topo_drain']
-                    # Set the plugin reference for this instance
-                    self.plugin = topo_drain_plugin
-                    feedback.pushInfo("Successfully connected to TopoDrain plugin")
-                    
-                    # Now try to configure WhiteboxTools
-                    if hasattr(topo_drain_plugin, 'ensure_whiteboxtools_configured'):
-                        if not topo_drain_plugin.ensure_whiteboxtools_configured():
-                            feedback.pushWarning("WhiteboxTools is not configured. Please install and configure the WhiteboxTools for QGIS plugin.")
-                        else:
-                            feedback.pushInfo("WhiteboxTools configuration verified")
-                    else:
-                        feedback.pushWarning("TopoDrain plugin found but configuration method not available")
-                else:
-                    feedback.pushWarning("TopoDrain plugin not found in QGIS registry - cannot verify WhiteboxTools configuration")
-            except Exception as e:
-                feedback.pushWarning(f"Could not connect to TopoDrain plugin: {e} - continuing without WhiteboxTools verification")
-
         # Load input data as GeoDataFrame
         feedback.pushInfo("Loading valley lines...")
-        valley_lines_gdf = gpd.GeoDataFrame.from_features(valley_lines_source.getFeatures())
+        valley_lines_gdf = load_gdf_from_qgis_source(valley_lines_source, feedback)
         
         if valley_lines_gdf.empty:
             raise QgsProcessingException("No features found in valley lines input")
-
-        # Clean QVariant objects from valley lines data to avoid field type errors
-        feedback.pushInfo("Cleaning valley lines data types...")
-        valley_lines_gdf = clean_qvariant_data(valley_lines_gdf)
 
         # Check for LINK_ID attribute (required)
         if 'LINK_ID' not in valley_lines_gdf.columns:
@@ -291,16 +265,8 @@ Simplified Parameters:
         keypoints_gdf = keypoints_gdf.set_crs(self.core.crs, allow_override=True)
         feedback.pushInfo(f"Keypoints CRS: {keypoints_gdf.crs}")
 
-        # Clean any QVariant objects from the GeoDataFrame before saving
-        feedback.pushInfo("Cleaning keypoints data types before saving...")
-        keypoints_gdf = clean_qvariant_data(keypoints_gdf)
-
-        # Save result
-        try:
-            keypoints_gdf.to_file(keypoints_file_path)
-            feedback.pushInfo(f"Keypoints saved to: {keypoints_file_path}")
-        except Exception as e:
-            raise QgsProcessingException(f"Failed to save keypoints output: {e}")
+        # Save result with proper format handling
+        save_gdf_to_file(keypoints_gdf, keypoints_file_path, self.core, feedback)
 
         results = {}
         # Add output parameters to results

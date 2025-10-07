@@ -14,7 +14,7 @@ from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterRasterLayer
                        QgsProcessing, QgsProject, QgsProcessingException)
 import os
 import geopandas as gpd
-from .utils import get_crs_from_layer, update_core_crs_if_needed
+from .utils import get_crs_from_layer, update_core_crs_if_needed, ensure_whiteboxtools_configured, save_gdf_to_file, get_raster_ext
 
 pluginPath = os.path.dirname(__file__)
 
@@ -111,7 +111,8 @@ class CreateRidgesAlgorithm(QgsProcessingAlgorithm):
                 self.ACCUM_THRESHOLD,
                 self.tr('Accumulation Threshold (see WBT `ExtractStreams`)'),
                 type=QgsProcessingParameterNumber.Integer,
-                defaultValue=1000
+                defaultValue=1000,
+                minValue=1
             )
         )
         # Output parameters
@@ -164,12 +165,21 @@ class CreateRidgesAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(streams_inverted_param)
 
     def processAlgorithm(self, parameters, context, feedback):
+        # Ensure WhiteboxTools is configured before running
+        if not ensure_whiteboxtools_configured(self, feedback):
+            return {}
+        
         # Validate and read input parameters
         dtm_layer = self.parameterAsRasterLayer(parameters, self.INPUT_DTM, context)
        
+        # Get DTM path and validate format
         dtm_path = dtm_layer.source()
-        if not dtm_path or not os.path.exists(dtm_path):
-            raise QgsProcessingException(f"DTM file not found: {dtm_path}")
+        dtm_ext = get_raster_ext(dtm_path, feedback)
+        
+        # Validate raster format compatibility with GDAL driver mapping
+        supported_raster_formats = list(self.core.gdal_driver_mapping.keys())
+        if hasattr(self.core, 'gdal_driver_mapping') and dtm_ext not in self.core.gdal_driver_mapping:
+            raise QgsProcessingException(f"DTM raster format '{dtm_ext}' is not supported. Supported formats: {supported_raster_formats}")
         
         # Use parameterAsOutputLayer to preserve checkbox state information
         ridge_output_layer = self.parameterAsOutputLayer(parameters, self.OUTPUT_RIDGES, context)
@@ -198,34 +208,6 @@ class CreateRidgesAlgorithm(QgsProcessingAlgorithm):
         # Update core CRS if needed (dtm_crs is guaranteed to be valid)
         update_core_crs_if_needed(self.core, dtm_crs, feedback)
 
-        # Ensure WhiteboxTools is configured before running
-        if hasattr(self, 'plugin') and self.plugin:
-            if not self.plugin.ensure_whiteboxtools_configured():
-                raise QgsProcessingException("WhiteboxTools is not configured. Please install and configure the WhiteboxTools for QGIS plugin.")
-        else:
-            # Try to automatically find and connect to the TopoDrain plugin
-            feedback.pushInfo("Plugin reference not available - attempting to connect to TopoDrain plugin")
-            try:
-                from qgis.utils import plugins
-                if 'topo_drain' in plugins:
-                    topo_drain_plugin = plugins['topo_drain']
-                    # Set the plugin reference for this instance
-                    self.plugin = topo_drain_plugin
-                    feedback.pushInfo("Successfully connected to TopoDrain plugin")
-                    
-                    # Now try to configure WhiteboxTools
-                    if hasattr(topo_drain_plugin, 'ensure_whiteboxtools_configured'):
-                        if not topo_drain_plugin.ensure_whiteboxtools_configured():
-                            feedback.pushWarning("WhiteboxTools is not configured. Please install and configure the WhiteboxTools for QGIS plugin.")
-                        else:
-                            feedback.pushInfo("WhiteboxTools configuration verified")
-                    else:
-                        feedback.pushWarning("TopoDrain plugin found but configuration method not available")
-                else:
-                    feedback.pushWarning("TopoDrain plugin not found in QGIS registry - cannot verify WhiteboxTools configuration")
-            except Exception as e:
-                feedback.pushWarning(f"Could not connect to TopoDrain plugin: {e} - continuing without WhiteboxTools verification")
-
         feedback.pushInfo("Running extract ridges...")
         ridge_gdf = self.core.extract_ridges(
             dtm_path=dtm_path,
@@ -246,12 +228,8 @@ class CreateRidgesAlgorithm(QgsProcessingAlgorithm):
         ridge_gdf = ridge_gdf.set_crs(self.core.crs, allow_override=True)
         feedback.pushInfo(f"Ridge lines CRS: {ridge_gdf.crs}")
 
-        # Save result
-        try:
-            ridge_gdf.to_file(ridge_file_path)
-            feedback.pushInfo(f"Ridge lines saved to: {ridge_file_path}")
-        except Exception as e:
-            raise QgsProcessingException(f"Failed to save ridge output: {e}")
+        # Save result with proper format handling
+        save_gdf_to_file(ridge_gdf, ridge_file_path, self.core, feedback)
 
         results = {}
         # Add output parameters to results

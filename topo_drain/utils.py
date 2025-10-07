@@ -12,12 +12,7 @@ from qgis.PyQt.QtGui import QColor
 from qgis.core import (
     QgsProject,
     QgsRasterLayer,
-    QgsVectorLayer,
-    QgsLineSymbol,
-    QgsMarkerLineSymbolLayer,
-    QgsSimpleMarkerSymbolLayer,
-    QgsSingleSymbolRenderer,
-    QgsMarkerSymbol
+    QgsVectorLayer
 )
 
 def get_crs_from_project(fallback_crs="EPSG:2056"):
@@ -294,4 +289,347 @@ def clean_qvariant_data(gdf):
             cleaned_gdf[column] = cleaned_gdf[column].apply(convert_qvariant)
     
     return cleaned_gdf
+
+
+def load_gdf_from_qgis_source(qgis_source, feedback=None):
+    """
+    Load a GeoDataFrame from a QGIS QgsProcessingParameterFeatureSource.
+    Automatically cleans QVariant data types for compatibility.
+    
+    Args:
+        qgis_source: QgsProcessingParameterFeatureSource object with getFeatures() method
+        feedback (QgsProcessingFeedback, optional): Processing feedback for logging
+    
+    Returns:
+        gpd.GeoDataFrame: Loaded GeoDataFrame with cleaned data types and crs=None for safe handling
+    
+    Raises:
+        Exception: If source loading fails
+    """
+    import geopandas as gpd
+    
+    try:
+        if feedback:
+            feedback.pushInfo("Loading features from QGIS source...")
+        
+        # Load GeoDataFrame from QGIS source features
+        gdf = gpd.GeoDataFrame.from_features(qgis_source.getFeatures())
+        
+        if gdf.empty:
+            if feedback:
+                feedback.pushInfo("No features found in QGIS source")
+            return gdf
+        
+        # Automatically clean QVariant data types
+        if feedback:
+            feedback.pushInfo("Cleaning data types...")
+        gdf = clean_qvariant_data(gdf)
+        
+        if feedback:
+            feedback.pushInfo(f"Successfully loaded and cleaned {len(gdf)} features from QGIS source")
+        
+        return gdf
+    
+    except Exception as e:
+        error_msg = f"Failed to load GeoDataFrame from QGIS source: {e}"
+        if feedback:
+            feedback.pushInfo(error_msg)
+        raise Exception(error_msg)
+
+
+def ensure_whiteboxtools_configured(processing_instance, feedback=None):
+    """
+    Utility function to ensure WhiteboxTools is configured before running algorithms.
+    Handles plugin connection and WhiteboxTools verification with proper feedback.
+    
+    Args:
+        processing_instance: The processing algorithm instance that has a 'plugin' attribute
+        feedback: QgsProcessingFeedback object for progress reporting
+        
+    Returns:
+        bool: True if WhiteboxTools is configured or verification was successful, False otherwise
+        
+    Raises:
+        QgsProcessingException: If WhiteboxTools is not configured and feedback is None
+    """
+    from qgis.core import QgsProcessingException
+    
+    try:
+        # First try to use existing plugin reference
+        if hasattr(processing_instance, 'plugin') and processing_instance.plugin:
+            if hasattr(processing_instance.plugin, 'ensure_whiteboxtools_configured'):
+                if not processing_instance.plugin.ensure_whiteboxtools_configured():
+                    error_msg = "WhiteboxTools is not configured. Please install and configure the WhiteboxTools for QGIS plugin."
+                    if feedback:
+                        feedback.pushWarning(error_msg)
+                        return False
+                    else:
+                        raise QgsProcessingException(error_msg)
+                else:
+                    if feedback:
+                        feedback.pushInfo("WhiteboxTools configuration verified")
+                    return True
+            else:
+                if feedback:
+                    feedback.pushWarning("Plugin found but WhiteboxTools configuration method not available")
+                return False
+        else:
+            # Try to automatically find and connect to the TopoDrain plugin
+            if feedback:
+                feedback.pushInfo("Plugin reference not available - attempting to connect to TopoDrain plugin")
+            
+            try:
+                from qgis.utils import plugins
+                if 'topo_drain' in plugins:
+                    topo_drain_plugin = plugins['topo_drain']
+                    # Set the plugin reference for this instance
+                    processing_instance.plugin = topo_drain_plugin
+                    if feedback:
+                        feedback.pushInfo("Successfully connected to TopoDrain plugin")
+                    
+                    # Now try to configure WhiteboxTools
+                    if hasattr(topo_drain_plugin, 'ensure_whiteboxtools_configured'):
+                        if not topo_drain_plugin.ensure_whiteboxtools_configured():
+                            if feedback:
+                                feedback.pushWarning("WhiteboxTools is not configured. Please install and configure the WhiteboxTools for QGIS plugin.")
+                            return False
+                        else:
+                            if feedback:
+                                feedback.pushInfo("WhiteboxTools configuration verified")
+                            return True
+                    else:
+                        if feedback:
+                            feedback.pushWarning("TopoDrain plugin found but configuration method not available")
+                        return False
+                else:
+                    if feedback:
+                        feedback.pushWarning("TopoDrain plugin not found in QGIS registry - cannot verify WhiteboxTools configuration")
+                    return False
+            except Exception as e:
+                if feedback:
+                    feedback.pushWarning(f"Could not connect to TopoDrain plugin: {e} - continuing without WhiteboxTools verification")
+                return False
+                
+    except Exception as e:
+        error_msg = f"Error during WhiteboxTools configuration check: {e}"
+        if feedback:
+            feedback.pushWarning(error_msg)
+            return False
+        else:
+            raise QgsProcessingException(error_msg)
+
+
+def save_gdf_to_file(gdf, file_path, core, feedback):
+    """
+    Save GeoDataFrame to file with proper format handling using core's OGR driver mapping.
+    Automatically cleans QVariant data types before saving to prevent field type errors.
+    
+    Args:
+        gdf: GeoDataFrame to save
+        file_path (str): Output file path
+        core: TopoDrainCore instance with ogr_driver_mapping
+        feedback: QGIS processing feedback object
+        
+    Raises:
+        QgsProcessingException: If saving fails
+    """
+    from qgis.core import QgsProcessingException
+    
+    try:
+        # Automatically clean QVariant data types before saving
+        if feedback:
+            feedback.pushInfo("Cleaning data types before saving...")
+        cleaned_gdf = clean_qvariant_data(gdf)
+        
+        # Get file extension
+        file_ext = os.path.splitext(file_path)[1].lower()
+        
+        # Check if format is in our supported mapping
+        if hasattr(core, 'ogr_driver_mapping') and file_ext in core.ogr_driver_mapping:
+            # Use the mapped driver
+            ogr_driver = core._get_ogr_driver_from_path(file_path)
+            feedback.pushInfo(f"Detected output format: {file_ext} (using driver: {ogr_driver})")
+            
+            try:
+                cleaned_gdf.to_file(file_path, driver=ogr_driver)
+                feedback.pushInfo(f"GeoDataFrame saved to: {file_path}")
+            except Exception as driver_error:
+                # If the mapped driver fails, try without specifying driver (let GeoPandas auto-detect)
+                feedback.pushWarning(f"Driver '{ogr_driver}' failed, trying auto-detection: {driver_error}")
+                cleaned_gdf.to_file(file_path)
+                feedback.pushInfo(f"GeoDataFrame saved using auto-detection: {file_path}")
+        else:
+            # Format not in our mapping - try auto-detection
+            feedback.pushWarning(f"Format {file_ext} not in available driver mapping, using auto-detection")
+            cleaned_gdf.to_file(file_path)
+            feedback.pushInfo(f"GeoDataFrame saved using auto-detection: {file_path}")
+            
+    except Exception as e:
+        # Provide helpful error message with format suggestions
+        if hasattr(core, 'ogr_driver_mapping'):
+            supported_formats = list(core.ogr_driver_mapping.keys())
+            error_msg = f"Failed to save GeoDataFrame output: {e}\n"
+            error_msg += f"Recommended formats: {', '.join(supported_formats[:5])} (and others)"
+        else:
+            error_msg = f"Failed to save GeoDataFrame output: {e}"
+        raise QgsProcessingException(error_msg)
+
+
+def load_gdf_from_file(file_path, feedback=None):
+    """
+    Load a GeoDataFrame from a file path, handling GeoPackage layer syntax.
+    Automatically cleans QVariant data types for compatibility.
+    
+    This function handles both regular file paths and QGIS GeoPackage layer paths
+    in the format "/path/file.gpkg|layername=layer_name".
+    
+    Args:
+        file_path (str): Path to the vector file, may include GeoPackage layer syntax
+        feedback (QgsProcessingFeedback, optional): Processing feedback for logging
+    
+    Returns:
+        gpd.GeoDataFrame: Loaded GeoDataFrame with cleaned data types and crs=None for safe handling
+    
+    Raises:
+        Exception: If file loading fails
+    """
+    import geopandas as gpd
+    
+    try:
+        # Handle GeoPackage layer paths for GeoPandas
+        if '|' in file_path and 'layername=' in file_path:
+            # Parse GeoPackage path: "/path/file.gpkg|layername=layer_name"
+            gpkg_file = file_path.split('|')[0]
+            layer_part = file_path.split('|')[1]
+            layer_name = layer_part.split('=')[1] if '=' in layer_part else layer_part
+            
+            if feedback:
+                feedback.pushInfo(f"Loading GeoPackage layer: {gpkg_file}, layer: {layer_name}")
+            
+            gdf = gpd.read_file(gpkg_file, layer=layer_name, crs=None)
+        else:
+            # Regular file path
+            if feedback:
+                feedback.pushInfo(f"Loading vector file: {file_path}")
+            
+            gdf = gpd.read_file(file_path, crs=None)
+        
+        # Automatically clean QVariant data types
+        if feedback:
+            feedback.pushInfo("Cleaning data types...")
+        gdf = clean_qvariant_data(gdf)
+        
+        if feedback:
+            feedback.pushInfo(f"Successfully loaded and cleaned {len(gdf)} features")
+        
+        return gdf
+    
+    except Exception as e:
+        error_msg = f"Failed to load vector file '{file_path}': {e}"
+        if feedback:
+            feedback.pushInfo(error_msg)
+        raise Exception(error_msg)
+
+
+def get_raster_ext(raster_path, feedback=None):
+    """Get file extension from raster path, handling GDAL virtual file system paths.
+    
+    Args:
+        raster_path: Path to raster file (may include GDAL virtual paths)
+        feedback: Optional feedback object for logging
+    
+    Returns:
+        str: File extension (lowercase, with dot)
+    
+    Raises:
+        Exception: If path doesn't exist or can't be processed
+    """
+    import os
+    
+    try:
+        if feedback:
+            feedback.pushInfo(f"Processing raster path: {raster_path}")
+        
+        # Handle GDAL virtual file system paths (e.g., GPKG raster layers)
+        base_path = raster_path
+        if ':' in raster_path:
+            # Check if it's a GDAL virtual file system path
+            parts = raster_path.split(':')
+            if len(parts) >= 2:
+                # Format: GPKG:/path/to/file.gpkg:layer_name
+                if parts[0].upper() == 'GPKG':
+                    if len(parts) >= 3:
+                        # Extract the actual file path (between first and last colon)
+                        base_path = ':'.join(parts[1:-1])
+                        if feedback:
+                            feedback.pushInfo(f"Extracted GPKG raster base path: {base_path}")
+                else:
+                    # For other GDAL virtual paths, try to extract base path
+                    # Format might be like "driver:/path/file.ext"
+                    if len(parts) >= 2:
+                        base_path = parts[1]
+        
+        # Check if the base path exists
+        if not os.path.exists(base_path):
+            raise Exception(f"Raster file not found: {base_path}")
+        
+        # Get file extension
+        ext = os.path.splitext(base_path)[1].lower()
+        
+        if feedback:
+            feedback.pushInfo(f"Extracted extension: {ext}")
+        
+        return ext
+    
+    except Exception as e:
+        error_msg = f"Failed to get raster extension from '{raster_path}': {e}"
+        if feedback:
+            feedback.pushInfo(error_msg)
+        raise Exception(error_msg)
+
+
+def get_vector_ext(vector_path, feedback=None):
+    """Get file extension from vector path, handling GDAL/OGR virtual file system paths.
+    
+    Args:
+        vector_path: Path to vector file (may include OGR virtual paths)
+        feedback: Optional feedback object for logging
+    
+    Returns:
+        str: File extension (lowercase, with dot)
+    
+    Raises:
+        Exception: If path doesn't exist or can't be processed
+    """
+    import os
+    
+    try:
+        if feedback:
+            feedback.pushInfo(f"Processing vector path: {vector_path}")
+        
+        # Handle OGR virtual file system paths (e.g., GPKG vector layers)
+        base_path = vector_path
+        if '|' in vector_path:
+            # For paths like "/path/file.gpkg|layername=layer_name", extract "/path/file.gpkg"
+            base_path = vector_path.split('|')[0]
+            if feedback:
+                feedback.pushInfo(f"Extracted vector base path: {base_path}")
+        
+        # Check if the base path exists
+        if not os.path.exists(base_path):
+            raise Exception(f"Vector file not found: {base_path}")
+        
+        # Get file extension
+        ext = os.path.splitext(base_path)[1].lower()
+        
+        if feedback:
+            feedback.pushInfo(f"Extracted extension: {ext}")
+        
+        return ext
+    
+    except Exception as e:
+        error_msg = f"Failed to get vector extension from '{vector_path}': {e}"
+        if feedback:
+            feedback.pushInfo(error_msg)
+        raise Exception(error_msg)
 

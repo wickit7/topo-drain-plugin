@@ -24,6 +24,7 @@ from scipy.ndimage import gaussian_filter1d
 from scipy.signal import savgol_filter
 import re
 import subprocess
+from osgeo import gdal, ogr, osr
 
 # Import QGIS dependencies only if available
 try:
@@ -71,6 +72,35 @@ class TopoDrainCore:
         self.working_directory = working_directory if working_directory is not None else None
         print(f"[TopoDrainCore] Working directory set to: {self.working_directory if self.working_directory else 'Not set'}")
         
+        # Define supported GDAL driver mappings for raster formats (has to be compatible with available raster formats for WhiteboxTools)
+        self.gdal_driver_mapping = {
+            '.tif': 'GTiff',
+            '.tiff': 'GTiff',
+            '.hdr': 'EHdr',
+            '.asc': 'AAIGrid',
+            '.bil': 'EHdr',
+            '.gpkg': 'GPKG',
+            '.sdat': 'SAGA',
+            '.sgrd': 'SAGA',
+            '.rdc': 'RDxC',
+            '.rst': 'RST'
+
+        }
+        print(f"[TopoDrainCore] Configured GDAL driver support for {len(self.gdal_driver_mapping)} raster formats")
+        
+        # Define supported OGR driver mappings for vector formats
+        self.ogr_driver_mapping = {
+            '.shp': 'ESRI Shapefile',
+            '.gpkg': 'GPKG',
+            '.geojson': 'GeoJSON',
+            '.json': 'GeoJSON',
+            '.gml': 'GML'
+        }
+        print(f"[TopoDrainCore] Configured OGR driver support for {len(self.ogr_driver_mapping)} vector formats")
+        
+        # Configure GDAL settings for the entire class
+        self._configure_gdal()
+        
         # Try to initialize WhiteboxTools, but don't fail if it's not available
         self.wbt = self._init_whitebox_tools(self.whitebox_directory)
         print(f"[TopoDrainCore] WhiteboxTools initialized: {self.wbt is not None}")
@@ -117,6 +147,122 @@ class TopoDrainCore:
             print(f"[TopoDrainCore] WhiteboxTools initialization failed: {e}")
             print("[TopoDrainCore] WhiteboxTools will be configured when available")
             return None
+
+    def _configure_gdal(self):
+        """
+        Configure GDAL/OGR settings for the entire class instance.
+        Sets up exception handling and error management for all GDAL/OGR operations.
+        """
+        try:
+            # Enable GDAL/OGR exceptions for better error handling
+            # Note: gdal.UseExceptions() enables exceptions for both GDAL and OGR
+            gdal.UseExceptions()
+            
+            # Set quiet error handler to suppress console messages
+            # We'll capture errors using GetLastErrorMsg() instead
+            gdal.PushErrorHandler('CPLQuietErrorHandler')
+            
+            print("[TopoDrainCore] GDAL/OGR configured: exceptions enabled, quiet error handler set")
+            
+        except Exception as e:
+            print(f"[TopoDrainCore] Warning: Failed to configure GDAL/OGR settings: {e}")
+            print("[TopoDrainCore] GDAL/OGR operations may have less detailed error reporting")
+
+    def __del__(self):
+        """
+        Cleanup method to restore GDAL error handler when object is destroyed.
+        """
+        try:
+            gdal.PopErrorHandler()  # Restore default error handler
+        except:
+            pass  # Ignore errors during cleanup
+
+    @staticmethod
+    def _get_gdal_error_message():
+        """
+        Helper method to get the last GDAL/OGR error message with proper formatting.
+        Note: GDAL and OGR share the same error system (CPL), so this works for both.
+        
+        Returns:
+            str: Formatted GDAL/OGR error message or empty string if no error
+        """
+        try:
+            error_msg = gdal.GetLastErrorMsg()
+            return f" GDAL/OGR Error: {error_msg}" if error_msg else ""
+        except:
+            return ""
+
+    @staticmethod
+    def _check_ogr_error(operation_name: str, error_code):
+        """
+        Helper method to check OGR operation return codes and raise appropriate errors.
+        
+        Args:
+            operation_name (str): Name of the operation for error messages
+            error_code: The return code from OGR operation
+            
+        Raises:
+            RuntimeError: If the operation failed
+        """
+        if error_code != ogr.OGRERR_NONE:
+            error_msg = TopoDrainCore._get_gdal_error_message()
+            raise RuntimeError(f"{operation_name} failed.{error_msg} (Error code: {error_code})")
+
+    @staticmethod
+    def _pixel_indices_to_coords(rows, cols, geotransform):
+        """
+        Convert pixel row,col indices to world coordinates using GDAL geotransform.
+        Returns coordinates at the center of each pixel.
+        
+        GDAL Geotransform parameters:
+        GT(0) x-coordinate of the upper-left corner of the upper-left pixel
+        GT(1) w-e pixel resolution / pixel width
+        GT(2) row rotation (typically zero)
+        GT(3) y-coordinate of the upper-left corner of the upper-left pixel
+        GT(4) column rotation (typically zero)
+        GT(5) n-s pixel resolution / pixel height (negative value for a north-up image)
+        
+        Args:
+            rows (array-like): Row indices of pixels
+            cols (array-like): Column indices of pixels
+            geotransform (tuple): GDAL geotransform parameters (6 values)
+            
+        Returns:
+            list: List of (x, y) coordinate tuples in world coordinates
+        """
+        coords = []
+        for row, col in zip(rows, cols):
+            # Convert pixel indices to world coordinates (center of pixel)
+            x = geotransform[0] + (col + 0.5) * geotransform[1] + (row + 0.5) * geotransform[2]
+            y = geotransform[3] + (col + 0.5) * geotransform[4] + (row + 0.5) * geotransform[5]
+            coords.append((x, y))
+        return coords
+
+    def _get_gdal_driver_from_path(self, file_path: str) -> str:
+        """
+        Get appropriate GDAL driver name based on file extension.
+        
+        Args:
+            file_path (str): Path to the output file
+            
+        Returns:
+            str: GDAL driver name corresponding to the file extension
+        """
+        ext = os.path.splitext(file_path)[1].lower()
+        return self.gdal_driver_mapping.get(ext, 'GTiff')  # Default to GTiff if unknown extension
+
+    def _get_ogr_driver_from_path(self, file_path: str) -> str:
+        """
+        Get appropriate OGR driver name based on file extension.
+        
+        Args:
+            file_path (str): Path to the output file
+            
+        Returns:
+            str: OGR driver name corresponding to the file extension
+        """
+        ext = os.path.splitext(file_path)[1].lower()
+        return self.ogr_driver_mapping.get(ext, 'ESRI Shapefile')  # Default to Shapefile if unknown extension
 
     ## Setters for configuration
     def set_temp_directory(self, temp_dir):
@@ -578,12 +724,27 @@ class TopoDrainCore:
                 - If unique_values=True: Tuple of (path, geometry_mapping) where geometry_mapping 
                   is a dict {raster_value: geometry} for each unique geometry
         """
-        with rasterio.open(reference_raster_path) as src:
-            out_shape = (src.height, src.width)
-            transform = src.transform
-            res = src.res[0]
+        # Read reference raster information using GDAL
+        ref_ds = gdal.Open(reference_raster_path, gdal.GA_ReadOnly)
+        if ref_ds is None:
+            raise RuntimeError(f"Cannot open reference raster: {reference_raster_path}.{self._get_gdal_error_message()}")
+            
+        try:
+            # Get raster dimensions and geotransform
+            width = ref_ds.RasterXSize
+            height = ref_ds.RasterYSize
+            geotransform = ref_ds.GetGeoTransform()
+            projection = ref_ds.GetProjection()
+            res = geotransform[1]  # pixel width
+            
+            # Validate geotransform
+            if geotransform is None or len(geotransform) != 6:
+                raise RuntimeError(f"Invalid geotransform in reference raster: {reference_raster_path}.{self._get_gdal_error_message()}")
+                
+        finally:
+            ref_ds = None  # Close dataset
 
-        buffer_distance = res + 0.01  # Small buffer to ensure rasterization of lines has no diagonal gaps
+        buffer_distance = res + 0.01  # Small buffer to ensure rasterization of lines has no diagonal gaps ### with gdal version still needed? Debug later...
 
         # Collect all geometries from the provided GeoDataFrames
         all_geometries = [] 
@@ -599,51 +760,116 @@ class TopoDrainCore:
                 else:
                     all_geometries.extend(gdf.geometry)
 
-        # Create Shapes for rasterization
-        all_shapes = []
-        geometry_mapping = {}  # Track mapping from raster value to geometry when unique_values=True
-        
-        for i, geom in enumerate(all_geometries):
-            if unique_values:
-                mask_value = i + 1  # Assign unique values to each individual geometry. Start from 1
-                geometry_mapping[mask_value] = geom  # Store the mapping
-            else:
-                mask_value = 1  # Default value for all geometries (binary mask)
-            if geom.geom_type in ("LineString", "MultiLineString"):
-                # Buffer by a small distance (e.g., 1 pixel width + tolerance), so that there are actually no gaps in the rasterization where least cost path will find a way
-                buffered_geom = geom.buffer(buffer_distance) if buffer_lines else geom
-                all_shapes.append((buffered_geom, mask_value))
-            else:
-                all_shapes.append((geom, mask_value)) # Not buffering Points und Polygons
-
-        # Rasterize the shapes to create the mask
-        # Always use uint32 for simplicity and compatibility
-        raster_dtype = np.uint32
-        
-        mask = rasterize(
-            shapes=all_shapes,
-            out_shape=out_shape,
-            transform=transform,
-            fill=0,
-            all_touched=True,
-            dtype=raster_dtype
-        )
-
         # Generate output path if not provided
         if output_path is None:
             output_path = os.path.join(self.temp_directory, f"mask_{uuid.uuid4().hex[:8]}.tif")
 
-        with rasterio.open(reference_raster_path) as src:
-            profile = src.profile.copy()
-            profile.update(
-                dtype=raster_dtype,
-                count=1,
-                compress='lzw',
-                nodata=0  # Use 0 as nodata for uint32 (works for both binary and unique value masks)
-            )
+        # Determine GDAL driver based on output file extension
+        driver_name = self._get_gdal_driver_from_path(output_path)
+        
+        # Create empty output raster using GDAL with best practices
+        driver = gdal.GetDriverByName(driver_name)
+        if driver is None:
+            raise RuntimeError(f"{driver_name} driver not available.{self._get_gdal_error_message()}")
+            
+        creation_options = [
+            'COMPRESS=LZW',
+            'TILED=YES',
+            'BIGTIFF=IF_SAFER'
+        ]
+        
+        out_ds = driver.Create(output_path, width, height, 1, gdal.GDT_UInt32, 
+                              options=creation_options)
+        if out_ds is None:
+            raise RuntimeError(f"Failed to create output raster: {output_path}.{self._get_gdal_error_message()}")
+            
+        # Initialize geometry mapping for return value
+        geometry_mapping = {}
+            
+        try:
+            out_ds.SetGeoTransform(geotransform)
+            out_ds.SetProjection(projection)
+            
+            # Initialize raster with zeros
+            out_band = out_ds.GetRasterBand(1)
+            out_band.SetNoDataValue(0) # maybe use self.nodata? or fine for mask raster?
+            out_band.Fill(0)
 
-        with rasterio.open(output_path, 'w', **profile) as dst:
-            dst.write(mask, 1)
+            # Create memory vector layer for rasterization
+            mem_driver = ogr.GetDriverByName('Memory')
+            if mem_driver is None:
+                raise RuntimeError(f"Memory driver not available.{self._get_gdal_error_message()}")
+                
+            mem_ds = mem_driver.CreateDataSource('')
+            if mem_ds is None:
+                raise RuntimeError(f"Failed to create memory datasource.{self._get_gdal_error_message()}")
+            
+            try:
+                mem_layer = mem_ds.CreateLayer('temp', None, ogr.wkbUnknown)
+                if mem_layer is None:
+                    raise RuntimeError(f"Failed to create memory layer.{self._get_gdal_error_message()}")
+                
+                # Add attribute field for raster values
+                field_defn = ogr.FieldDefn('burn_value', ogr.OFTInteger)
+                self._check_ogr_error("Create burn_value field", mem_layer.CreateField(field_defn))
+                
+                # Add geometries to layer
+                for i, geom in enumerate(all_geometries):
+                    if unique_values:
+                        mask_value = i + 1  # Assign unique values to each individual geometry. Start from 1
+                        geometry_mapping[mask_value] = geom  # Store the mapping
+                    else:
+                        mask_value = 1  # Default value for all geometries (binary mask)
+                    
+                    # Apply buffering to lines if requested
+                    if geom.geom_type in ("LineString", "MultiLineString") and buffer_lines:
+                        geom = geom.buffer(buffer_distance)
+                    
+                    # Create OGR feature
+                    feature = ogr.Feature(mem_layer.GetLayerDefn())
+                    feature.SetField('burn_value', int(mask_value))
+                    
+                    # Convert Shapely geometry to OGR geometry
+                    ogr_geom = ogr.CreateGeometryFromWkt(geom.wkt)
+                    if ogr_geom is None:
+                        warnings.warn(f"Failed to convert geometry {i} to OGR format, skipping.{self._get_gdal_error_message()}")
+                        continue
+                    
+                    # Validate geometry before setting
+                    if not ogr_geom.IsValid():
+                        warnings.warn(f"Invalid geometry {i}, attempting to fix or skipping.{self._get_gdal_error_message()}")
+                        # Try to make it valid
+                        try:
+                            ogr_geom = ogr_geom.Buffer(0)  # Common trick to fix invalid geometries
+                            if ogr_geom is None or not ogr_geom.IsValid():
+                                ogr_geom = None
+                                continue
+                        except:
+                            ogr_geom = None
+                            continue
+                        
+                    feature.SetGeometry(ogr_geom)
+                    
+                    # Use the error checking helper for CreateFeature
+                    result = mem_layer.CreateFeature(feature)
+                    if result != ogr.OGRERR_NONE:
+                        warnings.warn(f"Failed to create feature {i}, skipping.{self._get_gdal_error_message()} (Error code: {result})")
+                    
+                    feature = None  # Clean up feature
+                    ogr_geom = None  # Clean up geometry
+                
+                # Rasterize the vector layer
+                result = gdal.RasterizeLayer(out_ds, [1], mem_layer, 
+                                           options=['ATTRIBUTE=burn_value', 'ALL_TOUCHED=YES'])
+                if result != gdal.CE_None:
+                    raise RuntimeError(f"Rasterization failed.{self._get_gdal_error_message()}")
+                    
+            finally:
+                mem_layer = None
+                mem_ds = None
+                
+        finally:
+            out_ds = None  # Clean up output dataset
 
         # Return path only for binary mask, or tuple with geometry mapping for unique values
         if unique_values:
@@ -1298,20 +1524,25 @@ class TopoDrainCore:
         """
         Identify and merge main valley lines based on the highest flow accumulation,
         using only points uniquely associated with one TRIB_ID (to avoid confluent points).
-        Now processes each polygon in the perimeter separately, selecting nr_main features for each.
-        If perimeter is not provided, uses the extent of valley_lines as perimeter.
-        
-        Current Logic Analysis:
-        1. Binary rasterization: All valley lines are rasterized to a binary mask (1=valley, 0=background)
-        2. Spatial join: Points from raster cells are spatially joined with valley line geometries
-        3. Ambiguity removal: When a point intersects multiple TRIB_IDs, it gets completely discarded
-        4. Selection: Top tributaries are selected based on remaining (non-ambiguous) points (which makes sure tributaries with highest flow accumulation are selected)
 
+        Args:
+            valley_lines (GeoDataFrame): Valley line network with 'LINK_ID', 'TRIB_ID', and 'DS_LINK_ID' attributes.
+            facc_path (str): Path to the flow accumulation raster.
+            perimeter (GeoDataFrame, optional): Polygon defining the area boundary. If None, uses valley_lines extent.
+            nr_main (int): Number of main valleys to select.
+            clip_to_perimeter (bool): If True, clips output to boundary polygon of perimeter.
+            feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting/logging.
+
+        Returns:
+            GeoDataFrame: Main valley lines with TRIB_ID, LINK_ID, RANK, and POLYGON_ID attributes.
         """
         if feedback:
             feedback.pushInfo("[ExtractMainValleys] Starting main valley extraction...")
         else:
             print("[ExtractMainValleys] Starting main valley extraction...")
+
+        if valley_lines.empty:
+            raise RuntimeError("[ExtractMainValleys] Input valley_lines is empty")
 
         # Ensure LINK_ID field is present (required)
         if 'LINK_ID' not in valley_lines.columns:
@@ -1319,46 +1550,23 @@ class TopoDrainCore:
         
         # Ensure TRIB_ID field is present in valley_lines
         if 'TRIB_ID' not in valley_lines.columns:
-            # Check for case-insensitive variations
-            trib_id_variations = [col for col in valley_lines.columns if col.lower() == 'trib_id']
-            if trib_id_variations:
-                valley_lines = valley_lines.copy()  # Avoid modifying original
-                valley_lines = valley_lines.rename(columns={trib_id_variations[0]: 'TRIB_ID'})
-                if feedback:
-                    feedback.pushInfo(f"[ExtractMainValleys] Renamed '{trib_id_variations[0]}' column to 'TRIB_ID'")
-                else:
-                    print(f"[ExtractMainValleys] Renamed '{trib_id_variations[0]}' column to 'TRIB_ID'")
+            # Create TRIB_ID field using LINK_ID values as fallback
+            valley_lines = valley_lines.copy()  # Avoid modifying original
+            valley_lines['TRIB_ID'] = valley_lines['LINK_ID']
+            if feedback:
+                feedback.pushWarning("[ExtractMainValleys] 'TRIB_ID' column not found in valley_lines, using 'LINK_ID' values as fallback")
             else:
-                # Create TRIB_ID field using LINK_ID values as fallback
-                if valley_lines.empty:
-                    raise RuntimeError("[ExtractMainValleys] Input valley_lines is empty")
-                valley_lines = valley_lines.copy()  # Avoid modifying original
-                valley_lines['TRIB_ID'] = valley_lines['LINK_ID']
-                if feedback:
-                    feedback.pushInfo("[ExtractMainValleys] Created 'TRIB_ID' column using LINK_ID values")
-                else:
-                    print("[ExtractMainValleys] Created 'TRIB_ID' column using LINK_ID values")
+                warnings.warn("[ExtractMainValleys] 'TRIB_ID' column not found in valley_lines, using 'LINK_ID' values as fallback")
 
         # Ensure DS_LINK_ID field is present in valley_lines (optional field, can be null)
         if 'DS_LINK_ID' not in valley_lines.columns:
-            # Check for case-insensitive variations
-            ds_link_variations = [col for col in valley_lines.columns if col.lower() == 'ds_link_id']
-            if ds_link_variations:
-                valley_lines = valley_lines.copy()  # Avoid modifying original if not already copied
-                valley_lines = valley_lines.rename(columns={ds_link_variations[0]: 'DS_LINK_ID'})
-                if feedback:
-                    feedback.pushInfo(f"[ExtractMainValleys] Renamed '{ds_link_variations[0]}' column to 'DS_LINK_ID'")
-                else:
-                    print(f"[ExtractMainValleys] Renamed '{ds_link_variations[0]}' column to 'DS_LINK_ID'")
+            # Create DS_LINK_ID field with null values (not critical for main valley extraction)
+            valley_lines = valley_lines.copy()  # Avoid modifying original
+            valley_lines['DS_LINK_ID'] = None
+            if feedback:
+                feedback.pushWarning("[ExtractMainValleys] 'DS_LINK_ID' column not found in valley_lines, created with null values as fallback")
             else:
-                # Create DS_LINK_ID field with null values (not critical for main valley extraction)
-                if not hasattr(valley_lines, '_is_copy') or valley_lines._is_copy is None:
-                    valley_lines = valley_lines.copy()  # Avoid modifying original
-                valley_lines['DS_LINK_ID'] = None
-                if feedback:
-                    feedback.pushInfo("[ExtractMainValleys] Created 'DS_LINK_ID' column with null values")
-                else:
-                    print("[ExtractMainValleys] Created 'DS_LINK_ID' column with null values")
+                warnings.warn("[ExtractMainValleys] 'DS_LINK_ID' column not found in valley_lines, created with null values as fallback")
 
         # Create perimeter from valley_lines extent if not provided
         if perimeter is None:
@@ -1382,10 +1590,27 @@ class TopoDrainCore:
             feedback.pushInfo("[ExtractMainValleys] Reading flow accumulation raster...")
         else:
             print("[ExtractMainValleys] Reading flow accumulation raster...")
-        with rasterio.open(facc_path) as src:
-            facc = src.read(1)
-            transform = src.transform
-            cell_size = src.res[0]
+        
+        # Read flow accumulation raster using GDAL
+        facc_ds = gdal.Open(facc_path, gdal.GA_ReadOnly)
+        if facc_ds is None:
+            raise RuntimeError(f"Cannot open flow accumulation raster: {facc_path}.{self._get_gdal_error_message()}")
+            
+        try:
+            facc_band = facc_ds.GetRasterBand(1)
+            facc = facc_band.ReadAsArray()
+            if facc is None:
+                raise RuntimeError(f"Failed to read flow accumulation data from: {facc_path}.{self._get_gdal_error_message()}")
+            
+            # Get geotransform for coordinate conversion
+            geotransform = facc_ds.GetGeoTransform()
+            if geotransform is None:
+                raise RuntimeError(f"Failed to get geotransform from: {facc_path}.{self._get_gdal_error_message()}")
+            
+            res = geotransform[1]  # pixel width
+            
+        finally:
+            facc_ds = None  # Close dataset
 
         # Process each polygon in the perimeter separately
         all_merged_records = []
@@ -1423,6 +1648,7 @@ class TopoDrainCore:
                 features=[valley_clipped],
                 reference_raster_path=facc_path,
                 output_path=valley_raster_path,
+                unique_values=False,
                 flatten_lines=False,
                 buffer_lines=False
             )
@@ -1431,9 +1657,19 @@ class TopoDrainCore:
             else:
                 print(f"[ExtractMainValleys] Valley mask created at {valley_mask_path}")
 
-            # Read the valley mask data from the saved raster file
-            with rasterio.open(valley_mask_path) as valley_src:
-                valley_mask = valley_src.read(1)
+            # Read the valley mask data from the saved raster file using GDAL
+            valley_ds = gdal.Open(valley_mask_path, gdal.GA_ReadOnly)
+            if valley_ds is None:
+                raise RuntimeError(f"Cannot open valley mask raster: {valley_mask_path}.{self._get_gdal_error_message()}")
+                
+            try:
+                valley_band = valley_ds.GetRasterBand(1)
+                valley_mask = valley_band.ReadAsArray()
+                if valley_mask is None:
+                    raise RuntimeError(f"Failed to read valley mask data from: {valley_mask_path}.{self._get_gdal_error_message()}")
+                    
+            finally:
+                valley_ds = None  # Close dataset
 
             if feedback:
                 feedback.pushInfo(f"[ExtractMainValleys] Extracting facc > 0 points for polygon {poly_idx + 1}...")
@@ -1449,7 +1685,8 @@ class TopoDrainCore:
                 continue
 
             # Points are created at the center coordinates of the raster cells containing valley lines with facc > 0
-            coords = [rasterio.transform.xy(transform, row, col) for row, col in zip(rows, cols)]
+            # Convert row,col indices to world coordinates using GDAL geotransform
+            coords = self._pixel_indices_to_coords(rows, cols, geotransform)
             points = gpd.GeoDataFrame(geometry=gpd.points_from_xy(*zip(*coords)), crs=self.crs)
             points["facc"] = facc[rows, cols]
 
@@ -1466,7 +1703,7 @@ class TopoDrainCore:
             
             # Spatial Join with Original Vector Lines using buffered points to ensure all valley lines within raster cells are captured
             # Buffer points by half the cell resolution to catch all lines passing through the raster cell
-            buffer_distance = cell_size / 2.0  # Half cell size ensures we capture lines at cell edges
+            buffer_distance = res / 2.0  # Half cell size ensures we capture lines at cell edges
             
             points_buffered = points.copy()
             points_buffered.geometry = points.geometry.buffer(buffer_distance)
@@ -1493,9 +1730,9 @@ class TopoDrainCore:
 
             if points_unique.empty:
                 if feedback:
-                    feedback.pushInfo(f"[ExtractMainValleys] No unique valley points found in polygon {poly_idx + 1}, skipping...")
+                    feedback.pushWarning(f"[ExtractMainValleys] No unique valley points found in polygon {poly_idx + 1}, skipping...")
                 else:
-                    print(f"[ExtractMainValleys] No unique valley points found in polygon {poly_idx + 1}, skipping...")
+                    warnings.warn(f"[ExtractMainValleys] No unique valley points found in polygon {poly_idx + 1}, skipping...")
                 continue
 
             if feedback:
@@ -1507,9 +1744,9 @@ class TopoDrainCore:
 
             if points_top.empty:
                 if feedback:
-                    feedback.pushInfo(f"[ExtractMainValleys] No main valley lines could be selected for polygon {poly_idx + 1}, skipping...")
+                    feedback.pushWarning(f"[ExtractMainValleys] No main valley lines could be selected for polygon {poly_idx + 1}, skipping...")
                 else:
-                    print(f"[ExtractMainValleys] No main valley lines could be selected for polygon {poly_idx + 1}, skipping...")
+                    warnings.warn(f"[ExtractMainValleys] No main valley lines could be selected for polygon {poly_idx + 1}, skipping...")
                 continue
 
             selected_trib_ids = points_top["TRIB_ID"].unique()
@@ -1532,7 +1769,7 @@ class TopoDrainCore:
             if feedback:
                 feedback.pushInfo(f"[ExtractMainValleys] Merging valley line segments for polygon {poly_idx + 1}...")
             else:
-                print(f"[ExtractMainValleys] Merging valley line segments for polygon {poly_idx + 1}...")
+                print(f"[ExtractMainValleys] Merging valley line segments for polygon {poly_idx + 1}...") # because maybe split by perimeter
             for trib_id in selected_trib_ids:
                 lines = valley_lines[valley_lines["TRIB_ID"] == trib_id]
 
@@ -1599,6 +1836,8 @@ class TopoDrainCore:
     ) -> gpd.GeoDataFrame:
         """
         Identify and trace the main ridge lines (watershed divides) using the same logic as main valley detection.
+        Merging based on the highest flow accumulation,
+        using only points uniquely associated with one TRIB_ID (to avoid confluent points).
 
         Args:
             ridge_lines (GeoDataFrame): Ridge line network with 'LINK_ID', 'TRIB_ID', and 'DS_LINK_ID' attributes.
@@ -2945,9 +3184,9 @@ class TopoDrainCore:
                 barrier_geom = barrier_id_to_geom.get(barrier_feature_id)
                 if barrier_geom is None:
                     if feedback:
-                        feedback.pushInfo(f"[ConstantSlopeLines] Warning: No barrier geometry found for feature ID {barrier_feature_id} - skipping point {orig_idx}")
+                        feedback.pushWarning(f"[ConstantSlopeLines] No barrier geometry found for feature ID {barrier_feature_id} - skipping point {orig_idx}")
                     else:
-                        print(f"[ConstantSlopeLines] Warning: No barrier geometry found for feature ID {barrier_feature_id} - skipping point {orig_idx}")
+                        warnings.warn(f"[ConstantSlopeLines] No barrier geometry found for feature ID {barrier_feature_id} - skipping point {orig_idx}")
                     continue
 
                 # Get orthogonal offset points
@@ -2965,9 +3204,9 @@ class TopoDrainCore:
                         # Check if adjusted point is still on barrier (warn if so) ##### maybe not necessary
                         if offset_pt:
                             if feedback:
-                                feedback.pushInfo(f"[ConstantSlopeLines] Warning: No {offset_name} offset point could be created for {orig_idx}")
+                                feedback.pushWarning(f"[ConstantSlopeLines] No {offset_name} offset point could be created for {orig_idx}")
                             else:
-                                print(f"[ConstantSlopeLines] Warning: No {offset_name} offset point could be created for {orig_idx}")
+                                warnings.warn(f"[ConstantSlopeLines] No {offset_name} offset point could be created for {orig_idx}")
                         continue
 
                     # Progress reporting
@@ -3471,9 +3710,9 @@ class TopoDrainCore:
 
         if stage > max_iterations_keyline:
             if feedback:
-                feedback.reportError(f"Warning: Maximum iterations ({max_iterations_keyline}) reached, stopping iteration...")
+                feedback.reportWarning(f"Maximum iterations ({max_iterations_keyline}) reached, stopping iteration...")
             else:
-                print(f"Warning: Maximum iterations ({max_iterations_keyline}) reached, stopping iteration...")
+                warnings.warn(f"Maximum iterations ({max_iterations_keyline}) reached, stopping iteration...")
 
         # Create combined GeoDataFrame
         if all_keylines:
@@ -3573,7 +3812,9 @@ class TopoDrainCore:
                 # Check if point is within raster bounds
                 if not (0 <= point_r < dtm_src.height and 0 <= point_c < dtm_src.width):
                     if feedback:
-                        feedback.pushInfo(f"Warning: Start point {idx} is outside raster bounds, treating as neutral")
+                        feedback.pushWarning(f"Start point {idx} is outside raster bounds, treating as neutral")
+                    else:
+                        warnings.warn(f"Start point {idx} is outside raster bounds, treating as neutral")
                     neutral_start_points.append(row)
                     continue
                 
@@ -3584,7 +3825,9 @@ class TopoDrainCore:
                 if valley_value == 1 and ridge_value == 1:
                     # Point is on both valley and ridge - treat as neutral with warning
                     if feedback:
-                        feedback.pushInfo(f"Warning: Start point {idx} is on both valley and ridge lines, treating as neutral")
+                        feedback.pushWarning(f"Start point {idx} is on both valley and ridge lines, treating as neutral")
+                    else:
+                        warnings.warn(f"Start point {idx} is on both valley and ridge lines, treating as neutral")
                     neutral_start_points.append(row)
                 elif valley_value == 1:
                     # Point is on valley line
@@ -3605,12 +3848,13 @@ class TopoDrainCore:
         if feedback:
             feedback.pushInfo(f"Start point classification: {len(valley_start_gdf)} on valleys, {len(ridge_start_gdf)} on ridges, {len(neutral_start_gdf)} neutral")
             if len(neutral_start_gdf) > 0:
-                feedback.pushInfo(f"Warning: {len(neutral_start_gdf)} neutral start points should ideally be positioned on either ridge or valley lines")
+                feedback.pushWarning(f"{len(neutral_start_gdf)} neutral start points should ideally be positioned on either ridge or valley lines")
         else:
             print(f"Start point classification: {len(valley_start_gdf)} on valleys, {len(ridge_start_gdf)} on ridges, {len(neutral_start_gdf)} neutral")
             if len(neutral_start_gdf) > 0:
-                print(f"Warning: {len(neutral_start_gdf)} neutral start points should ideally be positioned on either ridge or valley lines")
-        
+                warnings.warn(f"{len(neutral_start_gdf)} neutral start points should ideally be positioned on either ridge or valley lines")
+
+        # Initialize list to collect all keylines
         all_keylines = []
         
         # Process valley start points and neutral points (treat neutral as valley starts)

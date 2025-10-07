@@ -5,7 +5,7 @@
 # Purpose: QGIS Processing Algorithm to extract main valley lines based on flow accumulation
 #
 # -----------------------------------------------------------------------------
-
+import os
 from qgis.PyQt.QtCore import QCoreApplication
 from qgis.PyQt.QtGui import QIcon
 from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterVectorLayer,
@@ -14,7 +14,7 @@ from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterVectorLayer
                        QgsProcessing, QgsProcessingParameterFeatureSource, QgsProcessingException)
 import os
 import geopandas as gpd
-from .utils import get_crs_from_layer, update_core_crs_if_needed
+from .utils import get_crs_from_layer, update_core_crs_if_needed, ensure_whiteboxtools_configured, save_gdf_to_file, load_gdf_from_file, load_gdf_from_qgis_source, get_raster_ext, get_vector_ext
 
 pluginPath = os.path.dirname(__file__)
 
@@ -44,6 +44,7 @@ class ExtractMainValleysAlgorithm(QgsProcessingAlgorithm):
     OUTPUT_MAIN_VALLEYS = 'OUTPUT_MAIN_VALLEYS'
     NR_MAIN = 'NR_MAIN'
     CLIP_TO_PERIMETER = 'CLIP_TO_PERIMETER'
+
 
     def __init__(self, core=None):
         super().__init__()
@@ -93,8 +94,6 @@ Input Requirements:
 - Valley Lines: Must have 'LINK_ID', 'TRIB_ID', and 'DS_LINK_ID' attributes (from Create Valleys algorithm). LINK_ID is the standard cross-platform identifier.
 - Flow Accumulation Raster: Raster showing accumulated flow (e.g., from Create Valleys algorithm)
 - Perimeter (optional): Polygon defining the study area boundary. If not provided, uses the extent of valley lines
-+
-+
 
 OUTPUT_MAIN_VALLEYS:
 Line layer containing main valley lines with attributes: LINK_ID, TRIB_ID, RANK, POLYGON_ID, DS_LINK_ID"""
@@ -158,20 +157,34 @@ Line layer containing main valley lines with attributes: LINK_ID, TRIB_ID, RANK,
         self.addParameter(main_valleys_param)
 
     def processAlgorithm(self, parameters, context, feedback):
+        # Ensure WhiteboxTools is configured before running
+        if not ensure_whiteboxtools_configured(self, feedback):
+            return {}
+        
         # Validate and read input parameters
         valley_lines_layer = self.parameterAsVectorLayer(parameters, self.INPUT_VALLEY_LINES, context)
         facc_raster_layer = self.parameterAsRasterLayer(parameters, self.INPUT_FACC_RASTER, context)
         perimeter_source = self.parameterAsSource(parameters, self.INPUT_PERIMETER, context)
 
-        # Get file paths
+        # Get file paths and validate formats
         valley_lines_path = valley_lines_layer.source()
+        valley_ext = get_vector_ext(valley_lines_path, feedback)
+
+        # Get FACC raster path and validate format
         facc_raster_path = facc_raster_layer.source()
+        facc_ext = get_raster_ext(facc_raster_path, feedback)
         
-        # Validate file existence
-        if not valley_lines_path or not os.path.exists(valley_lines_path):
-            raise QgsProcessingException(f"Valley lines file not found: {valley_lines_path}")
-        if not facc_raster_path or not os.path.exists(facc_raster_path):
-            raise QgsProcessingException(f"Flow accumulation raster not found: {facc_raster_path}")
+        # Create supported formats lists
+        supported_vector_formats = list(self.core.ogr_driver_mapping.keys()) if hasattr(self.core, 'ogr_driver_mapping') else []
+        supported_raster_formats = list(self.core.gdal_driver_mapping.keys())
+        
+        # Validate vector format compatibility with OGR driver mapping (warning only)
+        if hasattr(self.core, 'ogr_driver_mapping') and valley_ext not in self.core.ogr_driver_mapping:
+            feedback.pushWarning(f"Valley lines format '{valley_ext}' is not in OGR driver mapping. Supported formats: {supported_vector_formats}. GeoPandas will attempt to load it automatically.")
+        
+        # Validate raster format compatibility with GDAL driver mapping
+        if hasattr(self.core, 'gdal_driver_mapping') and facc_ext not in self.core.gdal_driver_mapping:
+            raise QgsProcessingException(f"Flow accumulation raster format '{facc_ext}' is not supported. Supported formats: {supported_raster_formats}")
         
         # Use parameterAsOutputLayer to preserve checkbox state information
         main_valleys_output_layer = self.parameterAsOutputLayer(parameters, self.OUTPUT_MAIN_VALLEYS, context)
@@ -190,42 +203,14 @@ Line layer containing main valley lines with attributes: LINK_ID, TRIB_ID, RANK,
 
         feedback.pushInfo("Processing extract_main_valleys via TopoDrainCore...")
 
-        # Ensure WhiteboxTools is configured before running
-        if hasattr(self, 'plugin') and self.plugin:
-            if not self.plugin.ensure_whiteboxtools_configured():
-                raise QgsProcessingException("WhiteboxTools is not configured. Please install and configure the WhiteboxTools for QGIS plugin.")
-        else:
-            # Try to automatically find and connect to the TopoDrain plugin
-            feedback.pushInfo("Plugin reference not available - attempting to connect to TopoDrain plugin")
-            try:
-                from qgis.utils import plugins
-                if 'topo_drain' in plugins:
-                    topo_drain_plugin = plugins['topo_drain']
-                    # Set the plugin reference for this instance
-                    self.plugin = topo_drain_plugin
-                    feedback.pushInfo("Successfully connected to TopoDrain plugin")
-                    
-                    # Now try to configure WhiteboxTools
-                    if hasattr(topo_drain_plugin, 'ensure_whiteboxtools_configured'):
-                        if not topo_drain_plugin.ensure_whiteboxtools_configured():
-                            feedback.pushWarning("WhiteboxTools is not configured. Please install and configure the WhiteboxTools for QGIS plugin.")
-                        else:
-                            feedback.pushInfo("WhiteboxTools configuration verified")
-                    else:
-                        feedback.pushWarning("TopoDrain plugin found but configuration method not available")
-                else:
-                    feedback.pushWarning("TopoDrain plugin not found in QGIS registry - cannot verify WhiteboxTools configuration")
-            except Exception as e:
-                feedback.pushWarning(f"Could not connect to TopoDrain plugin: {e} - continuing without WhiteboxTools verification")
-
         # Update core CRS if needed (valley_crs is guaranteed to be valid)
         update_core_crs_if_needed(self.core, valley_crs, feedback)
         
         # Load input data as GeoDataFrame with Windows-safe CRS handling
         feedback.pushInfo("Loading valley lines...")
         try:
-            # Read without CRS first to avoid Windows PROJ crashes
-            valley_lines_gdf = gpd.read_file(valley_lines_path, crs=None)
+            valley_lines_gdf = load_gdf_from_file(valley_lines_path, feedback)
+            
             # Manually set the safe CRS
             valley_lines_gdf.crs = valley_crs
             feedback.pushInfo(f"Successfully loaded {len(valley_lines_gdf)} valley line features with safe CRS: {valley_crs}")
@@ -241,8 +226,8 @@ Line layer containing main valley lines with attributes: LINK_ID, TRIB_ID, RANK,
         if perimeter_source:
             feedback.pushInfo("Loading perimeter...")
             try:
-                # Use from_features to avoid CRS issues, then set safe CRS
-                perimeter_gdf = gpd.GeoDataFrame.from_features(perimeter_source.getFeatures())
+                # Load perimeter features with automatic data cleaning
+                perimeter_gdf = load_gdf_from_qgis_source(perimeter_source, feedback)
                 if not perimeter_gdf.empty:
                     perimeter_gdf.crs = valley_crs  # Use same safe CRS as valley lines
                     feedback.pushInfo(f"Successfully loaded {len(perimeter_gdf)} perimeter features with safe CRS")
@@ -285,12 +270,8 @@ Line layer containing main valley lines with attributes: LINK_ID, TRIB_ID, RANK,
         main_valleys_gdf = main_valleys_gdf.set_crs(self.core.crs, allow_override=True)
         feedback.pushInfo(f"Main valley lines CRS: {main_valleys_gdf.crs}")
 
-        # Save result
-        try:
-            main_valleys_gdf.to_file(main_valleys_file_path)
-            feedback.pushInfo(f"Main valley lines saved to: {main_valleys_file_path}")
-        except Exception as e:
-            raise QgsProcessingException(f"Failed to save main valleys output: {e}")
+        # Save result with proper format handling
+        save_gdf_to_file(main_valleys_gdf, main_valleys_file_path, self.core, feedback)
 
         results = {}
         # Add output parameters to results
