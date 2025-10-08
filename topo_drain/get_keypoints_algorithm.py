@@ -19,7 +19,7 @@ from qgis.core import (QgsProcessing,
                        QgsProcessingParameterNumber)
 import geopandas as gpd
 import os
-from .utils import get_crs_from_layer, update_core_crs_if_needed, ensure_whiteboxtools_configured, save_gdf_to_file, load_gdf_from_qgis_source, get_raster_ext
+from .utils import get_crs_from_layer, update_core_crs_if_needed, ensure_whiteboxtools_configured, save_gdf_to_file, load_gdf_from_qgis_source, get_raster_ext, get_vector_ext
 
 pluginPath = os.path.dirname(__file__)
 
@@ -223,7 +223,13 @@ Simplified Parameters:
 
         # Get output file path using parameterAsOutputLayer
         keypoints_output_layer = self.parameterAsOutputLayer(parameters, self.OUTPUT_KEYPOINTS, context)
-        keypoints_file_path = keypoints_output_layer if isinstance(keypoints_output_layer, str) else keypoints_output_layer
+        keypoints_file_path = keypoints_output_layer
+        
+        # Validate output vector format compatibility with OGR driver mapping
+        output_ext = get_vector_ext(keypoints_file_path, feedback, check_existence=False)
+        supported_vector_formats = list(self.core.ogr_driver_mapping.keys()) if hasattr(self.core, 'ogr_driver_mapping') else []
+        if hasattr(self.core, 'ogr_driver_mapping') and output_ext not in self.core.ogr_driver_mapping:
+            feedback.pushWarning(f"Output file format '{output_ext}' is not in OGR driver mapping. Supported formats: {supported_vector_formats}. GeoPandas will attempt to save it automatically.")
 
         feedback.pushInfo("Reading CRS from DTM layer...")
         # Read CRS from the DTM layer with safe fallback (since we can't get CRS from source directly)

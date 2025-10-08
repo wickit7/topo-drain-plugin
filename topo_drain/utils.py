@@ -531,18 +531,20 @@ def load_gdf_from_file(file_path, feedback=None):
         raise Exception(error_msg)
 
 
-def get_raster_ext(raster_path, feedback=None):
+def get_raster_ext(raster_path, feedback=None, check_existence=True):
     """Get file extension from raster path, handling GDAL virtual file system paths.
     
     Args:
         raster_path: Path to raster file (may include GDAL virtual paths)
         feedback: Optional feedback object for logging
+        check_existence: If True, checks if file exists (for input files). 
+                        If False, skips existence check (for output files)
     
     Returns:
         str: File extension (lowercase, with dot)
     
     Raises:
-        Exception: If path doesn't exist or can't be processed
+        Exception: If check_existence=True and path doesn't exist, or can't be processed
     """
     import os
     
@@ -569,8 +571,8 @@ def get_raster_ext(raster_path, feedback=None):
                     if len(parts) >= 2:
                         base_path = parts[1]
         
-        # Check if the base path exists
-        if not os.path.exists(base_path):
+        # Check if the base path exists (only if requested)
+        if check_existence and not os.path.exists(base_path):
             raise Exception(f"Raster file not found: {base_path}")
         
         # Get file extension
@@ -588,18 +590,20 @@ def get_raster_ext(raster_path, feedback=None):
         raise Exception(error_msg)
 
 
-def get_vector_ext(vector_path, feedback=None):
+def get_vector_ext(vector_path, feedback=None, check_existence=True):
     """Get file extension from vector path, handling GDAL/OGR virtual file system paths.
     
     Args:
         vector_path: Path to vector file (may include OGR virtual paths)
         feedback: Optional feedback object for logging
+        check_existence: If True, checks if file exists (for input files). 
+                        If False, skips existence check (for output files)
     
     Returns:
         str: File extension (lowercase, with dot)
     
     Raises:
-        Exception: If path doesn't exist or can't be processed
+        Exception: If check_existence=True and path doesn't exist, or can't be processed
     """
     import os
     
@@ -615,8 +619,8 @@ def get_vector_ext(vector_path, feedback=None):
             if feedback:
                 feedback.pushInfo(f"Extracted vector base path: {base_path}")
         
-        # Check if the base path exists
-        if not os.path.exists(base_path):
+        # Check if the base path exists (only if requested)
+        if check_existence and not os.path.exists(base_path):
             raise Exception(f"Vector file not found: {base_path}")
         
         # Get file extension
@@ -632,4 +636,6 @@ def get_vector_ext(vector_path, feedback=None):
         if feedback:
             feedback.pushInfo(error_msg)
         raise Exception(error_msg)
+
+
 

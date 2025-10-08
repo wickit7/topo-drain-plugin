@@ -11,13 +11,9 @@ import importlib.util
 from typing import Union
 import warnings
 import uuid
-import matplotlib.pyplot as plt
 import numpy as np
 import geopandas as gpd
 import rasterio
-from rasterio.mask import mask as rio_mask
-from rasterio.sample import sample_gen
-from rasterio.features import rasterize
 from shapely.geometry import LineString, MultiLineString, Point, Polygon
 from shapely.ops import linemerge, nearest_points, substring
 from scipy.ndimage import gaussian_filter1d
@@ -29,7 +25,6 @@ from osgeo import gdal, ogr, osr
 # Import QGIS dependencies only if available
 try:
     from qgis.core import (
-        QgsRunProcess,
         QgsBlockingProcess,
         QgsProcessingFeedback,
         QgsProcessingException,
@@ -237,6 +232,33 @@ class TopoDrainCore:
             y = geotransform[3] + (col + 0.5) * geotransform[4] + (row + 0.5) * geotransform[5]
             coords.append((x, y))
         return coords
+
+    @staticmethod
+    def _coords_to_pixel_indices(coords, geotransform):
+        """
+        Convert world coordinates to pixel indices using GDAL geotransform.
+        
+        GDAL Geotransform parameters:
+        GT(0) x-coordinate of the upper-left corner of the upper-left pixel
+        GT(1) w-e pixel resolution / pixel width
+        GT(2) row rotation (typically zero)
+        GT(3) y-coordinate of the upper-left corner of the upper-left pixel
+        GT(4) column rotation (typically zero)
+        GT(5) n-s pixel resolution / pixel height (negative value for a north-up image)
+        
+        Args:
+            coords (list): List of (x, y) coordinate tuples in world coordinates
+            geotransform (tuple): GDAL geotransform parameters (6 values)
+            
+        Returns:
+            list: List of (px, py) pixel index tuples
+        """
+        pixel_indices = []
+        for x, y in coords:
+            px = int((x - geotransform[0]) / geotransform[1])
+            py = int((y - geotransform[3]) / geotransform[5])
+            pixel_indices.append((px, py))
+        return pixel_indices
 
     def _get_gdal_driver_from_path(self, file_path: str) -> str:
         """
@@ -735,6 +757,10 @@ class TopoDrainCore:
             height = ref_ds.RasterYSize
             geotransform = ref_ds.GetGeoTransform()
             projection = ref_ds.GetProjection()
+            
+            # Get complete spatial reference system
+            srs = ref_ds.GetSpatialRef()
+            
             res = geotransform[1]  # pixel width
             
             # Validate geotransform
@@ -788,7 +814,13 @@ class TopoDrainCore:
             
         try:
             out_ds.SetGeoTransform(geotransform)
-            out_ds.SetProjection(projection)
+            
+            # Set complete spatial reference system
+            if srs is not None:
+                out_ds.SetSpatialRef(srs)
+            elif projection:
+                # Fallback to projection string if SRS not available
+                out_ds.SetProjection(projection)
             
             # Initialize raster with zeros
             out_band = out_ds.GetRasterBand(1)
@@ -878,56 +910,98 @@ class TopoDrainCore:
             return output_path
 
     ## Raster functions
-    @staticmethod
-    def _mask_raster(raster_path: str, mask: gpd.GeoDataFrame, out_path: str) -> str:
+    # _mask_raster not used yet and therefore not debugged
+    def _mask_raster(self, raster_path: str, mask: gpd.GeoDataFrame, out_path: str) -> str:
         """
-        Mask (clip) a raster file using a polygon mask.
+        Mask (clip) a raster file using a polygon mask using GDAL.
 
         Args:
-            raster_path (str): Path to the input raster (e.g., DTM GeoTIFF).
+            raster_path (str): Path to input raster (supports all GDAL formats in gdal_driver_mapping).
             mask (GeoDataFrame): Polygon(s) to use as mask.
             out_path (str): Desired path for output masked raster.
 
         Returns:
             str: Path to the masked raster.
         """
+        if mask.empty:
+            raise ValueError("The provided GeoDataFrame is empty. Cannot mask raster.")
+
+        # Create memory vector layer from mask GeoDataFrame
+        mem_driver = ogr.GetDriverByName('Memory')
+        if mem_driver is None:
+            raise RuntimeError(f"Memory driver not available.{self._get_gdal_error_message()}")
+            
+        mem_ds = mem_driver.CreateDataSource('')
+        if mem_ds is None:
+            raise RuntimeError(f"Failed to create memory datasource.{self._get_gdal_error_message()}")
+        
         try:
-            if mask.empty:
-                raise ValueError("The provided GeoDataFrame is empty. Cannot mask raster.")
+            mem_layer = mem_ds.CreateLayer('mask', None, ogr.wkbPolygon)
+            if mem_layer is None:
+                raise RuntimeError(f"Failed to create memory layer.{self._get_gdal_error_message()}")
+            
+            # Add mask geometries to layer
+            for _, row in mask.iterrows():
+                geom = row.geometry
+                
+                # Create OGR feature
+                feature = ogr.Feature(mem_layer.GetLayerDefn())
+                
+                # Convert Shapely geometry to OGR geometry
+                ogr_geom = ogr.CreateGeometryFromWkt(geom.wkt)
+                if ogr_geom is None:
+                    continue
+                
+                feature.SetGeometry(ogr_geom)
+                
+                # Add feature to layer
+                result = mem_layer.CreateFeature(feature)
+                if result != ogr.OGRERR_NONE:
+                    continue
+                
+                feature = None  # Clean up feature
+                ogr_geom = None  # Clean up geometry
 
-            with rasterio.open(raster_path) as src:
-                out_image, out_transform = rio_mask(src, mask.geometry, crop=True)
-                out_meta = src.meta.copy()
-
-            out_meta.update({
-                "height": out_image.shape[1],
-                "width": out_image.shape[2],
-                "transform": out_transform
-            })
-
+            # Use gdal.Warp to crop and mask the raster
+            # Ensure output directory exists
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            
+            # Determine GDAL driver based on output file extension
+            driver_name = self._get_gdal_driver_from_path(out_path)
+            
+            # Configure warp options
+            warp_options = gdal.WarpOptions(
+                format=driver_name,
+                cutlineDSName=mem_ds,  # Use memory dataset as cutline
+                cutlineLayer='mask',
+                cropToCutline=True,
+                creationOptions=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=IF_SAFER']
+            )
+            
+            # Perform the warp operation
+            result_ds = gdal.Warp(out_path, raster_path, options=warp_options)
+            if result_ds is None:
+                raise RuntimeError(f"Failed to mask raster: {raster_path}.{self._get_gdal_error_message()}")
+            
+            result_ds = None  # Close result dataset
+            
+        finally:
+            mem_layer = None
+            mem_ds = None
 
-            with rasterio.open(out_path, "w", **out_meta) as dest:
-                dest.write(out_image)
-
-            return out_path
-
-        except ValueError as ve:
-            raise RuntimeError(f"Masking error: {ve}")
-        except Exception as e:
-            raise RuntimeError(f"Unexpected error during raster masking: {e}")
+        return out_path
 
     def _invert_dtm(self, dtm_path: str, output_path: str, feedback=None) -> str:
         """
         Create an inverted DTM (multiply by -1) to extract ridges.
 
         Args:
-            dtm_path (str): Path to original DTM.
-            output_path (str): Path to output inverted DTM.
+            dtm_path (str): Path to input DTM raster (supports all GDAL formats in gdal_driver_mapping).
+            output_path (str): Path to output inverted DTM raster (format determined by file extension).
             feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting.
 
         Returns:
-            str: Path to inverted DTM.
+            str: Path to inverted DTM raster.
         """
         if self.wbt is None:
             raise RuntimeError("WhiteboxTools not initialized. Check WhiteboxTools configuration: QGIS settings -> Options -> Processing -> Provider -> WhiteboxTools -> WhiteboxTools executable.")
@@ -945,8 +1019,8 @@ class TopoDrainCore:
 
         return output_path
 
-    @staticmethod
-    def _log_raster(
+    def log_raster(
+        self,
         input_raster: str,
         output_path: str,
         overwrite: bool = True,
@@ -957,90 +1031,214 @@ class TopoDrainCore:
         and either overwrites it or appends the result as a new band.
 
         Args:
-            input_raster (str): Path to the input raster.
-            output_path (str): Path to the output raster.
+            input_raster (str): Path to input raster (supports all GDAL formats in gdal_driver_mapping).
+            output_path (str): Path to output raster (format determined by file extension).
             overwrite (bool): If True, replaces the selected band with log values.
-                            If False, appends the log values as a new band.
+                    If False, appends the log values as a new band.
             val_band (int): 1-based index of the band to compute the logarithm from.
-            nodata (float): Nodata value to use in the log band.
 
         Returns:
             str: Path to the output raster.
         """
-        with rasterio.open(input_raster) as src:
-            profile = src.profile.copy()
-            dtype = 'float32'
-            band_count = src.count
-            nodata = profile.get('nodata', None)
-
+        # Read input raster using GDAL
+        input_ds = gdal.Open(input_raster, gdal.GA_ReadOnly)
+        if input_ds is None:
+            raise RuntimeError(f"Cannot open input raster: {input_raster}.{self._get_gdal_error_message()}")
+            
+        try:
+            # Get raster information
+            width = input_ds.RasterXSize
+            height = input_ds.RasterYSize
+            band_count = input_ds.RasterCount
+            geotransform = input_ds.GetGeoTransform()
+            projection = input_ds.GetProjection()
+            srs = input_ds.GetSpatialRef()
+            
+            # Validate band index
             if not (1 <= val_band <= band_count):
                 raise ValueError(f"val_band={val_band} is out of range. Input raster has {band_count} band(s).")
-
-            # Read the band to compute log from
-            data = src.read(val_band).astype(dtype)
-
+            
+            # Get the source band and its properties
+            src_band = input_ds.GetRasterBand(val_band)
+            nodata = src_band.GetNoDataValue()
+            if nodata is None:
+                nodata = self.nodata
+            
+            # Read the band data
+            data = src_band.ReadAsArray().astype(np.float32)
+            
             # Compute log(x) only for valid values > 0
             log_data = np.where(data > 0, np.log(data), nodata)
+            
+        finally:
+            input_ds = None  # Close input dataset
 
+        # Determine GDAL driver based on output file extension
+        driver_name = self._get_gdal_driver_from_path(output_path)
+        
+        # Create output raster using GDAL with best practices
+        driver = gdal.GetDriverByName(driver_name)
+        if driver is None:
+            raise RuntimeError(f"{driver_name} driver not available.{self._get_gdal_error_message()}")
+            
+        creation_options = [
+            'COMPRESS=LZW',
+            'TILED=YES',
+            'BIGTIFF=IF_SAFER'
+        ]
+        
+        if overwrite:
+            # Create single-band output raster
+            out_ds = driver.Create(output_path, width, height, 1, gdal.GDT_Float32, 
+                                  options=creation_options)
+        else:
+            # Create multi-band output raster (original bands + log band)
+            new_band_count = band_count + 1
+            out_ds = driver.Create(output_path, width, height, new_band_count, gdal.GDT_Float32, 
+                                  options=creation_options)
+        
+        if out_ds is None:
+            raise RuntimeError(f"Failed to create output raster: {output_path}.{self._get_gdal_error_message()}")
+            
+        try:
+            out_ds.SetGeoTransform(geotransform)
+            
+            # Set complete spatial reference system
+            if srs is not None:
+                out_ds.SetSpatialRef(srs)
+            elif projection:
+                # Fallback to projection string if SRS not available
+                out_ds.SetProjection(projection)
+            
             if overwrite:
-                # Overwrite selected band with log values, drop other bands
-                profile.update(count=1, dtype=dtype, nodata=nodata)
-                with rasterio.open(output_path, 'w', **profile) as dst:
-                    dst.write(log_data, 1)
+                # Write only the log-transformed band
+                out_band = out_ds.GetRasterBand(1)
+                out_band.SetNoDataValue(nodata)
+                out_band.WriteArray(log_data)
             else:
-                # Append log band to original bands
-                existing_data = src.read().astype(dtype)  # shape: (bands, rows, cols)
-                new_band_count = band_count + 1
-                profile.update(count=new_band_count, dtype=dtype, nodata=nodata)
-
-                with rasterio.open(output_path, 'w', **profile) as dst:
+                # Re-open input raster to copy all original bands
+                input_ds = gdal.Open(input_raster, gdal.GA_ReadOnly)
+                if input_ds is None:
+                    raise RuntimeError(f"Cannot re-open input raster: {input_raster}.{self._get_gdal_error_message()}")
+                    
+                try:
+                    # Copy all original bands
                     for i in range(band_count):
-                        dst.write(existing_data[i], i + 1)
-                    dst.write(log_data, new_band_count)
+                        src_band = input_ds.GetRasterBand(i + 1)
+                        out_band = out_ds.GetRasterBand(i + 1)
+                        
+                        # Copy band data and properties
+                        band_data = src_band.ReadAsArray().astype(np.float32)
+                        out_band.WriteArray(band_data)
+                        out_band.SetNoDataValue(src_band.GetNoDataValue())
+                    
+                    # Write the new log band
+                    log_band = out_ds.GetRasterBand(new_band_count)
+                    log_band.SetNoDataValue(nodata)
+                    log_band.WriteArray(log_data)
+                    
+                finally:
+                    input_ds = None  # Close input dataset again
+                    
+        finally:
+            out_ds = None  # Close output dataset
 
         return output_path
 
     # Alternatively define constant value of absolute elevation at masked cells or input raster contains absolute elevation values
-    @staticmethod
     def _modify_dtm_with_mask(
+        self,
         dtm_path: str,
         mask: np.ndarray,
         elevation_add: float,
         output_path: str
     ) -> str:
         """
-        Modify DTM by adding elevation to masked cells.
+        Modify DTM by adding elevation to masked cells using GDAL.
 
         Args:
-            dtm_path (str): Path to original DTM.
+            dtm_path (str): Path to input DTM raster (supports all GDAL formats in gdal_driver_mapping).
             mask (np.ndarray): Binary mask where elevation should be modified.
             elevation_add (float): Value to add to masked cells.
-            output_path (str): Path to save modified DTM.
+            output_path (str): Path to save modified DTM raster (format determined by file extension).
 
         Returns:
-            str: Path to the modified DTM.
+            str: Path to the modified DTM raster.
         """
-        with rasterio.open(dtm_path) as src:
-            data = src.read(1)
-            meta = src.meta.copy()
+        # Read input raster using GDAL
+        input_ds = gdal.Open(dtm_path, gdal.GA_ReadOnly)
+        if input_ds is None:
+            raise RuntimeError(f"Cannot open input DTM raster: {dtm_path}.{self._get_gdal_error_message()}")
+            
+        try:
+            # Get raster information
+            width = input_ds.RasterXSize
+            height = input_ds.RasterYSize
+            geotransform = input_ds.GetGeoTransform()
+            projection = input_ds.GetProjection()
+            srs = input_ds.GetSpatialRef()
+            
+            # Read the first band data
+            src_band = input_ds.GetRasterBand(1)
+            nodata = src_band.GetNoDataValue()
+            if nodata is None:
+                nodata = self.nodata
+                
+            data = src_band.ReadAsArray().astype(np.float32)
+            
+        finally:
+            input_ds = None  # Close input dataset
 
+        # Modify data using the mask
         modified = data.copy()
         modified[mask == 1] += elevation_add
 
-        meta.update(dtype="float32")
-
-        with rasterio.open(output_path, "w", **meta) as dst:
-            dst.write(modified.astype("float32"), 1)
+        # Determine GDAL driver based on output file extension
+        driver_name = self._get_gdal_driver_from_path(output_path)
+        
+        # Create output raster using GDAL with best practices
+        driver = gdal.GetDriverByName(driver_name)
+        if driver is None:
+            raise RuntimeError(f"{driver_name} driver not available.{self._get_gdal_error_message()}")
+            
+        creation_options = [
+            'COMPRESS=LZW',
+            'TILED=YES',
+            'BIGTIFF=IF_SAFER'
+        ]
+        
+        out_ds = driver.Create(output_path, width, height, 1, gdal.GDT_Float32, 
+                              options=creation_options)
+        if out_ds is None:
+            raise RuntimeError(f"Failed to create output raster: {output_path}.{self._get_gdal_error_message()}")
+            
+        try:
+            out_ds.SetGeoTransform(geotransform)
+            
+            # Set complete spatial reference system
+            if srs is not None:
+                out_ds.SetSpatialRef(srs)
+            elif projection:
+                # Fallback to projection string if SRS not available
+                out_ds.SetProjection(projection)
+            
+            # Write the modified data
+            out_band = out_ds.GetRasterBand(1)
+            out_band.SetNoDataValue(nodata)
+            out_band.WriteArray(modified)
+            
+        finally:
+            out_ds = None  # Close output dataset
 
         return output_path
 
-    def _raster_to_linestring_wbt(self, raster_path: str, snap_to_start_point: Point = None, snap_to_endpoint: Point = None, feedback=None) -> LineString:
+    def _raster_to_linestring_wbt(self, raster_path: str, snap_to_start_point: Point = None, snap_to_endpoint: Point = None, output_vector_path: str = None, feedback=None) -> LineString:
         """
         Uses WhiteboxTools to vectorize a raster and return a merged LineString or MultiLineString.
         Optionally snaps the endpoint to the center of a destination cell.
 
         Args:
-            raster_path (str): Path to a raster where 1-valued pixels form your keyline.
+            raster_path (str): Path to input raster where 1-valued pixels form your keyline (supports all GDAL formats in gdal_driver_mapping).
             snap_to_start_point (Point, optional): Point to snap the start of the line to.
             snap_to_endpoint (Point, optional): Point to snap the endpoint of the line to.
             feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting.
@@ -1051,21 +1249,24 @@ class TopoDrainCore:
         if self.wbt is None:
             raise RuntimeError("WhiteboxTools not initialized. Check WhiteboxTools configuration: QGIS settings -> Options -> Processing -> Provider -> WhiteboxTools -> WhiteboxTools executable.")
 
-        vector_path = raster_path.replace(".tif", ".shp")
+        if not output_vector_path:
+            base, _ = os.path.splitext(raster_path)
+            output_vector_path = base + ".shp"
+
         ret = self._execute_wbt(
             'raster_to_vector_lines',
             feedback=feedback,
             i=raster_path,
-            output=vector_path
+            output=output_vector_path
         )
         
-        if ret != 0 or not os.path.exists(vector_path):
+        if ret != 0 or not os.path.exists(output_vector_path):
             raise RuntimeError(f"Raster to vector lines failed: WhiteboxTools returned {ret}, output not found at {vector_path}")
 
-        gdf = gpd.read_file(vector_path)
+        gdf = gpd.read_file(output_vector_path)
         
         if gdf.empty:
-            warnings.warn(f"No vector features found in {vector_path}.")
+            warnings.warn(f"No vector features found in {output_vector_path}.")
             return None
 
         all_geometries = list(gdf.geometry) 
@@ -1114,7 +1315,6 @@ class TopoDrainCore:
 
         
         return single_part_line
-
 
     ## TopoDrainCore functions
     @staticmethod
@@ -1176,17 +1376,17 @@ class TopoDrainCore:
 
         Args:
             dtm_path (str):
-                Path to input DTM GeoTIFF (e.g. "/path/to/dtm.tif").
+                Path to input DTM raster (supports all GDAL formats in gdal_driver_mapping).
             filled_output_path (str, optional):
-                Path to save the depression-filled DTM GeoTIFF (".tif").
+                Path to save the depression-filled DTM raster (format determined by file extension).
             fdir_output_path (str, optional):
-                Path to save the flow-direction raster GeoTIFF (".tif").
+                Path to save the flow-direction raster (format determined by file extension).
             facc_output_path (str, optional):
-                Path to save the flow-accumulation raster GeoTIFF (".tif").
+                Path to save the flow-accumulation raster (format determined by file extension).
             facc_log_output_path (str, optional):
-                Path to save the log-scaled accumulation raster GeoTIFF (".tif").
+                Path to save the log-scaled accumulation raster (format determined by file extension).
             streams_output_path (str, optional):
-                Path to save the extracted stream raster GeoTIFF (".tif").
+                Path to save the extracted stream raster (format determined by file extension).
             accumulation_threshold (int):
                 Threshold for stream extraction (flow accumulation units).
             dist_facc (float):
@@ -1305,11 +1505,15 @@ class TopoDrainCore:
             else:
                 print(f"[ExtractValleys] Log-scaled accumulation → {facc_log_output_path}")
             try:
-                TopoDrainCore._log_raster(input_raster=facc_output_path, output_path=facc_log_output_path)
+                self.log_raster(input_raster=facc_output_path, output_path=facc_log_output_path)
                 if not os.path.exists(facc_log_output_path):
                     raise RuntimeError(f"[ExtractValleys] Log-scaled accumulation output not found at {facc_log_output_path}")
             except Exception as e:
-                raise RuntimeError(f"[ExtractValleys] Log-scaled accumulation failed: {e}")
+                msg = f"[ExtractValleys] Log-scaled accumulation failed: {e}"
+                if feedback:
+                    feedback.pushWarning(msg)
+                else:
+                    warnings.warn(msg)
 
             if feedback:
                 feedback.pushInfo(f"[ExtractValleys] Extracting streams (threshold={accumulation_threshold})")
@@ -1452,7 +1656,7 @@ class TopoDrainCore:
 
         Args:
             dtm_path (str):
-                Path to the input DTM GeoTIFF.
+                Path to input DTM raster (supports all GDAL formats in gdal_driver_mapping).
             inverted_filled_output_path (str, optional):
                 Where to save the inverted‐DTM’s filled DEM (GeoTIFF, “.tif”).
             inverted_fdir_output_path (str, optional):
@@ -1914,8 +2118,20 @@ class TopoDrainCore:
         else:
             print(f"[GetKeypoints] Starting keypoint detection on {len(valley_lines)} valley lines...")
 
-        with rasterio.open(dtm_path) as src:
-            pixel_size = src.res[0]
+        # Read DTM raster using GDAL
+        dtm_ds = gdal.Open(dtm_path, gdal.GA_ReadOnly)
+        if dtm_ds is None:
+            raise RuntimeError(f"Cannot open DTM raster: {dtm_path}.{self._get_gdal_error_message()}")
+            
+        try:
+            # Get raster information
+            geotransform = dtm_ds.GetGeoTransform()
+            if geotransform is None:
+                raise RuntimeError(f"Cannot get geotransform from DTM raster: {dtm_path}.{self._get_gdal_error_message()}")
+            
+            res = geotransform[1]  # pixel width
+            dtm_band = dtm_ds.GetRasterBand(1)
+            
             # Auto-calculate find_window_distance based on pixel size
             processed_lines = 0
             skipped_lines = 0
@@ -1927,7 +2143,7 @@ class TopoDrainCore:
                 line_id = row.LINK_ID
                 length = line.length
                 # Sample at pixel resolution - use pixel size as sampling distance
-                sampling_distance = pixel_size
+                sampling_distance = res
                 num_samples = max(int(length / sampling_distance), 2)  # At least 2 samples
 
                 # Progress reporting for every line (or every 5 lines for large datasets)
@@ -1942,13 +2158,37 @@ class TopoDrainCore:
                 distances = np.linspace(0, length, num=num_samples)
                 sample_points = [line.interpolate(d) for d in distances]
                 coords = [(pt.x, pt.y) for pt in sample_points]
-                elevations = [val[0] for val in sample_gen(src, coords)]
+                
+                # Convert world coordinates to pixel coordinates using utility function
+                pixel_indices = TopoDrainCore._coords_to_pixel_indices(coords, geotransform)
+                
+                # Sample elevations using GDAL
+                elevations = []
+                for px, py in pixel_indices:
+                    # Read elevation value at pixel location
+                    try:
+                        elevation_array = dtm_band.ReadAsArray(px, py, 1, 1)
+                        if elevation_array is not None and elevation_array.size > 0:
+                            elevations.append(float(elevation_array[0, 0]))
+                        else:
+                            # Use a default value if pixel is outside raster bounds
+                            elevations.append(0.0)
+                    except:
+                        # Handle any GDAL errors
+                        elevations.append(0.0)
 
-                # Smooth elevation profile
-                elev_smooth = savgol_filter(elevations, smoothing_window, polyorder) ###### Maybe plot later?
-
-                # Second derivative = curvature
-                curvature = savgol_filter(elevations, smoothing_window, polyorder, deriv=2) ###### or better derivative of elev_smooth?
+                # Smooth elevation profile first
+                elev_smooth = savgol_filter(elevations, smoothing_window, polyorder)
+                
+                # Calculate curvature (second derivative) directly from smoothed data using numpy gradient
+                # This avoids double-smoothing while still working with clean data
+                curvature = np.gradient(np.gradient(elev_smooth))
+                
+                # Alternative approaches:
+                # Option 1 - Direct savgol on raw data (single smoothing): 
+                # curvature = savgol_filter(elevations, smoothing_window, polyorder, deriv=2)
+                # Option 2 - Double smoothing (may over-smooth):
+                # curvature = savgol_filter(elev_smooth, smoothing_window, polyorder, deriv=2)
 
                 # Find concave→convex transitions
                 find_window = max(3, find_window_cells)  # At least 3 pixels, maybe later as input parameter? e.g. Nr. of cells?
@@ -1984,6 +2224,9 @@ class TopoDrainCore:
                         feedback.pushInfo(f"[GetKeypoints] Line {line_id}: found {line_keypoints} keypoints (total: {total_keypoints})")
                     else:
                         feedback.pushInfo(f"[GetKeypoints] Line {line_id}: no keypoints found")
+                        
+        finally:
+            dtm_ds = None  # Close GDAL dataset
 
         gdf = gpd.GeoDataFrame(results, geometry="geometry", crs=self.crs)
 
@@ -2006,13 +2249,13 @@ class TopoDrainCore:
         max_offset: int = 10
     ) -> tuple[Point, Point]:
         """
-        Determine two start points to the left and right of a given point, orthogonal to an input line.
+        Determine two start points to the left and right of a given point, orthogonal to an input line using GDAL.
 
         The function searches along the orthogonal direction from a given point until it finds
         a non-barrier cell in the provided raster.
 
         Args:
-            barrier_raster_path (str): Path to binary raster (GeoTIFF) with 1 = barrier, 0 = free.
+            barrier_raster_path (str): Path to binary raster with 1 = barrier, 0 = free (supports all GDAL formats in gdal_driver_mapping).
             point (Point): The reference point (typically a keypoint on a valley line).
             line_geom (LineString): Reference line geometry used to determine orientation, e.g. valley line.
             max_offset (int): Maximum number of cells to move outward when searching.
@@ -2021,63 +2264,87 @@ class TopoDrainCore:
             tuple: (left_point, right_point), or (None, None) if no valid points found.
         """
         print(f"[GetOrthogonalDirectionsStartPoints] Checking point {point}, max_offset={max_offset}")
-        with rasterio.open(barrier_raster_path) as src:
-            barrier_mask = src.read(1)
-            rows, cols = barrier_mask.shape
-            res = src.res[0]  # assumes square pixels
-
-            # Find nearest segment and compute tangent vector
-            nearest_pt = nearest_points(point, line_geom)[1]
-            coords = list(line_geom.coords)
-
-            min_dist = float("inf")
-            tangent = None
-            for i in range(1, len(coords)):
-                seg = LineString([coords[i - 1], coords[i]])
-                dist = seg.distance(nearest_pt)
-                if dist < min_dist:
-                    min_dist = dist
-                    dx = coords[i][0] - coords[i - 1][0]
-                    dy = coords[i][1] - coords[i - 1][1]
-                    norm = np.linalg.norm([dx, dy])
-                    if norm > 0:
-                        tangent = np.array([dx, dy]) / norm
-
-            if tangent is None:
+        
+        # Read barrier raster using GDAL
+        barrier_ds = gdal.Open(barrier_raster_path, gdal.GA_ReadOnly)
+        if barrier_ds is None:
+            print(f"[GetOrthogonalDirectionsStartPoints] Cannot open barrier raster: {barrier_raster_path}")
+            return None, None
+            
+        try:
+            # Get raster information
+            rows = barrier_ds.RasterYSize
+            cols = barrier_ds.RasterXSize
+            geotransform = barrier_ds.GetGeoTransform()
+            if geotransform is None:
+                print(f"[GetOrthogonalDirectionsStartPoints] Cannot get geotransform from: {barrier_raster_path}")
                 return None, None
+                
+            res = geotransform[1]  # pixel width (assumes square pixels)
+            
+            # Read barrier mask data
+            barrier_band = barrier_ds.GetRasterBand(1)
+            barrier_mask = barrier_band.ReadAsArray()
+            if barrier_mask is None:
+                print(f"[GetOrthogonalDirectionsStartPoints] Cannot read barrier data from: {barrier_raster_path}")
+                return None, None
+                
+        finally:
+            barrier_ds = None  # Close dataset
 
-            # Compute orthogonal direction vectors
-            ortho_left = np.array([-tangent[1], tangent[0]])
-            ortho_right = np.array([tangent[1], -tangent[0]])
+        # Find nearest segment and compute tangent vector
+        nearest_pt = nearest_points(point, line_geom)[1]
+        coords = list(line_geom.coords)
 
-            def find_valid_point(direction_vec):
-                for i in range(1, max_offset + 1):
-                    offset = res * i
-                    test_x = point.x + direction_vec[0] * offset
-                    test_y = point.y + direction_vec[1] * offset
+        min_dist = float("inf")
+        tangent = None
+        for i in range(1, len(coords)):
+            seg = LineString([coords[i - 1], coords[i]])
+            dist = seg.distance(nearest_pt)
+            if dist < min_dist:
+                min_dist = dist
+                dx = coords[i][0] - coords[i - 1][0]
+                dy = coords[i][1] - coords[i - 1][1]
+                norm = np.linalg.norm([dx, dy])
+                if norm > 0:
+                    tangent = np.array([dx, dy]) / norm
 
-                    # use br.index to get the correct row/col
-                    row_idx, col_idx = src.index(test_x, test_y)
+        if tangent is None:
+            return None, None
 
-                    # now bounds-check
-                    if not (0 <= row_idx < rows and 0 <= col_idx < cols):
-                        continue
+        # Compute orthogonal direction vectors
+        ortho_left = np.array([-tangent[1], tangent[0]])
+        ortho_right = np.array([tangent[1], -tangent[0]])
 
-                    # barrier >= 1 means forbidden
-                    if barrier_mask[row_idx, col_idx] >= 1:
-                        print(f"[GetOrthogonalDirectionsStartPoints] Still on barrier at offset {i}.")
-                    else:
-                        new_point = Point(test_x, test_y)
-                        print(f"[GetOrthogonalDirectionsStartPoints] Found valid point at offset {i}: {new_point.wkt}")
-                        return new_point
-                    
-                print("[GetOrthogonalDirectionsStartPoints] No valid point found within max_offset.")
-                return None
+        def find_valid_point(direction_vec):
+            for i in range(1, max_offset + 1):
+                offset = res * i
+                test_x = point.x + direction_vec[0] * offset
+                test_y = point.y + direction_vec[1] * offset
 
-            left_pt = find_valid_point(ortho_left)
-            right_pt = find_valid_point(ortho_right)
+                # Convert world coordinates to pixel indices using GDAL geotransform
+                px = int((test_x - geotransform[0]) / geotransform[1])
+                py = int((test_y - geotransform[3]) / geotransform[5])
 
-            return left_pt, right_pt
+                # Bounds check
+                if not (0 <= py < rows and 0 <= px < cols):
+                    continue
+
+                # barrier >= 1 means forbidden
+                if barrier_mask[py, px] >= 1:
+                    print(f"[GetOrthogonalDirectionsStartPoints] Still on barrier at offset {i}.")
+                else:
+                    new_point = Point(test_x, test_y)
+                    print(f"[GetOrthogonalDirectionsStartPoints] Found valid point at offset {i}: {new_point.wkt}")
+                    return new_point
+                
+            print("[GetOrthogonalDirectionsStartPoints] No valid point found within max_offset.")
+            return None
+
+        left_pt = find_valid_point(ortho_left)
+        right_pt = find_valid_point(ortho_right)
+
+        return left_pt, right_pt
         
     @staticmethod
     def _get_linedirection_start_point(
@@ -2308,7 +2575,7 @@ class TopoDrainCore:
         You can now set penalty_exp>1 to punish larger deviations more heavily.
 
         Args:
-            dtm_path (str): Path to the digital terrain model (GeoTIFF).
+            dtm_path (str): Path to input DTM raster (supports all GDAL formats in gdal_driver_mapping).
             start_point (Point): Starting point of the constant slope line.
             output_cost_raster_path (str): Path to output cost raster.
             slope (float): Desired slope (1% downhill = 0.01).
@@ -2586,7 +2853,7 @@ class TopoDrainCore:
         from there in subsequent iterations.
 
         Args:
-            dtm_path (str): Path to the digital terrain model (GeoTIFF).
+            dtm_path (str): Path to input DTM raster (supports all GDAL formats in gdal_driver_mapping).
             start_point (Point): Starting point of the constant slope line.
             destination_raster_path (str): Path to the binary raster indicating destination cells (1 = destination).
             slope (float): Desired slope for the line (e.g., 0.01 for 1% downhill or -0.01 for uphill).
@@ -2619,6 +2886,7 @@ class TopoDrainCore:
             backlink_raster_path = os.path.join(self.temp_directory, f"backlink_iter_{iteration}.tif")
             best_destination_raster_path = os.path.join(self.temp_directory, f"destination_best_iter_{iteration}.tif")
             pathway_raster_path = os.path.join(self.temp_directory, f"pathway_iter_{iteration}.tif")
+            pathway_vector_path = os.path.join(self.temp_directory, f"pathway_iter_{iteration}.shp")
 
             print(f"[GetConstantSlopeLine] Create cost slope raster for iteration {iteration + 1}")
             # --- Create cost raster ---
@@ -2685,6 +2953,7 @@ class TopoDrainCore:
                 pathway_raster_path, 
                 snap_to_start_point=current_start_point, 
                 snap_to_endpoint=best_destination_point, 
+                output_vector_path=pathway_vector_path,
                 feedback=feedback
             )
 

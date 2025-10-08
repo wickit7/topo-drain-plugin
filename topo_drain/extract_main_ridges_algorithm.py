@@ -12,7 +12,6 @@ from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterVectorLayer
                        QgsProcessingParameterNumber, QgsProcessingParameterBoolean,
                        QgsProcessing, QgsProcessingParameterFeatureSource, QgsProcessingException)
 import os
-import geopandas as gpd
 from .utils import get_crs_from_layer, update_core_crs_if_needed, ensure_whiteboxtools_configured, save_gdf_to_file, load_gdf_from_file, load_gdf_from_qgis_source, get_raster_ext, get_vector_ext
 
 pluginPath = os.path.dirname(__file__)
@@ -192,15 +191,17 @@ Line layer containing main ridge lines with attributes: LINK_ID, TRIB_ID, RANK, 
         clip_to_perimeter = self.parameterAsBool(parameters, self.CLIP_TO_PERIMETER, context)
 
         # Extract actual file path from layer object for processing
-        main_ridges_file_path = main_ridges_output_layer if isinstance(main_ridges_output_layer, str) else main_ridges_output_layer
+        main_ridges_file_path = main_ridges_output_layer
+        
+        # Validate output vector format compatibility with OGR driver mapping
+        output_ext = get_vector_ext(main_ridges_file_path, feedback, check_existence=False)
+        if hasattr(self.core, 'ogr_driver_mapping') and output_ext not in self.core.ogr_driver_mapping:
+            feedback.pushWarning(f"Output file format '{output_ext}' is not in OGR driver mapping. Supported formats: {supported_vector_formats}. GeoPandas will attempt to save it automatically.")
 
         feedback.pushInfo("Reading CRS from ridge lines...")
         # Read CRS from the ridge lines layer with safe fallback
         ridge_crs = get_crs_from_layer(ridge_lines_layer, fallback_crs="EPSG:2056")
         feedback.pushInfo(f"Ridge lines CRS: {ridge_crs}")
-
-        feedback.pushInfo("Processing extract_main_ridges via TopoDrainCore...")
-
         # Update core CRS if needed (ridge_crs is guaranteed to be valid)
         update_core_crs_if_needed(self.core, ridge_crs, feedback)
 
@@ -208,9 +209,7 @@ Line layer containing main ridge lines with attributes: LINK_ID, TRIB_ID, RANK, 
         feedback.pushInfo("Loading ridge lines...")
         try:
             ridge_lines_gdf = load_gdf_from_file(ridge_lines_path, feedback)
-            
-            # Manually set the safe CRS
-            ridge_lines_gdf.crs = ridge_crs
+            ridge_lines_gdf.crs = self.core.crs
             feedback.pushInfo(f"Successfully loaded {len(ridge_lines_gdf)} ridge line features with safe CRS: {ridge_crs}")
         except Exception as e:
             feedback.pushInfo(f"Failed to load ridge lines with safe CRS handling: {e}")
@@ -227,7 +226,7 @@ Line layer containing main ridge lines with attributes: LINK_ID, TRIB_ID, RANK, 
                 # Load perimeter features with automatic data cleaning
                 perimeter_gdf = load_gdf_from_qgis_source(perimeter_layer, feedback)
                 if not perimeter_gdf.empty:
-                    perimeter_gdf.crs = ridge_crs  # Use same safe CRS as ridge lines
+                    perimeter_gdf.crs = self.core.crs
                     feedback.pushInfo(f"Successfully loaded {len(perimeter_gdf)} perimeter features with safe CRS")
             except Exception as e:
                 feedback.pushInfo(f"Failed to load perimeter with safe CRS handling: {e}")

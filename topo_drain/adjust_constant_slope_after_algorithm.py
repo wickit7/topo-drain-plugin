@@ -268,7 +268,12 @@ Parameters:
         max_iterations_barrier = self.parameterAsInt(parameters, self.MAX_ITERATIONS_BARRIER, context)
 
         # Extract file paths
-        adjusted_lines_path = adjusted_lines_output if isinstance(adjusted_lines_output, str) else adjusted_lines_output
+        adjusted_lines_path = adjusted_lines_output
+        
+        # Validate output vector format compatibility with OGR driver mapping
+        output_ext = get_vector_ext(adjusted_lines_path, feedback, check_existence=False)
+        if hasattr(self.core, 'ogr_driver_mapping') and output_ext not in self.core.ogr_driver_mapping:
+            feedback.pushWarning(f"Output file format '{output_ext}' is not in OGR driver mapping. Supported formats: {supported_vector_formats}. GeoPandas will attempt to save it automatically.")
 
         feedback.pushInfo("Reading CRS from DTM...")
         # Read CRS from the DTM using QGIS layer

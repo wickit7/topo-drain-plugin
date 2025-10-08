@@ -194,25 +194,25 @@ Line layer containing main valley lines with attributes: LINK_ID, TRIB_ID, RANK,
         clip_to_perimeter = self.parameterAsBool(parameters, self.CLIP_TO_PERIMETER, context)
 
         # Extract actual file path from layer object for processing
-        main_valleys_file_path = main_valleys_output_layer if isinstance(main_valleys_output_layer, str) else main_valleys_output_layer
+        main_valleys_file_path = main_valleys_output_layer
+        
+        # Validate output vector format compatibility with OGR driver mapping
+        output_ext = get_vector_ext(main_valleys_file_path, feedback, check_existence=False)
+        if hasattr(self.core, 'ogr_driver_mapping') and output_ext not in self.core.ogr_driver_mapping:
+            feedback.pushWarning(f"Output file format '{output_ext}' is not in OGR driver mapping. Supported formats: {supported_vector_formats}. GeoPandas will attempt to save it automatically.")
 
         feedback.pushInfo("Reading CRS from valley lines...")
         # Read CRS from the valley lines layer with safe fallback
         valley_crs = get_crs_from_layer(valley_lines_layer, fallback_crs="EPSG:2056")
         feedback.pushInfo(f"Valley lines CRS: {valley_crs}")
-
-        feedback.pushInfo("Processing extract_main_valleys via TopoDrainCore...")
-
-        # Update core CRS if needed (valley_crs is guaranteed to be valid)
+        # Update core CRS if needed (valley_crs is supposed to be valid)
         update_core_crs_if_needed(self.core, valley_crs, feedback)
         
         # Load input data as GeoDataFrame with Windows-safe CRS handling
         feedback.pushInfo("Loading valley lines...")
         try:
             valley_lines_gdf = load_gdf_from_file(valley_lines_path, feedback)
-            
-            # Manually set the safe CRS
-            valley_lines_gdf.crs = valley_crs
+            valley_lines_gdf.crs = self.core.crs
             feedback.pushInfo(f"Successfully loaded {len(valley_lines_gdf)} valley line features with safe CRS: {valley_crs}")
         except Exception as e:
             feedback.pushInfo(f"Failed to load valley lines with safe CRS handling: {e}")
@@ -229,7 +229,7 @@ Line layer containing main valley lines with attributes: LINK_ID, TRIB_ID, RANK,
                 # Load perimeter features with automatic data cleaning
                 perimeter_gdf = load_gdf_from_qgis_source(perimeter_source, feedback)
                 if not perimeter_gdf.empty:
-                    perimeter_gdf.crs = valley_crs  # Use same safe CRS as valley lines
+                    perimeter_gdf.crs = self.core.crs 
                     feedback.pushInfo(f"Successfully loaded {len(perimeter_gdf)} perimeter features with safe CRS")
             except Exception as e:
                 feedback.pushInfo(f"Failed to load perimeter with safe CRS handling: {e}")

@@ -301,7 +301,12 @@ Parameters:
             feedback.pushInfo("No slope adjustment will be applied")
 
         # Extract file paths
-        slope_lines_path = slope_lines_output if isinstance(slope_lines_output, str) else slope_lines_output
+        slope_lines_path = slope_lines_output
+        
+        # Validate output vector format compatibility with OGR driver mapping
+        output_ext = get_vector_ext(slope_lines_path, feedback, check_existence=False)
+        if hasattr(self.core, 'ogr_driver_mapping') and output_ext not in self.core.ogr_driver_mapping:
+            feedback.pushWarning(f"Output file format '{output_ext}' is not in OGR driver mapping. Supported formats: {supported_vector_formats}. GeoPandas will attempt to save it automatically.")
 
         feedback.pushInfo("Reading CRS from DTM...")
         # Read CRS from the DTM using QGIS layer

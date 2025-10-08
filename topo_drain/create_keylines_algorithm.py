@@ -271,7 +271,12 @@ another valley line, alternating between the two."""
         slope = self.parameterAsDouble(parameters, self.SLOPE, context)
 
         # Extract file paths
-        keylines_path = keylines_output if isinstance(keylines_output, str) else keylines_output
+        keylines_path = keylines_output
+        
+        # Validate output vector format compatibility with OGR driver mapping
+        output_ext = get_vector_ext(keylines_path, feedback, check_existence=False)
+        if hasattr(self.core, 'ogr_driver_mapping') and output_ext not in self.core.ogr_driver_mapping:
+            feedback.pushWarning(f"Output file format '{output_ext}' is not in OGR driver mapping. Supported formats: {supported_vector_formats}. GeoPandas will attempt to save it automatically.")
 
         # Optional slope adjustment parameters
         change_after = self.parameterAsDouble(parameters, self.CHANGE_AFTER, context) if parameters.get(self.CHANGE_AFTER) is not None else None
