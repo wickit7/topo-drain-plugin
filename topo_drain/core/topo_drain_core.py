@@ -13,35 +13,12 @@ import warnings
 import uuid
 import numpy as np
 import geopandas as gpd
-import rasterio
 from shapely.geometry import LineString, MultiLineString, Point, Polygon
 from shapely.ops import linemerge, nearest_points, substring
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import savgol_filter
 import re
-import subprocess
-from osgeo import gdal, ogr, osr
-
-# Import QGIS dependencies only if available
-try:
-    from qgis.core import (
-        QgsBlockingProcess,
-        QgsProcessingFeedback,
-        QgsProcessingException,
-    )
-    from qgis.PyQt.QtCore import QProcess
-    try:
-        from qgis.utils import iface
-    except ImportError:
-        iface = None
-    QGIS_AVAILABLE = True
-except ImportError:
-    QGIS_AVAILABLE = False
-    QgsProcessingFeedback = None
-    QgsProcessingException = Exception
-
-# Progress regex for parsing WhiteboxTools output
-progress_regex = re.compile(r'\d+%')
+from osgeo import gdal, gdal_array, ogr
 
 # ---  Class TopoDrainCore ---
 class TopoDrainCore:
@@ -52,15 +29,15 @@ class TopoDrainCore:
         
         # Handle None whitebox_directory gracefully
         if whitebox_directory is None:
-            print("[TopoDrainCore] No WhiteboxTools directory provided - will configure later")
+            print("[TopoDrainCore] No WhiteboxTools directory provided")
             self.whitebox_directory = None  # Keep as None to trigger lazy loading
         else:
             self.whitebox_directory = whitebox_directory
-        print(f"[TopoDrainCore] WhiteboxTools directory: {self.whitebox_directory if self.whitebox_directory else 'Not set (will configure later)'}")
+        print(f"[TopoDrainCore] WhiteboxTools directory: {self.whitebox_directory if self.whitebox_directory else 'Not set'}")
         
         self.nodata = nodata if nodata is not None else -32768
         print(f"[TopoDrainCore] NoData value set to: {self.nodata}")
-        self.crs = crs if crs is not None else "EPSG:2056"
+        self.crs = crs if crs is not None else "EPSG:4326"
         print(f"[TopoDrainCore] crs value set to: {self.crs}")
         self.temp_directory = temp_directory if temp_directory is not None else None
         print(f"[TopoDrainCore] Temp directory set to: {self.temp_directory if self.temp_directory else 'Not set'}")
@@ -111,6 +88,7 @@ class TopoDrainCore:
             return None
             
         try:
+            # Add WhiteboxTools directory to sys path
             if whitebox_directory not in sys.path:
                 sys.path.insert(0, whitebox_directory)
                 
@@ -118,24 +96,27 @@ class TopoDrainCore:
             wbt_path = os.path.join(whitebox_directory, "whitebox_tools.py")
             if not os.path.exists(wbt_path):
                 print(f"[TopoDrainCore] WhiteboxTools not found at {wbt_path}")
-                print("[TopoDrainCore] WhiteboxTools will be configured when available")
                 return None
-                
+            
+            # Step 1: Create the specification for WhiteboxTools module
             spec = importlib.util.spec_from_file_location("whitebox_tools", wbt_path)
             if spec is None or spec.loader is None:
                 print(f"[TopoDrainCore] Could not create spec for WhiteboxTools from {wbt_path}")
                 return None
-                
+            
+            # Step 2: Create empty module from spec
             whitebox_tools_mod = importlib.util.module_from_spec(spec)
+            # Step 3: Register module in sys.modules
             sys.modules["whitebox_tools"] = whitebox_tools_mod
+            # Step 4: Actually execute the module's code
             spec.loader.exec_module(whitebox_tools_mod)
+            # Step 5: Access classes/functions from the loaded module
             WhiteboxTools = whitebox_tools_mod.WhiteboxTools
-            print(f"[TopoDrainCore] Using WhiteboxTools from directory: {whitebox_directory}")
-                
+            # Step 6: Reference WhiteboxTools as wbt
             wbt = WhiteboxTools()
             if self.working_directory:
                 wbt.set_working_dir(self.working_directory)
-            print("[TopoDrainCore] WhiteboxTools successfully initialized")
+            print(f"[TopoDrainCore] Using WhiteboxTools from directory: {whitebox_directory}")
             return wbt
             
         except Exception as e:
@@ -143,6 +124,7 @@ class TopoDrainCore:
             print("[TopoDrainCore] WhiteboxTools will be configured when available")
             return None
 
+    ## GDAL/OGR setting functions
     def _configure_gdal(self):
         """
         Configure GDAL/OGR settings for the entire class instance.
@@ -203,63 +185,6 @@ class TopoDrainCore:
             error_msg = TopoDrainCore._get_gdal_error_message()
             raise RuntimeError(f"{operation_name} failed.{error_msg} (Error code: {error_code})")
 
-    @staticmethod
-    def _pixel_indices_to_coords(rows, cols, geotransform):
-        """
-        Convert pixel row,col indices to world coordinates using GDAL geotransform.
-        Returns coordinates at the center of each pixel.
-        
-        GDAL Geotransform parameters:
-        GT(0) x-coordinate of the upper-left corner of the upper-left pixel
-        GT(1) w-e pixel resolution / pixel width
-        GT(2) row rotation (typically zero)
-        GT(3) y-coordinate of the upper-left corner of the upper-left pixel
-        GT(4) column rotation (typically zero)
-        GT(5) n-s pixel resolution / pixel height (negative value for a north-up image)
-        
-        Args:
-            rows (array-like): Row indices of pixels
-            cols (array-like): Column indices of pixels
-            geotransform (tuple): GDAL geotransform parameters (6 values)
-            
-        Returns:
-            list: List of (x, y) coordinate tuples in world coordinates
-        """
-        coords = []
-        for row, col in zip(rows, cols):
-            # Convert pixel indices to world coordinates (center of pixel)
-            x = geotransform[0] + (col + 0.5) * geotransform[1] + (row + 0.5) * geotransform[2]
-            y = geotransform[3] + (col + 0.5) * geotransform[4] + (row + 0.5) * geotransform[5]
-            coords.append((x, y))
-        return coords
-
-    @staticmethod
-    def _coords_to_pixel_indices(coords, geotransform):
-        """
-        Convert world coordinates to pixel indices using GDAL geotransform.
-        
-        GDAL Geotransform parameters:
-        GT(0) x-coordinate of the upper-left corner of the upper-left pixel
-        GT(1) w-e pixel resolution / pixel width
-        GT(2) row rotation (typically zero)
-        GT(3) y-coordinate of the upper-left corner of the upper-left pixel
-        GT(4) column rotation (typically zero)
-        GT(5) n-s pixel resolution / pixel height (negative value for a north-up image)
-        
-        Args:
-            coords (list): List of (x, y) coordinate tuples in world coordinates
-            geotransform (tuple): GDAL geotransform parameters (6 values)
-            
-        Returns:
-            list: List of (px, py) pixel index tuples
-        """
-        pixel_indices = []
-        for x, y in coords:
-            px = int((x - geotransform[0]) / geotransform[1])
-            py = int((y - geotransform[3]) / geotransform[5])
-            pixel_indices.append((px, py))
-        return pixel_indices
-
     def _get_gdal_driver_from_path(self, file_path: str) -> str:
         """
         Get appropriate GDAL driver name based on file extension.
@@ -286,7 +211,8 @@ class TopoDrainCore:
         ext = os.path.splitext(file_path)[1].lower()
         return self.ogr_driver_mapping.get(ext, 'ESRI Shapefile')  # Default to Shapefile if unknown extension
 
-    ## Setters for configuration
+
+    ## Setters for class configuration
     def set_temp_directory(self, temp_dir):
         self.temp_directory = temp_dir
 
@@ -301,16 +227,17 @@ class TopoDrainCore:
     def set_crs(self, crs):
         self.crs = crs
 
-    def _execute_wbt(self, tool_name, feedback=None, **kwargs):
+    ## WhiteboxTools helper functions
+    def _execute_wbt(self, tool_name, feedback=None, report_progress=True, **kwargs):
         """
-        Execute a WhiteboxTools command with progress monitoring.
-        Similar to the WBT for QGIS plugin's execute() function.
-
+        Execute a WhiteboxTools command using the Python API.
+        
         Args:
             tool_name (str): Name of the WhiteboxTools command
             feedback (QgsProcessingFeedback, optional): Feedback object for progress reporting
+            report_progress (bool): Whether to report progress via setProgress calls. Default True.
             **kwargs: Tool parameters as keyword arguments
-
+            
         Returns:
             int: Return code (0 = success)
             
@@ -318,143 +245,64 @@ class TopoDrainCore:
             RuntimeError: If WhiteboxTools is not properly configured
         """
         # Check if WhiteboxTools is available
-        if self.wbt is None or self.whitebox_directory is None:
+        if self.wbt is None:
             error_msg = "WhiteboxTools is not properly configured. Please ensure WhiteboxTools plugin is loaded and configured."
             if feedback:
                 feedback.reportError(error_msg)
             raise RuntimeError(error_msg)
+        
+        # Create callback function for progress reporting and logging
+        def callback_func(message):
+            # Check for cancellation first - this allows immediate cancellation during WhiteboxTools execution
+            if feedback and feedback.isCanceled():
+                raise RuntimeError("[WBT] Process cancelled by user during WhiteboxTools execution.")
             
-        if feedback is None and QGIS_AVAILABLE:
-            feedback = QgsProcessingFeedback()
-
-        # Build command line arguments
-        wbt_executable = os.path.join(self.whitebox_directory, "whitebox_tools")
-        if os.name == 'nt':  # Windows
-            wbt_executable += ".exe"
-        
-        # Normalize path separators for consistency
-        wbt_executable = os.path.normpath(wbt_executable)
-
-        arguments = [wbt_executable, f'--run={tool_name}']
-
-        # Add parameters
-        for param, value in kwargs.items():
-            if value is not None:
-                arguments.append(f'--{param}="{value}"')
-
-        # Create display command with proper quoting for paths with spaces
-        display_args = []
-        for i, arg in enumerate(arguments):
-            if i == 0 and ' ' in arg:  # Quote the executable if it contains spaces
-                display_args.append(f'"{arg}"')
-            else:
-                display_args.append(arg)
-        fused_command = ' '.join(display_args)
-        
-        if feedback:
-            feedback.pushInfo('WhiteboxTools command:')
-            feedback.pushCommandInfo(fused_command)
-            feedback.pushInfo('WhiteboxTools output:')
-        else:
-            print(f"[TopoDrainCore] Executing WhiteboxTools command: {fused_command}")
-            print("[TopoDrainCore] WhiteboxTools output: ")
-
-        if QGIS_AVAILABLE and feedback:
-            # Use QGIS process handling with progress monitoring
-            return self._execute_with_qgis_process(arguments, feedback)
-        else:
-            # Fallback to subprocess
-            return self._execute_with_subprocess(arguments)
-
-    def _execute_with_qgis_process(self, arguments, feedback=None):
-        """Execute using QGIS QgsBlockingProcess with progress monitoring."""
-        
-        def on_stdout(ba):
-            val = ba.data().decode('utf-8')
-            if '%' in val:
-                # Extract progress percentage
-                match = progress_regex.search(val)
-                if match:
-                    progress_str = match.group(0).rstrip('%')
+            if feedback:
+                # Parse progress percentage if available and report_progress is True
+                if '%' in message and report_progress:
                     try:
-                        progress = int(progress_str)
-                        if feedback:    
+                        # Extract progress from messages like "Progress: 45%"
+                        parts = message.split('%')
+                        if len(parts) > 1:
+                            progress_part = parts[0].strip().split()[-1]
+                            progress = int(progress_part)
                             feedback.setProgress(progress)
-                        else:
-                            print(f"[QWhiteboxTools] Progress: {progress}%")
-                    except ValueError:
-                        pass
-                else:
-                    on_stdout.buffer += val
+                    except (ValueError, IndexError):
+                        pass  # If parsing fails, just ignore progress
+                
+                # Send all output to feedback (always enabled regardless of report_progress)
+                if message.strip():
+                    feedback.pushConsoleInfo(message.strip())
             else:
-                on_stdout.buffer += val
-
-            if on_stdout.buffer.endswith(('\n', '\r')):
-                if feedback:
-                    feedback.pushConsoleInfo(on_stdout.buffer.rstrip())
-                else:
-                    print(on_stdout.buffer.rstrip())
-                on_stdout.buffer = ''
-
-        on_stdout.buffer = ''
-
-        def on_stderr(ba):
-            val = ba.data().decode('utf-8')
-            on_stderr.buffer += val
-
-            if on_stderr.buffer.endswith(('\n', '\r')):
-                if feedback:
-                    feedback.reportError(on_stderr.buffer.rstrip())
-                else:
-                    print(on_stderr.buffer.rstrip())
-                on_stderr.buffer = ''
-
-        on_stderr.buffer = ''
-
-        # Use the first argument as command and rest as arguments
-        # This properly handles paths with spaces without needing to join/split
-        command = arguments[0]
-        args = arguments[1:]
-        proc = QgsBlockingProcess(command, args)
-        proc.setStdOutHandler(on_stdout)
-        proc.setStdErrHandler(on_stderr)
-
-        res = proc.run(feedback)
+                # Print to console when no feedback available
+                if message.strip():
+                    print(f"[WBT] {message.strip()}")
         
-        if feedback.isCanceled() and res != 0:
-            feedback.pushInfo('Process was canceled and did not complete.')
-        elif not feedback.isCanceled() and proc.exitStatus() == QProcess.CrashExit:
-            raise QgsProcessingException('Process was unexpectedly terminated.')
-        elif res == 0:
-            if feedback:
-                feedback.pushInfo('Process completed successfully.')
-            else:
-                print('Process completed successfully.')
-        elif proc.processError() == QProcess.FailedToStart:
-            raise QgsProcessingException(f'Process "{command}" failed to start. Either "{command}" is missing, or you may have insufficient permissions to run the program.')
+        # Get the tool method from WhiteboxTools object
+        tool_method = getattr(self.wbt, tool_name, None)
+        if tool_method is not None:
+            # Use the convenience method if available (cleaner and more reliable)
+            try:
+                return tool_method(callback=callback_func, **kwargs)
+            except Exception as e:
+                if feedback:
+                    feedback.reportError(f"WhiteboxTools error: {e}")
+                raise RuntimeError(f"WhiteboxTools error: {e}")
         else:
-            if feedback:
-                feedback.reportError(f'Process returned error code {res}')
-            else:
-                print(f'Process returned error code {res}') 
-
-        return res
-
-    def _execute_with_subprocess(self, arguments):
-        """Fallback execution using subprocess."""
-        try:
-            result = subprocess.run(arguments, capture_output=True, text=True, check=False)
+            # Fallback to run_tool method for tools without convenience methods
+            # Build arguments list for the tool
+            args = []
+            for param, value in kwargs.items():
+                if value is not None:
+                    args.append(f"--{param}='{value}'")
             
-            if result.stdout:
-                print(result.stdout)
-            if result.stderr:
-                warnings.warn(result.stderr)
-                    
-            return result.returncode
-        except Exception as e:
-            warnings.warn(f"Error executing WhiteboxTools: {e}")
-            return 1
-    
+            try:
+                return self.wbt.run_tool(tool_name, args, callback=callback_func)
+            except Exception as e:
+                if feedback:
+                    feedback.reportError(f"WhiteboxTools error: {e}")
+                raise RuntimeError(f"WhiteboxTools error: {e}")
+
     ## Vector geometry functions
     @staticmethod
     def _merge_lines_by_distance(line_geometries):
@@ -761,7 +609,7 @@ class TopoDrainCore:
             # Get complete spatial reference system
             srs = ref_ds.GetSpatialRef()
             
-            res = geotransform[1]  # pixel width
+            res = abs(geotransform[1])  # pixel width
             
             # Validate geotransform
             if geotransform is None or len(geotransform) != 6:
@@ -910,10 +758,67 @@ class TopoDrainCore:
             return output_path
 
     ## Raster functions
-    # _mask_raster not used yet and therefore not debugged
-    def _mask_raster(self, raster_path: str, mask: gpd.GeoDataFrame, out_path: str) -> str:
+    @staticmethod
+    def _pixel_indices_to_coords(rows, cols, geotransform):
         """
-        Mask (clip) a raster file using a polygon mask using GDAL.
+        Convert pixel row,col indices to world coordinates using GDAL geotransform.
+        Returns coordinates at the center of each pixel.
+        
+        GDAL Geotransform parameters:
+        GT(0) x-coordinate of the upper-left corner of the upper-left pixel
+        GT(1) w-e pixel resolution / pixel width
+        GT(2) row rotation (typically zero)
+        GT(3) y-coordinate of the upper-left corner of the upper-left pixel
+        GT(4) column rotation (typically zero)
+        GT(5) n-s pixel resolution / pixel height (negative value for a north-up image)
+        
+        Args:
+            rows (array-like): Row indices of pixels
+            cols (array-like): Column indices of pixels
+            geotransform (tuple): GDAL geotransform parameters (6 values)
+            
+        Returns:
+            list: List of (x, y) coordinate tuples in world coordinates
+        """
+        coords = []
+        for row, col in zip(rows, cols):
+            # Convert pixel indices to world coordinates (center of pixel)
+            x = geotransform[0] + (col + 0.5) * geotransform[1] + (row + 0.5) * geotransform[2]
+            y = geotransform[3] + (col + 0.5) * geotransform[4] + (row + 0.5) * geotransform[5]
+            coords.append((x, y))
+        return coords
+
+    @staticmethod
+    def _coords_to_pixel_indices(coords, geotransform):
+        """
+        Convert world coordinates to pixel indices using GDAL geotransform.
+        
+        GDAL Geotransform parameters:
+        GT(0) x-coordinate of the upper-left corner of the upper-left pixel
+        GT(1) w-e pixel resolution / pixel width
+        GT(2) row rotation (typically zero)
+        GT(3) y-coordinate of the upper-left corner of the upper-left pixel
+        GT(4) column rotation (typically zero)
+        GT(5) n-s pixel resolution / pixel height (negative value for a north-up image)
+        
+        Args:
+            coords (list): List of (x, y) coordinate tuples in world coordinates
+            geotransform (tuple): GDAL geotransform parameters (6 values)
+            
+        Returns:
+            list: List of (px, py) pixel index tuples
+        """
+        pixel_indices = []
+        for x, y in coords:
+            px = int((x - geotransform[0]) / geotransform[1])
+            py = int((y - geotransform[3]) / geotransform[5])
+            pixel_indices.append((px, py))
+        return pixel_indices
+
+    # _clip_raster not used yet and therefore not debugged
+    def _clip_raster(self, raster_path: str, mask: gpd.GeoDataFrame, out_path: str) -> str:
+        """
+        Clip a raster file using a polygon mask using GDAL.
 
         Args:
             raster_path (str): Path to input raster (supports all GDAL formats in gdal_driver_mapping).
@@ -997,7 +902,7 @@ class TopoDrainCore:
 
         Args:
             dtm_path (str): Path to input DTM raster (supports all GDAL formats in gdal_driver_mapping).
-            output_path (str): Path to output inverted DTM raster (format determined by file extension).
+            output_path (str): Path to output inverted DTM raster.
             feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting.
 
         Returns:
@@ -1006,20 +911,28 @@ class TopoDrainCore:
         if self.wbt is None:
             raise RuntimeError("WhiteboxTools not initialized. Check WhiteboxTools configuration: QGIS settings -> Options -> Processing -> Provider -> WhiteboxTools -> WhiteboxTools executable.")
 
-        ret = self._execute_wbt(
-            'multiply',
-            feedback=feedback,
-            input1=dtm_path,
-            input2=-1.0,
-            output=output_path
-        )
-        
-        if ret != 0 or not os.path.exists(output_path):
-            raise RuntimeError(f"DTM inversion failed: WhiteboxTools returned {ret}, output not found at {output_path}")
+        try:
+            ret = self._execute_wbt(
+                'multiply',
+                feedback=feedback,
+                report_progress=False,  # Don't override main progress bar
+                input1=dtm_path,
+                input2=-1.0,
+                output=output_path
+            )
+            
+            if ret != 0 or not os.path.exists(output_path):
+                raise RuntimeError(f"DTM inversion failed: WhiteboxTools returned {ret}, output not found at {output_path}")
+        except Exception as e:
+            # Check if cancellation was the cause
+            if feedback and feedback.isCanceled():
+                feedback.reportError("Process cancelled by user during DTM inversion.")
+                raise RuntimeError('Process cancelled by user.')
+            raise RuntimeError(f"DTM inversion failed: {e}")
 
         return output_path
 
-    def log_raster(
+    def _log_raster(
         self,
         input_raster: str,
         output_path: str,
@@ -1146,13 +1059,14 @@ class TopoDrainCore:
         return output_path
 
     # Alternatively define constant value of absolute elevation at masked cells or input raster contains absolute elevation values
+    # Not tested yet
     def _modify_dtm_with_mask(
         self,
         dtm_path: str,
         mask: np.ndarray,
         elevation_add: float,
         output_path: str
-    ) -> str:
+        ) -> str:
         """
         Modify DTM by adding elevation to masked cells using GDAL.
 
@@ -1252,16 +1166,24 @@ class TopoDrainCore:
         if not output_vector_path:
             base, _ = os.path.splitext(raster_path)
             output_vector_path = base + ".shp"
-
-        ret = self._execute_wbt(
-            'raster_to_vector_lines',
-            feedback=feedback,
-            i=raster_path,
-            output=output_vector_path
-        )
-        
-        if ret != 0 or not os.path.exists(output_vector_path):
-            raise RuntimeError(f"Raster to vector lines failed: WhiteboxTools returned {ret}, output not found at {vector_path}")
+            
+        try:
+            ret = self._execute_wbt(
+                'raster_to_vector_lines',
+                feedback=feedback,
+                report_progress=False,  # Don't override main progress bar
+                i=raster_path,
+                output=output_vector_path
+            )
+            
+            if ret != 0 or not os.path.exists(output_vector_path):
+                raise RuntimeError(f"Raster to vector lines failed: WhiteboxTools returned {ret}, output not found at {output_vector_path}")
+        except Exception as e:
+            # Check if cancellation was the cause
+            if feedback and feedback.isCanceled():
+                feedback.reportError("Process cancelled by user during raster to vector conversion.")
+                raise RuntimeError('Process cancelled by user.')
+            raise RuntimeError(f"Raster to vector lines failed: {e}")
 
         gdf = gpd.read_file(output_vector_path)
         
@@ -1312,7 +1234,6 @@ class TopoDrainCore:
         # 6) Snap endpoint to destination cell center if requested
         if snap_to_endpoint:
             single_part_line = TopoDrainCore._snap_line_to_point(single_part_line, snap_to_endpoint, "end")
-
         
         return single_part_line
 
@@ -1320,8 +1241,8 @@ class TopoDrainCore:
     @staticmethod
     def _find_inflection_candidates(curvature: np.ndarray, window: int) -> list:
         """
-        Detect inflection points where the curvature changes from concave to convex,
-        using a moving average window. If none found, return point of strongest convexity.
+        Detect inflection points where the curvature changes from convex to concave,
+        using a moving average window. If none found, return point of strongest transition.
 
         Args:
             curvature (np.ndarray): Smoothed 2nd derivative of elevation profile.
@@ -1335,29 +1256,31 @@ class TopoDrainCore:
         for i in range(window, len(curvature) - window):
             before_avg = np.mean(curvature[i - window:i])
             after_avg = np.mean(curvature[i + 1:i + 1 + window])
-            if before_avg < 0 and after_avg > 0:
+            # Look for convex → concave transitions (positive to negative curvature)
+            if before_avg > 0 and after_avg < 0:
                 strength = abs(before_avg) + abs(after_avg)
                 candidates.append((i, strength))
 
-        # Fallback: wenn keine echten Übergänge gefunden wurden
+        # Fallback: if no clear convex → concave transitions found
         if not candidates:
-            warnings.warn("No clear concave → convex inflection points found. Using strongest average sign change as fallback.")
+            warnings.warn("No clear convex → concave inflection points found. Using strongest transition as fallback.")
             best_strength = -np.inf
             best_index = None
             for i in range(window, len(curvature) - window):
                 before_avg = np.mean(curvature[i - window:i])
                 after_avg = np.mean(curvature[i + 1:i + 1 + window])
-                strength = after_avg - before_avg
+                # Look for any significant transition (prioritize convex → concave)
+                strength = before_avg - after_avg  # Higher when going from positive to negative
                 if strength > best_strength:
                     best_strength = strength
                     best_index = i
             candidates = [(best_index, best_strength)]
 
-        # Sortieren nach Stärke
+        # Sort by strength (strongest transitions first)
         sorted_candidates = sorted(candidates, key=lambda x: x[1], reverse=True)
         return sorted_candidates
 
-
+    ## Core functions
     def extract_valleys(
         self,
         dtm_path: str,
@@ -1405,6 +1328,8 @@ class TopoDrainCore:
 
         if feedback:
             feedback.pushInfo("[ExtractValleys] Starting valley extraction process...")
+            feedback.pushInfo("[ExtractValleys] *Detailed WhiteboxTools output can be viewed in the Python Console")
+            feedback.setProgress(0)
         else:
             print("[ExtractValleys] Starting valley extraction process...")
 
@@ -1449,13 +1374,19 @@ class TopoDrainCore:
 
         try:
             if feedback:
-                feedback.pushInfo(f"[ExtractValleys] Filling depressions → {filled_output_path}")
+                feedback.pushInfo(f"[ExtractValleys] Step 1/7: Filling depressions → {filled_output_path}")
+                feedback.setProgress(10)
+                # Check if user has canceled process
+                if feedback.isCanceled():
+                    feedback.reportError("Process cancelled by user after step 1 initialization.")
+                    raise RuntimeError('Process cancelled by user.')
             else:
-                print(f"[ExtractValleys] Filling depressions → {filled_output_path}")
+                print(f"[ExtractValleys] Step 1/7: Filling depressions → {filled_output_path}")
             try:
                 ret = self._execute_wbt(
                     'breach_depressions_least_cost',
-                    feedback=feedback,
+                    feedback=feedback,  # Pass feedback to enable cancellation during execution
+                    report_progress=False,  # Don't override main progress bar
                     dem=dtm_path,
                     output=filled_output_path,
                     dist=int(dist_facc),
@@ -1465,32 +1396,44 @@ class TopoDrainCore:
                 if ret != 0 or not os.path.exists(filled_output_path):
                     raise RuntimeError(f"[ExtractValleys] Depression filling failed: WhiteboxTools returned {ret}, output not found at {filled_output_path}")
             except Exception as e:
+                # Check if cancellation was the cause
+                if feedback and feedback.isCanceled():
+                    feedback.reportError("Process cancelled by user during depression filling.")
+                    raise RuntimeError('Process cancelled by user.')
                 raise RuntimeError(f"[ExtractValleys] Depression filling failed: {e}")
 
             if feedback:
-                feedback.pushInfo(f"[ExtractValleys] Flow direction → {fdir_output_path}")
+                feedback.pushInfo(f"[ExtractValleys] Step 2/7: Computing flow direction → {fdir_output_path}")
+                feedback.setProgress(25)
             else:
-                print(f"[ExtractValleys] Flow direction → {fdir_output_path}")
+                print(f"[ExtractValleys] Step 2/7: Computing flow direction → {fdir_output_path}")
             try:
                 ret = self._execute_wbt(
                     'd8_pointer',
-                    feedback=feedback,
+                    feedback=feedback,  # Pass feedback to enable cancellation during execution
+                    report_progress=False,  # Don't override main progress bar
                     dem=filled_output_path,
                     output=fdir_output_path
                 )
                 if ret != 0 or not os.path.exists(fdir_output_path):
                     raise RuntimeError(f"[ExtractValleys] Flow direction failed: WhiteboxTools returned {ret}, output not found at {fdir_output_path}")
             except Exception as e:
+                # Check if cancellation was the cause
+                if feedback and feedback.isCanceled():
+                    feedback.reportError("Process cancelled by user during flow direction computation.")
+                    raise RuntimeError('Process cancelled by user.')
                 raise RuntimeError(f"[ExtractValleys] Flow direction failed: {e}")
 
             if feedback:
-                feedback.pushInfo(f"[ExtractValleys] Flow accumulation → {facc_output_path}")
+                feedback.pushInfo(f"[ExtractValleys] Step 3/7: Computing flow accumulation → {facc_output_path}")
+                feedback.setProgress(40)
             else:
-                print(f"[ExtractValleys] Flow accumulation → {facc_output_path}")
+                print(f"[ExtractValleys] Step 3/7: Computing flow accumulation → {facc_output_path}")
             try:
                 ret = self._execute_wbt(
                     'd8_flow_accumulation',
-                    feedback=feedback,
+                    feedback=feedback,  # Pass feedback to enable cancellation during execution
+                    report_progress=False,  # Don't override main progress bar
                     i=filled_output_path,
                     output=facc_output_path,
                     out_type="specific contributing area"
@@ -1498,14 +1441,19 @@ class TopoDrainCore:
                 if ret != 0 or not os.path.exists(facc_output_path):
                     raise RuntimeError(f"[ExtractValleys] Flow accumulation failed: WhiteboxTools returned {ret}, output not found at {facc_output_path}")
             except Exception as e:
+                # Check if cancellation was the cause
+                if feedback and feedback.isCanceled():
+                    feedback.reportError("Process cancelled by user during flow accumulation computation.")
+                    raise RuntimeError('Process cancelled by user.')
                 raise RuntimeError(f"[ExtractValleys] Flow accumulation failed: {e}")
 
             if feedback:
-                feedback.pushInfo(f"[ExtractValleys] Log-scaled accumulation → {facc_log_output_path}")
+                feedback.pushInfo(f"[ExtractValleys] Step 4/7: Creating log-scaled accumulation → {facc_log_output_path}")
+                feedback.setProgress(55)
             else:
-                print(f"[ExtractValleys] Log-scaled accumulation → {facc_log_output_path}")
+                print(f"[ExtractValleys] Step 4/7: Creating log-scaled accumulation → {facc_log_output_path}")
             try:
-                self.log_raster(input_raster=facc_output_path, output_path=facc_log_output_path)
+                self._log_raster(input_raster=facc_output_path, output_path=facc_log_output_path)
                 if not os.path.exists(facc_log_output_path):
                     raise RuntimeError(f"[ExtractValleys] Log-scaled accumulation output not found at {facc_log_output_path}")
             except Exception as e:
@@ -1516,13 +1464,15 @@ class TopoDrainCore:
                     warnings.warn(msg)
 
             if feedback:
-                feedback.pushInfo(f"[ExtractValleys] Extracting streams (threshold={accumulation_threshold})")
+                feedback.pushInfo(f"[ExtractValleys] Step 5/7: Extracting streams (threshold={accumulation_threshold})")
+                feedback.setProgress(70)
             else:
-                print(f"[ExtractValleys] Extracting streams (threshold={accumulation_threshold})")
+                print(f"[ExtractValleys] Step 5/7: Extracting streams (threshold={accumulation_threshold})")
             try:
                 ret = self._execute_wbt(
                     'extract_streams',
-                    feedback=feedback,
+                    feedback=feedback,  # Pass feedback to enable cancellation during execution
+                    report_progress=False,  # Don't override main progress bar
                     flow_accum=facc_output_path,
                     output=streams_output_path,
                     threshold=accumulation_threshold
@@ -1530,16 +1480,22 @@ class TopoDrainCore:
                 if ret != 0 or not os.path.exists(streams_output_path):
                     raise RuntimeError(f"[ExtractValleys] Stream extraction failed: WhiteboxTools returned {ret}, output not found at {streams_output_path}")
             except Exception as e:
+                # Check if cancellation was the cause
+                if feedback and feedback.isCanceled():
+                    feedback.reportError("Process cancelled by user during stream extraction.")
+                    raise RuntimeError('Process cancelled by user.')
                 raise RuntimeError(f"[ExtractValleys] Stream extraction failed: {e}")
 
             if feedback:
-                feedback.pushInfo("[ExtractValleys] Vectorizing streams")
+                feedback.pushInfo("[ExtractValleys] Step 6/7: Vectorizing streams")
+                feedback.setProgress(80)
             else:
-                print("[ExtractValleys] Vectorizing streams")
+                print("[ExtractValleys] Step 6/7: Vectorizing streams")
             try:
                 ret = self._execute_wbt(
                     'raster_streams_to_vector',
-                    feedback=feedback,
+                    feedback=feedback,  # Pass feedback to enable cancellation during execution
+                    report_progress=False,  # Don't override main progress bar
                     streams=streams_output_path,
                     d8_pntr=fdir_output_path,
                     output=streams_vec_output_path
@@ -1547,17 +1503,23 @@ class TopoDrainCore:
                 if ret != 0 or not os.path.exists(streams_vec_output_path):
                     raise RuntimeError(f"[ExtractValleys] Vectorizing streams failed: WhiteboxTools returned {ret}, output not found at {streams_vec_output_path}")
             except Exception as e:
+                # Check if cancellation was the cause
+                if feedback and feedback.isCanceled():
+                    feedback.reportError("Process cancelled by user during stream vectorization.")
+                    raise RuntimeError('Process cancelled by user.')
                 raise RuntimeError(f"[ExtractValleys] Vectorizing streams failed: {e}")
 
             streams_vec_id = streams_linked_output_path.replace(".shp", "_id.tif")
             try:
                 if feedback:
-                    feedback.pushInfo("[ExtractValleys] Identifying stream links")
+                    feedback.pushInfo("[ExtractValleys] Step 7/7: Processing network topology - Identifying stream links")
+                    feedback.setProgress(85)
                 else:
-                    print("[ExtractValleys] Identifying stream links")
+                    print("[ExtractValleys] Step 7/7: Processing network topology - Identifying stream links")
                 ret = self._execute_wbt(
                     'stream_link_identifier',
-                    feedback=feedback,
+                    feedback=feedback,  # Pass feedback to enable cancellation during execution
+                    report_progress=False,  # Don't override main progress bar
                     d8_pntr=fdir_output_path,
                     streams=streams_output_path,
                     output=streams_vec_id
@@ -1565,16 +1527,22 @@ class TopoDrainCore:
                 if ret != 0 or not os.path.exists(streams_vec_id):
                     raise RuntimeError(f"[ExtractValleys] Stream link identifier failed: WhiteboxTools returned {ret}, output not found at {streams_vec_id}")
             except Exception as e:
+                # Check if cancellation was the cause
+                if feedback and feedback.isCanceled():
+                    feedback.reportError("Process cancelled by user during stream link identification.")
+                    raise RuntimeError('Process cancelled by user.')
                 raise RuntimeError(f"[ExtractValleys] Stream link identifier failed: {e}")
 
             try:
                 if feedback:
-                    feedback.pushInfo("[ExtractValleys] Converting linked streams")
+                    feedback.pushInfo("[ExtractValleys] Converting linked streams to vectors")
+                    feedback.setProgress(90)
                 else:
-                    print("[ExtractValleys] Converting linked streams")
+                    print("[ExtractValleys] Converting linked streams to vectors")
                 ret = self._execute_wbt(
                     'raster_streams_to_vector',
-                    feedback=feedback,
+                    feedback=feedback,  # Pass feedback to enable cancellation during execution
+                    report_progress=False,  # Don't override main progress bar
                     streams=streams_vec_id,
                     d8_pntr=fdir_output_path,
                     output=streams_linked_output_path
@@ -1582,16 +1550,22 @@ class TopoDrainCore:
                 if ret != 0 or not os.path.exists(streams_linked_output_path):
                     raise RuntimeError(f"[ExtractValleys] Converting linked streams failed: WhiteboxTools returned {ret}, output not found at {streams_linked_output_path}")
             except Exception as e:
+                # Check if cancellation was the cause
+                if feedback and feedback.isCanceled():
+                    feedback.reportError("Process cancelled by user during linked stream conversion.")
+                    raise RuntimeError('Process cancelled by user.')
                 raise RuntimeError(f"[ExtractValleys] Converting linked streams failed: {e}")
 
             try:
                 if feedback:
-                    feedback.pushInfo("[ExtractValleys] Network analysis")
+                    feedback.pushInfo("[ExtractValleys] Performing final network analysis")
+                    feedback.setProgress(95)
                 else:
-                    print("[ExtractValleys] Network analysis")
+                    print("[ExtractValleys] Performing final network analysis")
                 ret = self._execute_wbt(
                     'VectorStreamNetworkAnalysis',
-                    feedback=feedback,
+                    feedback=feedback,  # Pass feedback to enable cancellation during execution
+                    report_progress=False,  # Don't override main progress bar
                     streams=streams_linked_output_path,
                     dem=filled_output_path,
                     output=stream_network_output_path
@@ -1599,6 +1573,10 @@ class TopoDrainCore:
                 if ret != 0 or not os.path.exists(stream_network_output_path):
                     raise RuntimeError(f"[ExtractValleys] Network analysis failed: WhiteboxTools returned {ret}, output not found at {stream_network_output_path}")
             except Exception as e:
+                # Check if cancellation was the cause
+                if feedback and feedback.isCanceled():
+                    feedback.reportError("Process cancelled by user during network analysis.")
+                    raise RuntimeError('Process cancelled by user.')
                 raise RuntimeError(f"[ExtractValleys] Network analysis failed: {e}")
 
             if feedback:
@@ -1613,11 +1591,6 @@ class TopoDrainCore:
             if gdf.empty:
                 raise RuntimeError(f"[ExtractValleys] Network output file is empty: {stream_network_output_path}")
 
-            if feedback:
-                feedback.pushInfo(f"[ExtractValleys] Completed: {len(gdf)} features extracted.")
-            else:
-                print(f"[ExtractValleys] Completed: {len(gdf)} features extracted.")
-            
             # Always create a reliable LINK_ID field as primary identifier
             # This addresses Windows case-sensitivity and temporary layer issues
             if 'FID' in gdf.columns or 'fid' in gdf.columns:
@@ -1628,8 +1601,11 @@ class TopoDrainCore:
             
             if feedback:
                 feedback.pushInfo("[ExtractValleys] Created reliable 'LINK_ID' field for cross-platform compatibility")
+                feedback.pushInfo(f"[ExtractValleys] Completed: {len(gdf)} valley features extracted successfully!")
+                feedback.setProgress(100)
             else:
                 print("[ExtractValleys] Created reliable 'LINK_ID' field for cross-platform compatibility")
+                print(f"[ExtractValleys] Completed: {len(gdf)} valley features extracted successfully!")
             
             return gdf
 
@@ -1681,15 +1657,33 @@ class TopoDrainCore:
         if self.wbt is None:
             raise RuntimeError("WhiteboxTools not initialized. Check WhiteboxTools configuration: QGIS settings -> Options -> Processing -> Provider -> WhiteboxTools -> WhiteboxTools executable.")
 
+        if feedback:
+            feedback.pushInfo("[ExtractRidges] Starting ridge extraction process...")
+            feedback.setProgress(0)
+        else:
+            print("[ExtractRidges] Starting ridge extraction process...")
+
         # 1) Invert the DTM
-        print("[ExtractRidges] Inverting DTM…")
+        if feedback:
+            feedback.pushInfo("[ExtractRidges] Inverting DTM for ridge extraction...")
+        else:
+            print("[ExtractRidges] Inverting DTM for ridge extraction...")
+        
         inverted_dtm = os.path.join(self.temp_directory, f"inverted_dtm_{postfix}.tif")
-        inverted_dtm = self._invert_dtm(dtm_path, inverted_dtm, feedback=feedback)
-        print(f"[ExtractRidges] Inversion complete: {inverted_dtm}")
+        inverted_dtm = self._invert_dtm(dtm_path, inverted_dtm, feedback=None)  # Remove feedback to prevent multiple progress bars
+        
+        if feedback:
+            feedback.pushInfo(f"[ExtractRidges] DTM inversion complete: {inverted_dtm}")
+            feedback.setProgress(5)
+        else:
+            print(f"[ExtractRidges] DTM inversion complete: {inverted_dtm}")
 
         # 2) Compute defaults for the four inverted outputs
         #    We leverage extract_valleys’ own default logic by passing these params through.
-        print("[ExtractRidges] Preparing inverted-output paths…")
+        if feedback:
+            feedback.pushInfo("[ExtractRidges] Extracting ridges from inverted DTM (using extract_valleys function)...")
+        else:
+            print("[ExtractRidges] Extracting ridges from inverted DTM (using extract_valleys function)...")
         # If the user did not supply, leave as None—extract_valleys will pick its defaults (which include postfix).
         inv_filled = inverted_filled_output_path
         inv_fdir   = inverted_fdir_output_path
@@ -1697,9 +1691,8 @@ class TopoDrainCore:
         inv_facc_log = inverted_facc_log_output_path
         inv_streams = inverted_streams_output_path
 
-        # 3) Call extract_valleys on the inverted DTM
-        print("[ExtractRidges] Running valley-extraction on inverted DTM…")
-        ridges = self.extract_valleys(
+        # 3) Call extract_valleys on the inverted DTM (this will handle its own progress reporting)
+        ridges_gdf = self.extract_valleys(
             dtm_path=inverted_dtm,
             filled_output_path=inv_filled,
             fdir_output_path=inv_fdir,
@@ -1709,11 +1702,15 @@ class TopoDrainCore:
             accumulation_threshold=accumulation_threshold,
             dist_facc=dist_facc,
             postfix=postfix,
-            feedback=feedback
+            feedback=feedback 
         )
 
-        print(f"[ExtractRidges] Ridge extraction complete: {len(ridges)} features")
-        return ridges
+        if feedback:
+            feedback.pushInfo(f"[ExtractRidges] Ridge extraction completed successfully: {len(ridges_gdf)} ridge features extracted!")
+        else:
+            print(f"[ExtractRidges] Ridge extraction completed successfully: {len(ridges_gdf)} ridge features extracted!")
+
+        return ridges_gdf
 
 
     def extract_main_valleys(
@@ -1742,6 +1739,10 @@ class TopoDrainCore:
         """
         if feedback:
             feedback.pushInfo("[ExtractMainValleys] Starting main valley extraction...")
+            feedback.setProgress(0)
+            if feedback.isCanceled():
+                feedback.reportError('Process cancelled by user at initialization.')
+                raise RuntimeError('Process cancelled by user.')
         else:
             print("[ExtractMainValleys] Starting main valley extraction...")
 
@@ -1792,6 +1793,10 @@ class TopoDrainCore:
 
         if feedback:
             feedback.pushInfo("[ExtractMainValleys] Reading flow accumulation raster...")
+            feedback.setProgress(10)
+            if feedback.isCanceled():
+                feedback.reportError('Process cancelled by user after reading flow accumulation raster.')
+                raise RuntimeError('Process cancelled by user.')
         else:
             print("[ExtractMainValleys] Reading flow accumulation raster...")
         
@@ -1811,7 +1816,7 @@ class TopoDrainCore:
             if geotransform is None:
                 raise RuntimeError(f"Failed to get geotransform from: {facc_path}.{self._get_gdal_error_message()}")
             
-            res = geotransform[1]  # pixel width
+            res = abs(geotransform[1])  # pixel width
             
         finally:
             facc_ds = None  # Close dataset
@@ -1823,8 +1828,15 @@ class TopoDrainCore:
         for poly_idx, poly_row in perimeter.iterrows():
             single_polygon = gpd.GeoDataFrame([poly_row], crs=perimeter.crs)
             
+            # Calculate progress based on polygon processing (20-80% range)
+            polygon_progress = 20 + int((poly_idx / len(perimeter)) * 60)
+            
             if feedback:
                 feedback.pushInfo(f"[ExtractMainValleys] Processing polygon {poly_idx + 1}/{len(perimeter)}...")
+                feedback.setProgress(polygon_progress)
+                if feedback.isCanceled():
+                    feedback.reportError(f'Process cancelled by user while processing polygon {poly_idx + 1}.')
+                    raise RuntimeError('Process cancelled by user.')
             else:
                 print(f"[ExtractMainValleys] Processing polygon {poly_idx + 1}/{len(perimeter)}...")
 
@@ -1862,18 +1874,18 @@ class TopoDrainCore:
                 print(f"[ExtractMainValleys] Valley mask created at {valley_mask_path}")
 
             # Read the valley mask data from the saved raster file using GDAL
-            valley_ds = gdal.Open(valley_mask_path, gdal.GA_ReadOnly)
-            if valley_ds is None:
+            valley_lines_ds = gdal.Open(valley_mask_path, gdal.GA_ReadOnly)
+            if valley_lines_ds is None:
                 raise RuntimeError(f"Cannot open valley mask raster: {valley_mask_path}.{self._get_gdal_error_message()}")
                 
             try:
-                valley_band = valley_ds.GetRasterBand(1)
-                valley_mask = valley_band.ReadAsArray()
+                valley_lines_band = valley_lines_ds.GetRasterBand(1)
+                valley_mask = valley_lines_band.ReadAsArray()
                 if valley_mask is None:
                     raise RuntimeError(f"Failed to read valley mask data from: {valley_mask_path}.{self._get_gdal_error_message()}")
                     
             finally:
-                valley_ds = None  # Close dataset
+                valley_lines_ds = None  # Close dataset
 
             if feedback:
                 feedback.pushInfo(f"[ExtractMainValleys] Extracting facc > 0 points for polygon {poly_idx + 1}...")
@@ -2018,12 +2030,20 @@ class TopoDrainCore:
         if clip_to_perimeter:
             if feedback:
                 feedback.pushInfo("[ExtractMainValleys] Clipping final valley lines to perimeter...")
+                feedback.setProgress(90)
+                if feedback.isCanceled():
+                    feedback.reportError('Process cancelled by user during final clipping.')
+                    raise RuntimeError('Process cancelled by user.')
             else:
                 print("[ExtractMainValleys] Clipping final valley lines to perimeter...")
             gdf = gpd.overlay(gdf, perimeter, how="intersection")
 
         if feedback:
             feedback.pushInfo(f"[ExtractMainValleys] Main valley extraction complete. {len(gdf)} valleys extracted from {len(perimeter)} polygons.")
+            feedback.setProgress(100)
+            if feedback.isCanceled():
+                feedback.reportError('Process cancelled by user at completion.')
+                raise RuntimeError('Process cancelled by user.')
         else:
             print(f"[ExtractMainValleys] Main valley extraction complete. {len(gdf)} valleys extracted from {len(perimeter)} polygons.")
         return gdf
@@ -2055,9 +2075,9 @@ class TopoDrainCore:
             GeoDataFrame: Traced main ridge lines.
         """
         if feedback:
-            feedback.pushInfo("[ExtractMainRidges] Starting main ridge extraction using main valleys logic...")
+            feedback.pushInfo("[ExtractMainRidges] Starting main ridge extraction using main valleys logic (extract_main_valleys)...")
         else:
-            print("[ExtractMainRidges] Starting main ridge extraction using main valleys logic...")
+            print("[ExtractMainRidges] Starting main ridge extraction using main valleys logic (extract_main_valleys)...")
 
         gdf = self.extract_main_valleys(
             valley_lines=ridge_lines,
@@ -2069,7 +2089,6 @@ class TopoDrainCore:
         )
 
         return gdf
-
 
     def get_keypoints(
         self,
@@ -2084,13 +2103,14 @@ class TopoDrainCore:
         ) -> gpd.GeoDataFrame:
         """
         Detect keypoints along valley lines based on curvature of elevation profiles
-        (second derivative). Keypoints are locations with high convexity, typically
-        indicating a local change from concave to convex profile shape.
+        (second derivative). Keypoints are locations where the profile changes from 
+        convex to concave curvature, indicating morphological transitions like 
+        channel heads or slope breaks.
 
         The elevation profile is extracted along each valley line using the DTM at
         pixel resolution (all values along the line) and smoothed using a Savitzky-Golay 
-        filter. The second derivative is then computed, and the top N points with the 
-        strongest convex curvature are selected as keypoints.
+        filter. The second derivative is then computed, and points with the strongest 
+        convex → concave transitions are selected as keypoints.
 
         Args:
             valley_lines (GeoDataFrame): Valley centerlines with geometries and unique LINK_ID.
@@ -2112,9 +2132,14 @@ class TopoDrainCore:
             smoothing_window += 1
             if feedback:
                 feedback.pushInfo(f"[GetKeypoints] Smoothing window adjusted to {smoothing_window} (must be odd)")
-
+            else:
+                print(f"[GetKeypoints] Smoothing window adjusted to {smoothing_window} (must be odd)")
         if feedback:
             feedback.pushInfo(f"[GetKeypoints] Starting keypoint detection on {len(valley_lines)} valley lines...")
+            feedback.setProgress(0)
+            if feedback.isCanceled():
+                feedback.reportError('Process cancelled by user at initialization.')
+                raise RuntimeError('Process cancelled by user.')
         else:
             print(f"[GetKeypoints] Starting keypoint detection on {len(valley_lines)} valley lines...")
 
@@ -2129,7 +2154,7 @@ class TopoDrainCore:
             if geotransform is None:
                 raise RuntimeError(f"Cannot get geotransform from DTM raster: {dtm_path}.{self._get_gdal_error_message()}")
             
-            res = geotransform[1]  # pixel width
+            res = abs(geotransform[1])  # pixel width
             dtm_band = dtm_ds.GetRasterBand(1)
             
             # Auto-calculate find_window_distance based on pixel size
@@ -2148,11 +2173,20 @@ class TopoDrainCore:
 
                 # Progress reporting for every line (or every 5 lines for large datasets)
                 current_line = idx + 1
+                progress_pct = int((current_line / total_lines) * 100)
+                
                 if feedback:
+                    # Update progress bar for every line
+                    feedback.setProgress(progress_pct)
+                    if feedback.isCanceled():
+                        feedback.reportError(f'Process cancelled by user while processing line {current_line}/{total_lines}.')
+                        raise RuntimeError('Process cancelled by user.')
+                    # Detailed info for smaller datasets or periodic updates for large datasets
                     if total_lines <= 20 or current_line % 5 == 0 or current_line == total_lines:
-                        progress_pct = int((current_line / total_lines) * 100)
                         feedback.pushInfo(f"[GetKeypoints] Processing line {current_line}/{total_lines} ({progress_pct}%) - Line ID: {line_id}, Length: {length:.1f}m, Samples: {num_samples}")
-
+                else:
+                    if total_lines <= 20 or current_line % 5 == 0 or current_line == total_lines:
+                        print(f"[GetKeypoints] Processing line {current_line}/{total_lines} ({progress_pct}%) - Line ID: {line_id}, Length: {length:.1f}m, Samples: {num_samples}")
                 processed_lines += 1
 
                 distances = np.linspace(0, length, num=num_samples)
@@ -2190,7 +2224,7 @@ class TopoDrainCore:
                 # Option 2 - Double smoothing (may over-smooth):
                 # curvature = savgol_filter(elev_smooth, smoothing_window, polyorder, deriv=2)
 
-                # Find concave→convex transitions
+                # Find convex→concave transitions (keypoints)
                 find_window = max(3, find_window_cells)  # At least 3 pixels, maybe later as input parameter? e.g. Nr. of cells?
                 candidates = TopoDrainCore._find_inflection_candidates(curvature, window=find_window)
 
@@ -2224,6 +2258,11 @@ class TopoDrainCore:
                         feedback.pushInfo(f"[GetKeypoints] Line {line_id}: found {line_keypoints} keypoints (total: {total_keypoints})")
                     else:
                         feedback.pushInfo(f"[GetKeypoints] Line {line_id}: no keypoints found")
+                else:
+                    if line_keypoints > 0:
+                        print(f"[GetKeypoints] Line {line_id}: found {line_keypoints} keypoints (total: {total_keypoints})")
+                    else:
+                        print(f"[GetKeypoints] Line {line_id}: no keypoints found")
                         
         finally:
             dtm_ds = None  # Close GDAL dataset
@@ -2236,6 +2275,10 @@ class TopoDrainCore:
             feedback.pushInfo(f"[GetKeypoints] - Processed lines: {processed_lines}")
             feedback.pushInfo(f"[GetKeypoints] - Skipped lines: {skipped_lines}")
             feedback.pushInfo(f"[GetKeypoints] - Total keypoints found: {len(gdf)}")
+            feedback.setProgress(100)
+            if feedback.isCanceled():
+                feedback.reportError('Process cancelled by user at completion.')
+                raise RuntimeError('Process cancelled by user.')
         else:
             print(f"[GetKeypoints] Keypoint detection complete: {len(gdf)} keypoints found from {processed_lines}/{total_lines} valley lines (skipped: {skipped_lines})")
 
@@ -2279,9 +2322,9 @@ class TopoDrainCore:
             if geotransform is None:
                 print(f"[GetOrthogonalDirectionsStartPoints] Cannot get geotransform from: {barrier_raster_path}")
                 return None, None
-                
-            res = geotransform[1]  # pixel width (assumes square pixels)
-            
+
+            res = abs(geotransform[1])  # pixel width (assumes square pixels)
+
             # Read barrier mask data
             barrier_band = barrier_ds.GetRasterBand(1)
             barrier_mask = barrier_band.ReadAsArray()
@@ -2379,18 +2422,48 @@ class TopoDrainCore:
         print(f"[GetLinedirectionStartPoint]: Checking endpoint {end_point}, reverse={reverse}")
         print(f"[GetLinedirectionStartPoint] barrier_raster_path: {barrier_raster_path}")
 
-        with rasterio.open(barrier_raster_path) as src:
-            barrier_mask = src.read(1)
-            rows, cols = barrier_mask.shape
-            res = src.res[0]  # assumes square pixels
+        # Read barrier raster using GDAL
+        barrier_ds = gdal.Open(barrier_raster_path, gdal.GA_ReadOnly)
+        if barrier_ds is None:
+            print(f"[GetLinedirectionStartPoint] Cannot open barrier raster: {barrier_raster_path}")
+            return None
+            
+        try:
+            # Get raster information
+            rows = barrier_ds.RasterYSize
+            cols = barrier_ds.RasterXSize
+            geotransform = barrier_ds.GetGeoTransform()
+            if geotransform is None:
+                print(f"[GetLinedirectionStartPoint] Cannot get geotransform from: {barrier_raster_path}")
+                return None
 
-            row_ep, col_ep = src.index(end_point[0], end_point[1])
-            print(f"[GetLinedirectionStartPoint] Endpoint raster index: row={row_ep}, col={col_ep}")
-            if not barrier_mask[row_ep, col_ep] >= 1:
-                print("[GetLinedirectionStartPoint] No barrier at endpoint, returning None.")
-                return None  # no barrier at endpoint, so no need to search
+            res = abs(geotransform[1])  # pixel width (assumes square pixels)
 
-            if reverse:
+            # Read barrier mask data
+            barrier_band = barrier_ds.GetRasterBand(1)
+            barrier_mask = barrier_band.ReadAsArray()
+            if barrier_mask is None:
+                print(f"[GetLinedirectionStartPoint] Cannot read barrier data from: {barrier_raster_path}")
+                return None
+                
+        finally:
+            barrier_ds = None  # Close dataset
+
+        # Convert world coordinates to pixel indices using utility function
+        pixel_coords = TopoDrainCore._coords_to_pixel_indices([end_point], geotransform)
+        col_ep, row_ep = pixel_coords[0]
+        print(f"[GetLinedirectionStartPoint] Endpoint raster index: row={row_ep}, col={col_ep}")
+        
+        # Bounds check for endpoint
+        if not (0 <= row_ep < rows and 0 <= col_ep < cols):
+            print("[GetLinedirectionStartPoint] Endpoint is outside raster bounds.")
+            return None
+            
+        if not barrier_mask[row_ep, col_ep] >= 1:
+            print("[GetLinedirectionStartPoint] No barrier at endpoint, returning None.")
+            return None  # no barrier at endpoint, so no need to search
+
+        if reverse:
                 # For reverse, follow the line geometry backwards
                 print("[GetLinedirectionStartPoint] Reverse mode: following line geometry backwards")
                 
@@ -2411,7 +2484,9 @@ class TopoDrainCore:
                             test_point = line_geom.interpolate(target_distance)
                             test_x, test_y = test_point.x, test_point.y
                             
-                            row_idx, col_idx = src.index(test_x, test_y)
+                            # Convert world coordinates to pixel indices using utility function
+                            pixel_coords = TopoDrainCore._coords_to_pixel_indices([(test_x, test_y)], geotransform)
+                            col_idx, row_idx = pixel_coords[0]
                             print(f"[GetLinedirectionStartPoint] Checking offset {i} along line: ({test_x}, {test_y}) -> row={row_idx}, col={col_idx}")
 
                             if not (0 <= row_idx < rows and 0 <= col_idx < cols):
@@ -2439,7 +2514,7 @@ class TopoDrainCore:
                 
                 new_pt = find_valid_point_along_line()
                 
-            else:
+        else:
                 # For forward, use mean direction of the last two line segments
                 print("[GetLinedirectionStartPoint] Forward mode: using line direction")
                 
@@ -2493,7 +2568,9 @@ class TopoDrainCore:
                         test_x = end_point[0] + tangent[0] * offset
                         test_y = end_point[1] + tangent[1] * offset
 
-                        row_idx, col_idx = src.index(test_x, test_y)
+                        # Convert world coordinates to pixel indices using utility function
+                        pixel_coords = TopoDrainCore._coords_to_pixel_indices([(test_x, test_y)], geotransform)
+                        col_idx, row_idx = pixel_coords[0]
                         print(f"[GetLinedirectionStartPoint] Checking offset {i}: ({test_x}, {test_y}) -> row={row_idx}, col={col_idx}")
 
                         if not (0 <= row_idx < rows and 0 <= col_idx < cols):
@@ -2513,10 +2590,10 @@ class TopoDrainCore:
 
                 new_pt = find_valid_point_forward()
 
-            if new_pt:
-                return new_pt
-            else:
-                return None
+        if new_pt:
+            return new_pt
+        else:
+            return None
 
     @staticmethod
     def _reverse_line_direction(input_geometry):
@@ -2571,13 +2648,13 @@ class TopoDrainCore:
         penalty_exp: float = 2.0
     ) -> str:
         """
-        Create a raster with cost values based on deviation from desired slope.
+        Create a raster with cost values based on deviation from desired slope using GDAL.
         You can now set penalty_exp>1 to punish larger deviations more heavily.
 
         Args:
             dtm_path (str): Path to input DTM raster (supports all GDAL formats in gdal_driver_mapping).
             start_point (Point): Starting point of the constant slope line.
-            output_cost_raster_path (str): Path to output cost raster.
+            output_cost_raster_path (str): Path to output cost raster (format determined by file extension).
             slope (float): Desired slope (1% downhill = 0.01).
             barrier_raster_path (str): Path to a binary raster of barriers (1=barrier).
             penalty_exp (float): Exponent on the absolute deviation (>=1) of slope. 2.0 => quadratic penalty --> as higher the exponent as stronger penalty for larger deviations.
@@ -2585,50 +2662,126 @@ class TopoDrainCore:
         Returns:
             str: Path to the written cost raster.
         """
-        with rasterio.open(dtm_path) as src:
-            dtm = src.read(1).astype(np.float32)
-            nodata = src.nodata
-            dtm[dtm == nodata] = np.nan
+        # Read DTM raster using GDAL
+        dtm_ds = gdal.Open(dtm_path, gdal.GA_ReadOnly)
+        if dtm_ds is None:
+            raise RuntimeError(f"Cannot open DTM raster: {dtm_path}")
+            
+        try:
+            # Get raster information
+            rows = dtm_ds.RasterYSize
+            cols = dtm_ds.RasterXSize
+            geotransform = dtm_ds.GetGeoTransform()
+            if geotransform is None:
+                raise RuntimeError(f"Cannot get geotransform from DTM raster: {dtm_path}")
+            
+            projection = dtm_ds.GetProjection()
+            srs = dtm_ds.GetSpatialRef()
+            
+            # Read DTM data
+            dtm_band = dtm_ds.GetRasterBand(1)
+            dtm = dtm_band.ReadAsArray().astype(np.float32)
+            if dtm is None:
+                raise RuntimeError(f"Cannot read DTM data from: {dtm_path}")
+            
+            # Handle NoData values
+            nodata = dtm_band.GetNoDataValue()
+            if nodata is not None:
+                dtm[dtm == nodata] = np.nan
 
-            rows, cols = dtm.shape
+            # Convert start point coordinates to pixel indices using utility function
+            pixel_coords = TopoDrainCore._coords_to_pixel_indices([start_point.coords[0]], geotransform)
+            key_col, key_row = pixel_coords[0]
+            
+            # Bounds check for start point
+            if not (0 <= key_row < rows and 0 <= key_col < cols):
+                raise ValueError(f"Start point {start_point} is outside raster bounds")
+
+            # Create index arrays for distance calculation
             rr, cc = np.indices((rows, cols))
-            key_row, key_col = src.index(start_point.x, start_point.y)
-
-            # elevation difference and horizontal distance
+            
+            # Calculate elevation difference and horizontal distance
             dz = dtm - dtm[key_row, key_col]
-            dist = np.hypot(rr - key_row, cc - key_col) * src.res[0] ## maybe later with .distance()?
+            res = abs(geotransform[1])  # pixel width
+            dist = np.hypot(rr - key_row, cc - key_col) * res
             expected_dz = -dist * slope
 
-            # linear deviation
+            # Calculate linear deviation
             deviation = np.abs(dz - expected_dz)
 
-            # apply exponentiation for stronger penalty
+            # Apply exponentiation for stronger penalty
             cost = deviation ** penalty_exp
 
-            # enforce NoData
+            # Enforce NoData areas with high cost
             cost[np.isnan(dtm)] = 1e6
 
             # Read barrier mask from raster if provided
             if barrier_raster_path is not None:
-                with rasterio.open(barrier_raster_path) as bsrc:
-                    barrier_mask = bsrc.read(1)
+                barrier_ds = gdal.Open(barrier_raster_path, gdal.GA_ReadOnly)
+                if barrier_ds is None:
+                    raise RuntimeError(f"Cannot open barrier raster: {barrier_raster_path}")
+                    
+                try:
+                    barrier_band = barrier_ds.GetRasterBand(1)
+                    barrier_mask = barrier_band.ReadAsArray()
+                    if barrier_mask is None:
+                        raise RuntimeError(f"Cannot read barrier data from: {barrier_raster_path}")
+                    
                     if barrier_mask.shape != cost.shape:
                         raise ValueError("Barrier raster shape does not match DTM shape.")
+                    
                     barrier_mask = barrier_mask.astype(bool)
                     if np.any(barrier_mask):
                         print("[TopoDrainCore] Applying barrier mask to cost raster.")
                         # Set cost to a very high value where barriers are present
-                        cost[barrier_mask.astype(bool)] = 1e6
+                        cost[barrier_mask] = 1e6
+                        
+                finally:
+                    barrier_ds = None  # Close barrier dataset
 
-            # zero‐cost at the true start
+            # Zero cost at the true start point
             cost[key_row, key_col] = 0
+            
+        finally:
+            dtm_ds = None  # Close DTM dataset
 
-            profile = src.profile
-            profile.update(dtype=rasterio.float32, nodata=1e6)
-
-        # write out
-        with rasterio.open(output_cost_raster_path, "w", **profile) as dst:
-            dst.write(cost.astype('float32'), 1)
+        # Use GTiff driver since we know this is an internal function that creates .tif files
+        driver_name = 'GTiff'
+        
+        # Create output raster using GDAL with best practices
+        driver = gdal.GetDriverByName(driver_name)
+        if driver is None:
+            raise RuntimeError(f"Cannot create GDAL driver for: {driver_name}")
+            
+        creation_options = [
+            'COMPRESS=LZW',
+            'TILED=YES',
+            'BIGTIFF=IF_SAFER'
+        ]
+        
+        out_ds = driver.Create(output_cost_raster_path, cols, rows, 1, gdal.GDT_Float32, 
+                              options=creation_options)
+        if out_ds is None:
+            raise RuntimeError(f"Cannot create output raster: {output_cost_raster_path}")
+            
+        try:
+            # Set spatial reference and geotransform
+            out_ds.SetGeoTransform(geotransform)
+            
+            # Set complete spatial reference system
+            if srs is not None:
+                out_ds.SetSpatialRef(srs)
+            elif projection:
+                # Fallback to projection string if SRS not available
+                out_ds.SetProjection(projection)
+            
+            # Write cost data
+            out_band = out_ds.GetRasterBand(1)
+            out_band.WriteArray(cost.astype(np.float32))
+            out_band.SetNoDataValue(1e6)
+            
+        finally:
+            out_ds = None  # Close output dataset
 
         return output_cost_raster_path
 
@@ -2639,35 +2792,85 @@ class TopoDrainCore:
         output_source_raster_path: str,
         ) -> str:
         """
-        Create a binary raster marking the source cell (value = 1) based on a given Point.
+        Create a binary raster marking the source cell (value = 1) based on a given Point using GDAL.
         All other cells are set to 0.
 
         Args:
-            reference_raster_path (str): Path to the reference raster (e.g., DTM, GeoTIFF).
+            reference_raster_path (str): Path to the reference raster (supports all GDAL formats in gdal_driver_mapping).
             source_point (Point): Shapely Point marking the source location.
-            output_source_raster_path (str): Path to output binary raster (GeoTIFF).
+            output_source_raster_path (str): Path to output binary raster.
 
         Returns:
             str: Path to the saved binary raster file.
         """
-        with rasterio.open(reference_raster_path) as src:
-            data = np.zeros(src.shape, dtype=np.uint8)
+        # Read reference raster using GDAL
+        ref_ds = gdal.Open(reference_raster_path, gdal.GA_ReadOnly)
+        if ref_ds is None:
+            raise RuntimeError(f"Cannot open reference raster: {reference_raster_path}")
+            
+        try:
+            # Get raster information
+            rows = ref_ds.RasterYSize
+            cols = ref_ds.RasterXSize
+            geotransform = ref_ds.GetGeoTransform()
+            if geotransform is None:
+                raise RuntimeError(f"Cannot get geotransform from reference raster: {reference_raster_path}")
+            
+            projection = ref_ds.GetProjection()
+            srs = ref_ds.GetSpatialRef()
+            
+            # Convert source point coordinates to pixel indices using utility function
+            pixel_coords = TopoDrainCore._coords_to_pixel_indices([source_point.coords[0]], geotransform)
+            col, row = pixel_coords[0]
+            
+            # Bounds check for source point
+            if not (0 <= row < rows and 0 <= col < cols):
+                raise ValueError(f"Source point {source_point} is outside the bounds of the reference raster.")
 
-            # Convert Point to raster indices
-            row, col = src.index(source_point.x, source_point.y)
+            # Create binary data array
+            data = np.zeros((rows, cols), dtype=np.uint8)
+            data[row, col] = 1
+            
+        finally:
+            ref_ds = None  # Close reference dataset
 
-            # Set source cell to 1
-            if 0 <= row < data.shape[0] and 0 <= col < data.shape[1]:
-                data[row, col] = 1
-            else:
-                raise ValueError("Source point is outside the bounds of the reference raster.")
-
-            # Update profile
-            profile = src.profile
-            profile.update(dtype=rasterio.uint8, nodata=0)
-
-            with rasterio.open(output_source_raster_path, "w", **profile) as dst:
-                dst.write(data, 1)
+        # Use GTiff driver since we know this is an internal function that creates .tif files
+        driver_name = 'GTiff'
+        
+        # Create output raster using GDAL with best practices
+        driver = gdal.GetDriverByName(driver_name)
+        if driver is None:
+            raise RuntimeError(f"Cannot create GDAL driver for: {driver_name}")
+            
+        creation_options = [
+            'COMPRESS=LZW',
+            'TILED=YES',
+            'BIGTIFF=IF_SAFER'
+        ]
+        
+        out_ds = driver.Create(output_source_raster_path, cols, rows, 1, gdal.GDT_Byte, 
+                              options=creation_options)
+        if out_ds is None:
+            raise RuntimeError(f"Cannot create output raster: {output_source_raster_path}")
+            
+        try:
+            # Set spatial reference and geotransform
+            out_ds.SetGeoTransform(geotransform)
+            
+            # Set complete spatial reference system
+            if srs is not None:
+                out_ds.SetSpatialRef(srs)
+            elif projection:
+                # Fallback to projection string if SRS not available
+                out_ds.SetProjection(projection)
+            
+            # Write source data
+            out_band = out_ds.GetRasterBand(1)
+            out_band.WriteArray(data)
+            out_band.SetNoDataValue(0)
+            
+        finally:
+            out_ds = None  # Close output dataset
 
         return output_source_raster_path
 
@@ -2676,54 +2879,126 @@ class TopoDrainCore:
         accum_raster_path: str,
         destination_raster_path: str,
         best_destination_raster_path: str
-    ) -> str:
+    ) -> tuple[str, Point]:
         """
         Select the best destination cell from a binary destination raster based on
-        minimum accumulated cost, and write it as a single-cell binary raster.
+        minimum accumulated cost, and write it as a single-cell binary raster using GDAL.
 
         Args:
-            accum_raster_path (str): Path to the cost accumulation raster (GeoTIFF).
+            accum_raster_path (str): Path to the cost accumulation raster (supports all GDAL formats in gdal_driver_mapping).
             destination_raster_path (str): Path to the binary destination raster (1 = destination, 0 = background).
-            best_destination_raster_path (str): Path to output raster with only the best cell marked (GeoTIFF).
+            best_destination_raster_path (str): Path to output raster with only the best cell marked.
 
         Returns:
-            str: Path to the output best destination raster (GeoTIFF).
-            Point: The spatial coordinates of the best destination cell.
+            tuple[str, Point]: Tuple of (path to the output best destination raster, Point with spatial coordinates of the best destination cell).
         """
-        with rasterio.open(accum_raster_path) as acc_src, rasterio.open(destination_raster_path) as dest_src:
-            acc_data = acc_src.read(1)
-            dest_data = dest_src.read(1)
+        # Read accumulation raster using GDAL
+        acc_ds = gdal.Open(accum_raster_path, gdal.GA_ReadOnly)
+        if acc_ds is None:
+            raise RuntimeError(f"Cannot open accumulation raster: {accum_raster_path}")
+            
+        try:
+            # Get accumulation data
+            acc_band = acc_ds.GetRasterBand(1)
+            acc_data = acc_band.ReadAsArray()
+            if acc_data is None:
+                raise RuntimeError(f"Cannot read accumulation data from: {accum_raster_path}")
+                
+            # Get spatial information for coordinate conversion
+            geotransform = acc_ds.GetGeoTransform()
+            if geotransform is None:
+                raise RuntimeError(f"Cannot get geotransform from accumulation raster: {accum_raster_path}")
+                
+        finally:
+            acc_ds = None  # Close accumulation dataset
+            
+        # Read destination raster using GDAL
+        dest_ds = gdal.Open(destination_raster_path, gdal.GA_ReadOnly)
+        if dest_ds is None:
+            raise RuntimeError(f"Cannot open destination raster: {destination_raster_path}")
+            
+        try:
+            # Get raster information
+            rows = dest_ds.RasterYSize
+            cols = dest_ds.RasterXSize
+            dest_geotransform = dest_ds.GetGeoTransform()
+            if dest_geotransform is None:
+                raise RuntimeError(f"Cannot get geotransform from destination raster: {destination_raster_path}")
+            
+            projection = dest_ds.GetProjection()
+            srs = dest_ds.GetSpatialRef()
+            
+            # Get destination data
+            dest_band = dest_ds.GetRasterBand(1)
+            dest_data = dest_band.ReadAsArray()
+            if dest_data is None:
+                raise RuntimeError(f"Cannot read destination data from: {destination_raster_path}")
+                
+        finally:
+            dest_ds = None  # Close destination dataset
 
-            # Consider only destination cells (where value == 1)
-            mask = (dest_data == 1)
-            acc_masked = np.where(mask, acc_data, np.nan)
+        # Consider only destination cells (where value == 1)
+        mask = (dest_data == 1)
+        acc_masked = np.where(mask, acc_data, np.nan)
 
-            # Identify cell with minimum accumulated cost
-            if np.all(np.isnan(acc_masked)):
-                raise RuntimeError("No valid destination cell found.")
+        # Identify cell with minimum accumulated cost
+        if np.all(np.isnan(acc_masked)):
+            raise RuntimeError("No valid destination cell found.")
 
-            # Find the minimum value and its index
-            min_val = np.nanmin(acc_masked)
-            min_indices = np.where(acc_masked == min_val)
-            # Take the first occurrence if multiple
-            row, col = min_indices[0][0], min_indices[1][0]
+        # Find the minimum value and its index
+        min_val = np.nanmin(acc_masked)
+        min_indices = np.where(acc_masked == min_val)
+        # Take the first occurrence if multiple
+        row, col = min_indices[0][0], min_indices[1][0]
 
-            # If you want the spatial coordinates:
-            x, y = acc_src.xy(row, col)
-            best_destination_point = Point(x, y)
+        # Calculate spatial coordinates using GDAL geotransform
+        coords = TopoDrainCore._pixel_indices_to_coords([row], [col], geotransform)
+        x, y = coords[0]
+        best_destination_point = Point(x, y)
 
-            # Create output raster marking only the best cell
-            best_dest = np.zeros_like(dest_data, dtype=np.uint8)
-            best_dest[row, col] = 1
+        # Create output raster marking only the best cell
+        best_dest = np.zeros_like(dest_data, dtype=np.uint8)
+        best_dest[row, col] = 1
 
-            profile = dest_src.profile
-            profile.update(dtype=rasterio.uint8, nodata=0)
- 
-            # Write the best destination raster
-            with rasterio.open(best_destination_raster_path, "w", **profile) as dst:
-                dst.write(best_dest, 1)
+        # Use GTiff driver since we know this is an internal function that creates .tif files
+        driver_name = 'GTiff'
+        
+        # Create output raster using GDAL with best practices
+        driver = gdal.GetDriverByName(driver_name)
+        if driver is None:
+            raise RuntimeError(f"Cannot create GDAL driver for: {driver_name}")
+            
+        creation_options = [
+            'COMPRESS=LZW',
+            'TILED=YES',
+            'BIGTIFF=IF_SAFER'
+        ]
+        
+        out_ds = driver.Create(best_destination_raster_path, cols, rows, 1, gdal.GDT_Byte, 
+                              options=creation_options)
+        if out_ds is None:
+            raise RuntimeError(f"Cannot create output raster: {best_destination_raster_path}")
+            
+        try:
+            # Set spatial reference and geotransform
+            out_ds.SetGeoTransform(dest_geotransform)
+            
+            # Set complete spatial reference system
+            if srs is not None:
+                out_ds.SetSpatialRef(srs)
+            elif projection:
+                # Fallback to projection string if SRS not available
+                out_ds.SetProjection(projection)
+            
+            # Write best destination data
+            out_band = out_ds.GetRasterBand(1)
+            out_band.WriteArray(best_dest)
+            out_band.SetNoDataValue(0)
+            
+        finally:
+            out_ds = None  # Close output dataset
 
-            return best_destination_raster_path, best_destination_point
+        return best_destination_raster_path, best_destination_point
 
     def _analyze_slope_deviation_and_cut(
         self,
@@ -2869,6 +3144,10 @@ class TopoDrainCore:
             raise RuntimeError("WhiteboxTools not initialized. Check WhiteboxTools configuration: QGIS settings -> Options -> Processing -> Provider -> WhiteboxTools -> WhiteboxTools executable.")
 
         print(f"[GetConstantSlopeLine] Starting constant slope line tracing")
+        if feedback:
+            feedback.pushInfo(f"[GetConstantSlopeLine] Starting constant slope line tracing")
+            feedback.pushInfo(f"*for more information see in Python Console")
+
         print(f"[GetConstantSlopeLine] destination raster path: {destination_raster_path}")
         print(f"[GetConstantSlopeLine] barrier raster path: {barrier_raster_path}")
         print(f"[GetConstantSlopeLine] slope: {slope}, max_iterations_slope: {max_iterations_slope}, slope_deviation_threshold: {slope_deviation_threshold}")
@@ -2877,7 +3156,14 @@ class TopoDrainCore:
         accumulated_line_coords = []
         
         for iteration in range(max_iterations_slope):
+            # Check for cancellation at the start of each iteration
+            if feedback and feedback.isCanceled():
+                feedback.reportError("Operation cancelled by user")
+                raise RuntimeError("Operation cancelled by user")
+            
             print(f"[GetConstantSlopeLine] Iteration {iteration + 1}/{max_iterations_slope}")
+            if feedback:
+                feedback.pushInfo(f"[GetConstantSlopeLine] Iteration {iteration + 1}/{max_iterations_slope}")
             
             # --- Temporary file paths ---
             cost_raster_path = os.path.join(self.temp_directory, f"cost_iter_{iteration}.tif")
@@ -2908,17 +3194,30 @@ class TopoDrainCore:
 
             print(f"[GetConstantSlopeLine] Starting cost-distance analysis for iteration {iteration + 1}")
             # --- Run cost-distance analysis ---
-            ret = self._execute_wbt(
-                'cost_distance',
-                feedback=feedback,
-                source=source_raster_path,
-                cost=cost_raster_path,
-                out_accum=accum_raster_path,
-                out_backlink=backlink_raster_path
-            )
-            
-            if ret != 0 or not os.path.exists(accum_raster_path) or not os.path.exists(backlink_raster_path):
-                raise RuntimeError(f"Cost distance analysis failed in iteration {iteration + 1}: WhiteboxTools returned {ret}")
+            try:
+                ret = self._execute_wbt(
+                    'cost_distance',
+                    feedback=feedback,
+                    report_progress=False,  # Don't override main progress bar
+                    source=source_raster_path,
+                    cost=cost_raster_path,
+                    out_accum=accum_raster_path,
+                    out_backlink=backlink_raster_path
+                )
+                
+                if ret != 0 or not os.path.exists(accum_raster_path) or not os.path.exists(backlink_raster_path):
+                    raise RuntimeError(f"Cost distance analysis failed in iteration {iteration + 1}: WhiteboxTools returned {ret}")
+            except Exception as e:
+                # Check if cancellation was the cause
+                if feedback and feedback.isCanceled():
+                    feedback.reportError("Process cancelled by user during cost-distance analysis.")
+                    raise RuntimeError('Process cancelled by user.')
+                raise RuntimeError(f"Cost distance analysis failed in iteration {iteration + 1}: {e}")
+
+            # Check for cancellation after cost-distance analysis
+            if feedback and feedback.isCanceled():
+                feedback.reportError("Operation cancelled by user")
+                raise RuntimeError("Operation cancelled by user")
 
             print(f"[GetConstantSlopeLine] Selecting best destination cell for iteration {iteration + 1}")
             # --- Select best destination cell ---
@@ -2930,22 +3229,49 @@ class TopoDrainCore:
 
             print(f"[GetConstantSlopeLine] Tracing least-cost pathway for iteration {iteration + 1}")
             # --- Trace least-cost pathway ---
-            ret = self._execute_wbt(
-                'cost_pathway',
-                feedback=feedback,
-                destination=best_destination_raster_path,
-                backlink=backlink_raster_path,
-                output=pathway_raster_path
-            )
-            
-            if ret != 0 or not os.path.exists(pathway_raster_path):
-                raise RuntimeError(f"Cost pathway analysis failed in iteration {iteration + 1}")
+            try:
+                ret = self._execute_wbt(
+                    'cost_pathway',
+                    feedback=feedback,
+                    report_progress=False,  # Don't override main progress bar
+                    destination=best_destination_raster_path,
+                    backlink=backlink_raster_path,
+                    output=pathway_raster_path
+                )
+                
+                if ret != 0 or not os.path.exists(pathway_raster_path):
+                    raise RuntimeError(f"Cost pathway analysis failed in iteration {iteration + 1}")
+            except Exception as e:
+                # Check if cancellation was the cause
+                if feedback and feedback.isCanceled():
+                    feedback.reportError("Process cancelled by user during pathway tracing.")
+                    raise RuntimeError('Process cancelled by user.')
+                raise RuntimeError(f"Cost pathway analysis failed in iteration {iteration + 1}: {e}")
+
+            # Check for cancellation after pathway analysis
+            if feedback and feedback.isCanceled():
+                feedback.reportError("Operation cancelled by user")
+                raise RuntimeError("Operation cancelled by user")
 
             # --- Set correct NoData value for pathway raster --- ## Noch prüfen, ob das notwendig ist
-            with rasterio.open(backlink_raster_path) as src:
-                nodata_value = src.nodata
-            with rasterio.open(pathway_raster_path, 'r+') as dst:
-                dst.nodata = nodata_value
+            # Read NoData value from backlink raster using GDAL
+            backlink_ds = gdal.Open(backlink_raster_path, gdal.GA_ReadOnly)
+            if backlink_ds is not None:
+                try:
+                    backlink_band = backlink_ds.GetRasterBand(1)
+                    nodata_value = backlink_band.GetNoDataValue()
+                finally:
+                    backlink_ds = None  # Close dataset
+                
+                # Set NoData value for pathway raster using GDAL
+                pathway_ds = gdal.Open(pathway_raster_path, gdal.GA_Update)
+                if pathway_ds is not None:
+                    try:
+                        pathway_band = pathway_ds.GetRasterBand(1)
+                        if nodata_value is not None:
+                            pathway_band.SetNoDataValue(nodata_value)
+                    finally:
+                        pathway_ds = None  # Close dataset
 
             print(f"[GetConstantSlopeLine] Converting pathway raster to LineString for iteration {iteration + 1}")
             # --- Convert to LineString ---
@@ -2972,14 +3298,37 @@ class TopoDrainCore:
 
             # Check if the line segment reaches the destination
             if cut_point:
-                # Read the destination raster and get the value at the cut point
-                with rasterio.open(destination_raster_path) as dest_src:
-                    row, col = dest_src.index(cut_point.x, cut_point.y)
-                    if 0 <= row < dest_src.height and 0 <= col < dest_src.width:
-                        dest_data = dest_src.read(1)
-                        dest_value = dest_data[row, col]
-                    else:
-                        dest_value = None
+                # Read the destination raster and get the value at the cut point using GDAL
+                dest_ds = gdal.Open(destination_raster_path, gdal.GA_ReadOnly)
+                if dest_ds is not None:
+                    try:
+                        # Get raster information
+                        rows = dest_ds.RasterYSize
+                        cols = dest_ds.RasterXSize
+                        geotransform = dest_ds.GetGeoTransform()
+                        
+                        if geotransform is not None:
+                            # Convert cut point coordinates to pixel indices using utility function
+                            pixel_coords = TopoDrainCore._coords_to_pixel_indices([cut_point.coords[0]], geotransform)
+                            col, row = pixel_coords[0]
+                            
+                            if 0 <= row < rows and 0 <= col < cols:
+                                # Read destination data
+                                dest_band = dest_ds.GetRasterBand(1)
+                                dest_data = dest_band.ReadAsArray()
+                                if dest_data is not None:
+                                    dest_value = dest_data[row, col]
+                                else:
+                                    dest_value = None
+                            else:
+                                dest_value = None
+                        else:
+                            dest_value = None
+                    finally:
+                        dest_ds = None  # Close dataset
+                else:
+                    dest_value = None
+                    
                 if dest_value == 1:
                     print(f"[GetConstantSlopeLine] Cut point {cut_point} is a destination cell")
                     reached_destination = True
@@ -2990,7 +3339,9 @@ class TopoDrainCore:
             last_iteration = (iteration == max_iterations_slope - 1)
             
             if last_iteration and cut_point is not None:
-                print(f"[GetConstantSlopeLine] Last iteration reached without finding fully valid line segment")
+                warnings.warn(f"[GetConstantSlopeLine] Last iteration reached without finding fully valid line segment")
+                if feedback:
+                    feedback.pushWarning(f"[GetConstantSlopeLine] Last iteration reached without finding fully valid line segment")
 
             if last_iteration or cut_point is None or reached_destination:
                 # If we are at the last iteration or reached destination, we can wan to add fully line segement instead of doing another iteration
@@ -3017,7 +3368,9 @@ class TopoDrainCore:
                     print(f"[GetConstantSlopeLine] Continuing from cut point: {cut_point}")
                 else:
                     # If cutting failed, use the whole segment
-                    print(f"[GetConstantSlopeLine] Cutting failed, using whole line segment")
+                    warnings.warn(f"[GetConstantSlopeLine] Cutting failed, using whole line segment")
+                    if feedback:
+                        feedback.pushWarning(f"[GetConstantSlopeLine] Cutting failed, using whole line segment")
                     if accumulated_line_coords:
                         # Skip first coordinate to avoid duplication
                         accumulated_line_coords.extend(line_segment.coords[1:])
@@ -3028,6 +3381,8 @@ class TopoDrainCore:
         # --- Combine all segments into final line ---
         if not accumulated_line_coords or len(accumulated_line_coords) < 2:
             warnings.warn("[GetConstantSlopeLine] No valid line segments could be extracted.")
+            if feedback:
+                feedback.pushWarning("[GetConstantSlopeLine] No valid line segments could be extracted.")                
             return None
 
         final_line = LineString(accumulated_line_coords)
@@ -3035,6 +3390,10 @@ class TopoDrainCore:
         print("[GetConstantSlopeLine] Smoothing the resulting line")
         # --- Optional smoothing ---
         final_line = TopoDrainCore._smooth_linestring(final_line, sigma=1.0)
+
+        print(f"[GetConstantSlopeLine] Finished processing") 
+        if feedback:
+            feedback.pushInfo(f"[GetConstantSlopeLine] Finished processing")
 
         return final_line
 
@@ -3081,73 +3440,142 @@ class TopoDrainCore:
         current_barrier_value = initial_barrier_value
         accumulated_line_coords = []
     
-        # Read destination raster data
-        with rasterio.open(destination_raster_path) as dest_src:
-            destination_profile = dest_src.profile.copy()
-            orig_dest_data = dest_src.read(1).copy() # create a copy to avoid modifying the original raster
+        # Read destination raster data using GDAL
+        dest_ds = gdal.Open(destination_raster_path, gdal.GA_ReadOnly)
+        if dest_ds is None:
+            raise RuntimeError(f"Cannot open destination raster: {destination_raster_path}.{self._get_gdal_error_message()}")
+            
+        try:
+            # Get destination raster information
+            dest_rows = dest_ds.RasterYSize
+            dest_cols = dest_ds.RasterXSize
+            dest_geotransform = dest_ds.GetGeoTransform()
+            dest_projection = dest_ds.GetProjection()
+            dest_srs = dest_ds.GetSpatialRef()
+            
+            # Read destination data
+            dest_band = dest_ds.GetRasterBand(1)
+            orig_dest_data = dest_band.ReadAsArray().copy()  # create a copy to avoid modifying the original raster
+            if orig_dest_data is None:
+                raise RuntimeError(f"Cannot read destination raster data: {destination_raster_path}.{self._get_gdal_error_message()}")
+                
+            dest_nodata = dest_band.GetNoDataValue()
+            dest_dtype = gdal_array.GDALTypeCodeToNumericTypeCode(dest_band.DataType)
+            
+        finally:
+            dest_ds = None  # Close destination dataset
         
-        # Read barrier raster data
-        with rasterio.open(barrier_raster_path) as src:
-            barrier_profile = src.profile.copy() 
-            orig_barrier_data = src.read(1).copy() # create a copy to avoid modifying the original raster
+        # Read barrier raster data using GDAL
+        barrier_ds = gdal.Open(barrier_raster_path, gdal.GA_ReadOnly)
+        if barrier_ds is None:
+            raise RuntimeError(f"Cannot open barrier raster: {barrier_raster_path}.{self._get_gdal_error_message()}")
+            
+        try:
+            # Get barrier raster information
+            barrier_rows = barrier_ds.RasterYSize
+            barrier_cols = barrier_ds.RasterXSize
+            barrier_geotransform = barrier_ds.GetGeoTransform()
+            barrier_projection = barrier_ds.GetProjection()
+            barrier_srs = barrier_ds.GetSpatialRef()
+            
+            # Read barrier data
+            barrier_band = barrier_ds.GetRasterBand(1)
+            orig_barrier_data = barrier_band.ReadAsArray().copy()  # create a copy to avoid modifying the original raster
+            if orig_barrier_data is None:
+                raise RuntimeError(f"Cannot read barrier raster data: {barrier_raster_path}.{self._get_gdal_error_message()}")
+                
+            barrier_nodata = barrier_band.GetNoDataValue()
+            barrier_dtype = gdal_array.GDALTypeCodeToNumericTypeCode(barrier_band.DataType)
+            
+        finally:
+            barrier_ds = None  # Close barrier dataset
         
         while current_iteration < max_iterations_barrier:
+            print(f"[IterativeConstantSlopeLine] Iteration {current_iteration + 1}/{max_iterations_barrier}")
             if feedback:
                 feedback.pushInfo(f"[IterativeConstantSlopeLine] Iteration {current_iteration + 1}/{max_iterations_barrier}")
-            else:
-                print(f"[IterativeConstantSlopeLine] Iteration {current_iteration + 1}/{max_iterations_barrier}")
-
+                feedback.pushInfo("*for more information see in Python Console")
+                
             # Debug: Print start point and extracted value
-            if feedback:
-                feedback.pushInfo(f"[IterativeConstantSlopeLine] Start point: {current_start_point.wkt}")
-                feedback.pushInfo(f"[IterativeConstantSlopeLine] Start barrier value: {current_barrier_value}")
-            else:
-                print(f"[IterativeConstantSlopeLine] Start point: {current_start_point.wkt}")
-                print(f"[IterativeConstantSlopeLine] Start barrier value: {current_barrier_value}")
+            print(f"[IterativeConstantSlopeLine] Start point: {current_start_point.wkt}")
+            print(f"[IterativeConstantSlopeLine] Start barrier value: {current_barrier_value}")
 
             print(f"[IterativeConstantSlopeLine] Creating working rasters for _get_constant_slope_line...")
             # --- Create barrier raster for _get_constant_slope_line ---
-            # Get dtype from profiles to ensure consistency
-            barrier_dtype = barrier_profile['dtype']
-            dest_dtype = destination_profile['dtype']
+            # Use dtype information from GDAL data
             
             if current_barrier_value:
-                working_barrier_data = np.where(orig_barrier_data == current_barrier_value, 1, 0).astype(barrier_dtype) # current barrier act as barrier and not as destination
-                working_destination_data = np.where((orig_dest_data == 1) | ((orig_barrier_data >= 1) & (orig_barrier_data != current_barrier_value)), 1, 0).astype(dest_dtype)  # all other barriers act as temporary destinations except the current one
+                working_barrier_data = np.where(orig_barrier_data == current_barrier_value, 1, 0).astype(orig_barrier_data.dtype) # current barrier act as barrier and not as destination
+                working_destination_data = np.where((orig_dest_data == 1) | ((orig_barrier_data >= 1) & (orig_barrier_data != current_barrier_value)), 1, 0).astype(orig_dest_data.dtype)  # all other barriers act as temporary destinations except the current one
             else:
                 working_barrier_data = None # all barriers acting as temporary destinations and not as barriers
-                working_destination_data = np.where((orig_dest_data == 1) | (orig_barrier_data >= 1), 1, 0).astype(dest_dtype) 
+                working_destination_data = np.where((orig_dest_data == 1) | (orig_barrier_data >= 1), 1, 0).astype(orig_dest_data.dtype) 
                 
-            # Save barrier mask
+            # Save barrier mask using GDAL
             if working_barrier_data is not None:
                 working_barrier_raster_path = os.path.join(self.temp_directory, f"barrier_iter_{current_iteration}.tif")
-                with rasterio.open(working_barrier_raster_path, "w", **barrier_profile) as dst:
-                    dst.write(working_barrier_data, 1)
-                if feedback:
-                    feedback.pushInfo(f"[IterativeConstantSlopeLine] Working barrier raster created at {working_barrier_raster_path}") 
-                else:
-                    print(f"[IterativeConstantSlopeLine] Working barrier raster created at {working_barrier_raster_path}")
+                
+                # Create barrier raster using GDAL
+                driver = gdal.GetDriverByName('GTiff')
+                if driver is None:
+                    raise RuntimeError(f"GTiff driver not available.{self._get_gdal_error_message()}")
+                    
+                creation_options = ['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=IF_SAFER']
+                barrier_out_ds = driver.Create(working_barrier_raster_path, barrier_cols, barrier_rows, 1, gdal.GDT_Byte, 
+                                              options=creation_options)
+                if barrier_out_ds is None:
+                    raise RuntimeError(f"Failed to create barrier raster: {working_barrier_raster_path}.{self._get_gdal_error_message()}")
+                    
+                try:
+                    barrier_out_ds.SetGeoTransform(barrier_geotransform)
+                    if barrier_srs is not None:
+                        barrier_out_ds.SetSpatialRef(barrier_srs)
+                    elif barrier_projection:
+                        barrier_out_ds.SetProjection(barrier_projection)
+                        
+                    barrier_out_band = barrier_out_ds.GetRasterBand(1)
+                    barrier_out_band.WriteArray(working_barrier_data.astype(np.uint8))
+                    barrier_out_band.SetNoDataValue(0)
+                    
+                finally:
+                    barrier_out_ds = None  # Close dataset
+                    
+                print(f"[IterativeConstantSlopeLine] Working barrier raster created at {working_barrier_raster_path}")
             else:
                 working_barrier_raster_path = None
-                if feedback:
-                    feedback.pushInfo("[IterativeConstantSlopeLine] No working barrier raster created (all barriers act as temporary destinations).")
-                else:
-                    print("[IterativeConstantSlopeLine] No working barrier raster created (all barriers act as temporary destinations).")
+                print("[IterativeConstantSlopeLine] No working barrier raster created (all barriers act as temporary destinations).")
                         
             working_destination_raster_path = os.path.join(self.temp_directory, f"destination_iter_{current_iteration}.tif")
-            # Save destination mask
-            with rasterio.open(working_destination_raster_path, "w", **destination_profile) as dst:
-                dst.write(working_destination_data, 1)
-            if feedback:
-                feedback.pushInfo(f"[IterativeConstantSlopeLine] Working destination raster created at {working_destination_raster_path}")
-            else:
-                print(f"[IterativeConstantSlopeLine] Working destination raster created at {working_destination_raster_path}")
+            
+            # Save destination mask using GDAL
+            driver = gdal.GetDriverByName('GTiff')
+            if driver is None:
+                raise RuntimeError(f"GTiff driver not available.{self._get_gdal_error_message()}")
+                
+            creation_options = ['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=IF_SAFER']
+            dest_out_ds = driver.Create(working_destination_raster_path, dest_cols, dest_rows, 1, gdal.GDT_Byte, 
+                                       options=creation_options)
+            if dest_out_ds is None:
+                raise RuntimeError(f"Failed to create destination raster: {working_destination_raster_path}.{self._get_gdal_error_message()}")
+                
+            try:
+                dest_out_ds.SetGeoTransform(dest_geotransform)
+                if dest_srs is not None:
+                    dest_out_ds.SetSpatialRef(dest_srs)
+                elif dest_projection:
+                    dest_out_ds.SetProjection(dest_projection)
+                    
+                dest_out_band = dest_out_ds.GetRasterBand(1)
+                dest_out_band.WriteArray(working_destination_data.astype(np.uint8))
+                dest_out_band.SetNoDataValue(0)
+                
+            finally:
+                dest_out_ds = None  # Close dataset
+                
+            print(f"[IterativeConstantSlopeLine] Working destination raster created at {working_destination_raster_path}")
 
             # Call _get_constant_slope_line with current parameters
-            if feedback:
-                feedback.pushInfo(f"[IterativeConstantSlopeLine] Tracing from point {current_start_point}")
-            else:
-                print(f"[IterativeConstantSlopeLine] Tracing from point {current_start_point}")
+            print(f"[IterativeConstantSlopeLine] Tracing from point {current_start_point}")
                 
             line_segment = self._get_constant_slope_line(
                 dtm_path=dtm_path,
@@ -3162,10 +3590,9 @@ class TopoDrainCore:
 
             # Check if a line segment was found
             if line_segment is None:
+                warnings.warn(f"[IterativeConstantSlopeLine] No line found in iteration {current_iteration + 1}")
                 if feedback:
                     feedback.pushWarning(f"[IterativeConstantSlopeLine] No line found in iteration {current_iteration + 1}")
-                else:
-                    warnings.warn(f"[IterativeConstantSlopeLine] No line found in iteration {current_iteration + 1}")
                 break
 
             line_coords = list(line_segment.coords)
@@ -3173,24 +3600,22 @@ class TopoDrainCore:
             endpoint = Point(line_coords[-1])
             print(f"[IterativeConstantSlopeLine] Endpoint iteration {current_iteration + 1}: {endpoint.wkt}")
             final_destination_found = False
-            with rasterio.open(destination_raster_path) as dest_src:
-                end_row, end_col = dest_src.index(endpoint.x, endpoint.y)
-                if 0 <= end_row < orig_dest_data.shape[0] and 0 <= end_col < orig_dest_data.shape[1]:
-                    if orig_dest_data[end_row, end_col] == 1:
-                        if feedback:
-                            feedback.pushInfo(f"[IterativeConstantSlopeLine] Reached final destination in iteration {current_iteration + 1}")
-                        else:
-                            print(f"[IterativeConstantSlopeLine] Reached final destination in iteration {current_iteration + 1}")
-                        final_destination_found = True
-                    else:
-                        print(f"[IterativeConstantSlopeLine] Endpoint not on destination in iteration {current_iteration + 1}, checking barriers.")
+            # Convert endpoint coordinates to pixel indices using GDAL geotransform
+            pixel_coords = TopoDrainCore._coords_to_pixel_indices([endpoint.coords[0]], dest_geotransform)
+            end_col, end_row = pixel_coords[0]
+            
+            if 0 <= end_row < orig_dest_data.shape[0] and 0 <= end_col < orig_dest_data.shape[1]:
+                if orig_dest_data[end_row, end_col] == 1:
+                    print(f"[IterativeConstantSlopeLine] Reached final destination in iteration {current_iteration + 1}")
+                    final_destination_found = True
+                else:
+                    print(f"[IterativeConstantSlopeLine] Endpoint not on destination in iteration {current_iteration + 1}, checking barriers.")
             
             last_iteration = (current_iteration == max_iterations_barrier - 1)
             if not final_destination_found and last_iteration:
+                warnings.warn("[IterativeConstantSlopeLine] Maximum iterations reached without finding a fully valid line")
                 if feedback:
-                    feedback.pushWarning("[IterativeConstantSlopeLine] Maximum iterations reached without finding a fully valid line")
-                else:
-                    print("[IterativeConstantSlopeLine] Maximum iterations reached without finding a fully valid line")
+                    feedback.pushWarning("[IterativeConstantSlopeLine] Maximum iterations reached without finding a fully valid line")                    
 
             if final_destination_found or last_iteration: 
                 # If we reached the last iteration, add this final segment to avoid cutting in the last iteration:
@@ -3203,14 +3628,15 @@ class TopoDrainCore:
                 break
 
             else: 
-                # Get barrier value at endpoint for next iteration
-                with rasterio.open(barrier_raster_path) as barrier_src:
-                    end_row, end_col = barrier_src.index(endpoint.x, endpoint.y)
-                    if 0 <= end_row < barrier_src.height and 0 <= end_col < barrier_src.width:
-                        end_barrier_value = int(barrier_src.read(1)[end_row, end_col])
-                    else:
-                        end_barrier_value = None
-                    print(f"[IterativeConstantSlopeLine] Iteration reached barrier: {end_barrier_value}")
+                # Get barrier value at endpoint for next iteration using GDAL geotransform
+                pixel_coords = TopoDrainCore._coords_to_pixel_indices([endpoint.coords[0]], barrier_geotransform)
+                barrier_end_col, barrier_end_row = pixel_coords[0]
+                
+                if 0 <= barrier_end_row < barrier_rows and 0 <= barrier_end_col < barrier_cols:
+                    end_barrier_value = int(orig_barrier_data[barrier_end_row, barrier_end_col])
+                else:
+                    end_barrier_value = None
+                print(f"[IterativeConstantSlopeLine] Iteration reached barrier: {end_barrier_value}")
 
                 if end_barrier_value:
                     # Get start point for next iteration next to the barrier (back where the line came from)
@@ -3245,16 +3671,14 @@ class TopoDrainCore:
 
         if len(accumulated_line_coords) >= 2:
             line = LineString(accumulated_line_coords)
+            print(f"[IterativeConstantSlopeLine] Completed after {current_iteration + 1} iterations")
             if feedback:
                 feedback.pushInfo(f"[IterativeConstantSlopeLine] Completed after {current_iteration + 1} iterations")
-            else:
-                print(f"[IterativeConstantSlopeLine] Completed after {current_iteration + 1} iterations")
             return line
         else:
+            warnings.warn("[IterativeConstantSlopeLine] No valid line could be created")
             if feedback:
                 feedback.pushWarning("[IterativeConstantSlopeLine] No valid line could be created")
-            else:
-                print("[IterativeConstantSlopeLine] No valid line could be created")
             return None
 
     def get_constant_slope_lines(
@@ -3268,7 +3692,8 @@ class TopoDrainCore:
         max_iterations_barrier: int = 30,
         slope_deviation_threshold: float = 0.2,
         max_iterations_slope: int = 20,
-        feedback=None
+        feedback=None,
+        report_progress: bool = True
     ) -> gpd.GeoDataFrame:
         """
         Trace lines with constant slope starting from given points using a cost-distance approach
@@ -3287,10 +3712,16 @@ class TopoDrainCore:
             max_iterations_slope (int): Maximum number of iterations for line refinement (1-50, higher values allow more complex paths). Default 20.
             slope_deviation_threshold (float): Maximum allowed relative deviation from expected slope (0.0-1.0, e.g., 0.2 for 20% deviation before line cutting). Default 0.2.
             feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting/logging.
+            report_progress (bool): Whether to report progress via setProgress calls. Default True. Set to False when called from create_keylines_core to avoid progress conflicts.
             
         Returns:
             gpd.GeoDataFrame: Traced constant slope lines.
         """
+        if feedback:
+            if feedback.isCanceled():
+                feedback.reportError("Constant slope line tracing was cancelled by user")
+                raise RuntimeError("Operation cancelled by user")
+
         if feedback:
             feedback.pushInfo("[ConstantSlopeLines] Starting tracing")
         else:
@@ -3312,8 +3743,17 @@ class TopoDrainCore:
         destination_raster_path = self._vector_to_mask_raster([destination_processed], dtm_path, unique_values=False, flatten_lines=False, buffer_lines=True) # destination_processed are already flattened. Binary mask raster, no need of unique values
 
         # Read destination mask for later processing
-        with rasterio.open(destination_raster_path) as src:
-            destination_mask = src.read(1)
+        dest_ds = gdal.Open(destination_raster_path, gdal.GA_ReadOnly)
+        if dest_ds is None:
+            raise RuntimeError(f"Cannot open destination raster: {destination_raster_path}.{self._get_gdal_error_message()}")
+            
+        try:
+            dest_band = dest_ds.GetRasterBand(1)
+            destination_mask = dest_band.ReadAsArray()
+            if destination_mask is None:
+                raise RuntimeError(f"Cannot read destination mask data from: {destination_raster_path}.{self._get_gdal_error_message()}")
+        finally:
+            dest_ds = None
             
         if feedback:
             feedback.pushInfo("[ConstantSlopeLines] Destination mask ready")
@@ -3337,15 +3777,31 @@ class TopoDrainCore:
             barrier_value_raster_path, barrier_id_to_geom = self._vector_to_mask_raster([barrier_processed], dtm_path, unique_values=True, flatten_lines=False, buffer_lines=True)
 
             # Read barrier masks for processing
-            with rasterio.open(barrier_raster_path) as src:
-                barrier_mask = src.read(1)
-            with rasterio.open(barrier_value_raster_path) as src:
-                barrier_value_mask = src.read(1)
+            barrier_ds = gdal.Open(barrier_raster_path, gdal.GA_ReadOnly)
+            if barrier_ds is None:
+                raise RuntimeError(f"Cannot open barrier raster: {barrier_raster_path}.{self._get_gdal_error_message()}")
+                
+            try:
+                barrier_band = barrier_ds.GetRasterBand(1)
+                barrier_mask = barrier_band.ReadAsArray()
+                if barrier_mask is None:
+                    raise RuntimeError(f"Cannot read barrier mask data from: {barrier_raster_path}.{self._get_gdal_error_message()}")
+            finally:
+                barrier_ds = None
+                
+            barrier_value_ds = gdal.Open(barrier_value_raster_path, gdal.GA_ReadOnly)
+            if barrier_value_ds is None:
+                raise RuntimeError(f"Cannot open barrier value raster: {barrier_value_raster_path}.{self._get_gdal_error_message()}")
+                
+            try:
+                barrier_value_band = barrier_value_ds.GetRasterBand(1)
+                barrier_value_mask = barrier_value_band.ReadAsArray()
+                if barrier_value_mask is None:
+                    raise RuntimeError(f"Cannot read barrier value mask data from: {barrier_value_raster_path}.{self._get_gdal_error_message()}")
+            finally:
+                barrier_value_ds = None
 
-            if feedback:
-                feedback.pushInfo(f"[ConstantSlopeLines] Barrier raster saved to {barrier_raster_path}")
-            else:
-                print(f"[ConstantSlopeLines] Barrier raster saved to {barrier_raster_path}")
+            # Barrier raster created (reduced logging)
 
             # Handle overlapping barrier and original destination cells --> adjust destination mask
             dest_barrier_overlap = (barrier_mask == 1) & (destination_mask == 1)
@@ -3357,9 +3813,17 @@ class TopoDrainCore:
                     print(f"[ConstantSlopeLines] Found {num_overlaps} overlapping barrier/original destination cells")
                 # Set destination_mask to 0 at overlapping cells, because not possible to be barrier and destination at the same time
                 destination_mask[dest_barrier_overlap] = 0
-                # update desination raster
-                with rasterio.open(destination_raster_path, 'r+') as dst:
-                    dst.write(destination_mask, 1)
+                # update destination raster
+                dest_write_ds = gdal.Open(destination_raster_path, gdal.GA_Update)
+                if dest_write_ds is None:
+                    raise RuntimeError(f"Cannot open destination raster for writing: {destination_raster_path}.{self._get_gdal_error_message()}")
+                    
+                try:
+                    dest_write_band = dest_write_ds.GetRasterBand(1)
+                    dest_write_band.WriteArray(destination_mask)
+                    dest_write_ds.FlushCache()
+                finally:
+                    dest_write_ds = None
             else:
                 if feedback:
                     feedback.pushInfo("[ConstantSlopeLines] No overlapping barrier/original destination cells found")
@@ -3374,11 +3838,18 @@ class TopoDrainCore:
             
             # Get barrier values at each start point location using raster lookup
             point_barrier_info = []
-            with rasterio.open(dtm_path) as dtm_src:
+            dtm_ds = gdal.Open(dtm_path, gdal.GA_ReadOnly)
+            if dtm_ds is None:
+                raise RuntimeError(f"Cannot open DTM raster: {dtm_path}.{self._get_gdal_error_message()}")
+                
+            try:
+                dtm_geotransform = dtm_ds.GetGeoTransform()
+                
                 for orig_idx, row in original_pts.iterrows():
                     pt = row.geometry
-                    # Get raster indices for the point
-                    pt_r, pt_c = dtm_src.index(pt.x, pt.y)
+                    # Get raster indices for the point using TopoDrainCore utility function
+                    pixel_coords = TopoDrainCore._coords_to_pixel_indices([pt.coords[0]], dtm_geotransform)
+                    pt_c, pt_r = pixel_coords[0]
                     
                     # Check if point is within raster bounds
                     if (0 <= pt_r < barrier_mask.shape[0] and 0 <= pt_c < barrier_mask.shape[1]):
@@ -3399,6 +3870,8 @@ class TopoDrainCore:
                             'barrier_feature_id': None,
                             'row': row
                         })
+            finally:
+                dtm_ds = None
             
             # Count overlapping vs non-overlapping for reporting
             overlapping_count = sum(1 for info in point_barrier_info if info['is_on_barrier'])
@@ -3436,6 +3909,11 @@ class TopoDrainCore:
             print("[ConstantSlopeLines] Starting slope line tracing...")
 
         for info in point_barrier_info:
+            # Check for cancellation at the start of each point processing
+            if feedback and feedback.isCanceled():
+                feedback.reportError("Constant slope line tracing was cancelled by user")
+                raise RuntimeError("Operation cancelled by user")
+                
             orig_idx = info['orig_idx']
             orig_pt = info['row'].geometry
             is_on_barrier = info['is_on_barrier']
@@ -3444,10 +3922,7 @@ class TopoDrainCore:
 
             if is_on_barrier:
                 # Point is on barrier - need to create adjusted start points
-                if feedback:
-                    feedback.pushInfo(f"[ConstantSlopeLines] Point {orig_idx} on barrier feature {barrier_feature_id} → creating offset points")
-                else:
-                    print(f"[ConstantSlopeLines] Point {orig_idx} on barrier feature {barrier_feature_id} → creating offset points")
+                # Point is on barrier - create offset points (reduced logging)
 
                 # Get the specific barrier geometry that this point overlaps with
                 barrier_geom = barrier_id_to_geom.get(barrier_feature_id)
@@ -3478,20 +3953,18 @@ class TopoDrainCore:
                                 warnings.warn(f"[ConstantSlopeLines] No {offset_name} offset point could be created for {orig_idx}")
                         continue
 
-                    # Progress reporting
+                    # Progress reporting 
+                    adj_idx += 1
+                    current_point += 1
+
                     if feedback:
-                        progress_pct = int((current_point / total_points) * 100)
-                        feedback.setProgress(progress_pct)
                         feedback.pushInfo(f"[ConstantSlopeLines] Processing point {current_point}/{total_points} ({progress_pct}%) - Point {orig_idx}...")
-                    else:
+                    elif not feedback:
                         print(f"[ConstantSlopeLines] Processing point {current_point}/{total_points} - Point {orig_idx}...")
 
-                    adj_idx += 1
-                    if feedback:
-                        feedback.pushInfo(f"[ConstantSlopeLines]   → Tracing from {offset_name} offset point for {orig_idx}")
-                    else:
-                        print(f"[ConstantSlopeLines]   → Tracing from {offset_name} offset point for {orig_idx}")
-
+                    if feedback and report_progress:
+                        progress_pct = int((current_point / total_points) * 100)
+                        feedback.setProgress(progress_pct)
 
                     # Trace line from offset point
                     if allow_barriers_as_temp_destination and barrier_features:
@@ -3515,14 +3988,11 @@ class TopoDrainCore:
                             barrier_raster_path=barrier_raster_path,  # Use binary barrier raster for simple tracing
                             max_iterations_slope=max_iterations_slope,
                             slope_deviation_threshold=slope_deviation_threshold,
-                            feedback=None
+                            feedback=feedback
                         )
 
                     if not raw_line:
-                        if feedback:
-                            feedback.pushInfo(f"[ConstantSlopeLines]   → No line from {offset_name} offset for {orig_idx}")
-                        else:
-                            print(f"[ConstantSlopeLines]   → No line from {offset_name} offset for {orig_idx}")
+                        # No line generated (reduced logging)
                         continue
 
                     # Snap line to original start point
@@ -3536,10 +4006,7 @@ class TopoDrainCore:
                         **orig_attrs
                     })
 
-                    if feedback:
-                        feedback.pushInfo(f"[ConstantSlopeLines]   → Line created from {offset_name} offset for {orig_idx}")
-                    else:
-                        print(f"[ConstantSlopeLines]   → Line created from {offset_name} offset for {orig_idx}")
+                    # Line created successfully (reduced logging)
 
             else:
                 # Point is not on barrier - trace directly from original point
@@ -3547,16 +4014,12 @@ class TopoDrainCore:
 
                 # Progress reporting
                 if feedback:
+                    feedback.pushInfo(f"[ConstantSlopeLines] Processing point {current_point}/{total_points} ({progress_pct}%) - Point {orig_idx}...")
+                elif not feedback:
+                    print(f"[ConstantSlopeLines] Processing point {current_point}/{total_points} - Point {orig_idx}...")
+                if feedback and report_progress:
                     progress_pct = int((current_point / total_points) * 100)
                     feedback.setProgress(progress_pct)
-                    feedback.pushInfo(f"[ConstantSlopeLines] Processing point {current_point}/{total_points} ({progress_pct}%) - Point {orig_idx}...")
-                else:
-                    print(f"[ConstantSlopeLines] Processing point {current_point}/{total_points} - Point {orig_idx}...")
-                
-                if feedback:
-                    feedback.pushInfo(f"[ConstantSlopeLines] Point {orig_idx} not on barrier → tracing directly")
-                else:
-                    print(f"[ConstantSlopeLines] Point {orig_idx} not on barrier → tracing directly")
 
                 # Trace line from original point
                 if allow_barriers_as_temp_destination:
@@ -3580,7 +4043,7 @@ class TopoDrainCore:
                         barrier_raster_path=barrier_raster_path,  # Use binary barrier raster for simple tracing
                         max_iterations_slope=max_iterations_slope,
                         slope_deviation_threshold=slope_deviation_threshold,
-                        feedback=None
+                        feedback=feedback
                     )
 
                 if not raw_line:
@@ -3606,10 +4069,16 @@ class TopoDrainCore:
             if feedback:
                 feedback.reportError("[ConstantSlopeLines] No slope lines could be created.")
             raise RuntimeError("No slope lines could be created.")
-        
+
+        if feedback:
+            if feedback.isCanceled():
+                feedback.reportError("Constant slope line tracing was cancelled by user")
+                raise RuntimeError("Operation cancelled by user")
+            
+        if feedback and report_progress:
+            feedback.setProgress(100)
         if feedback:
             feedback.pushInfo(f"[ConstantSlopeLines] Done: generated {len(results)} lines")
-            feedback.setProgress(100)
         else:
             print(f"[ConstantSlopeLines] Done: generated {len(results)} lines")
 
@@ -3660,11 +4129,14 @@ class TopoDrainCore:
             Combined keylines from all stages, all oriented from valley to ridge.
         """
         if feedback:
-            feedback.pushInfo("Starting iterative keyline core creation process...")
+            feedback.pushInfo("[CreateKeylinesCore] Starting iterative keyline core creation process...")
             feedback.setProgress(5)
+            if feedback.isCanceled():
+                feedback.reportError("[CreateKeylinesCore] Keyline creation was cancelled by user")
+                raise RuntimeError("Operation cancelled by user")
         else:
-            print("Starting iterative keyline core creation process...")
-            print("Progress: 5%")
+            print("[CreateKeylinesCore]Starting iterative keyline core creation process...")
+            print("[CreateKeylinesCore] Progress: 5%")
         # Create raster .tif files for valley_lines and ridge_lines to use in _get_linedirection_start_point
         valley_lines_raster_path = os.path.join(self.temp_directory, "valley_lines_mask.tif")
         ridge_lines_raster_path = os.path.join(self.temp_directory, "ridge_lines_mask.tif")
@@ -3675,11 +4147,11 @@ class TopoDrainCore:
         # Rasterize ridge_lines - now returns path directly
         ridge_lines_raster_path = self._vector_to_mask_raster([ridge_lines], dtm_path, output_path=ridge_lines_raster_path, unique_values=False, flatten_lines=True, buffer_lines=True)
         if feedback:
-            feedback.pushInfo("Starting iterative keyline creation process...")
+            feedback.pushInfo("[CreateKeylinesCore] Starting iterative keyline creation process...")
             feedback.setProgress(5)
         else:
-            print("Starting iterative keyline creation process...")
-            print("Progress: 5%")
+            print("[CreateKeylinesCore] Starting iterative keyline creation process...")
+            print("[CreateKeylinesCore] Progress: 5%")
         # Create raster .tif files for valley_lines and ridge_lines to use in _get_linedirection_start_point
         valley_lines_raster_path = os.path.join(self.temp_directory, "valley_lines_mask.tif")
         ridge_lines_raster_path = os.path.join(self.temp_directory, "ridge_lines_mask.tif")
@@ -3712,14 +4184,42 @@ class TopoDrainCore:
                 buffer_lines=True
             )
             # Read perimeter mask for endpoint checking
-            with rasterio.open(perimeter_raster_path) as src:
-                perimeter_mask = src.read(1)
+            perimeter_ds = gdal.Open(perimeter_raster_path, gdal.GA_ReadOnly)
+            if perimeter_ds is None:
+                raise RuntimeError(f"Cannot open perimeter raster: {perimeter_raster_path}.{self._get_gdal_error_message()}")
+                
+            try:
+                perimeter_band = perimeter_ds.GetRasterBand(1)
+                perimeter_mask = perimeter_band.ReadAsArray()
+                if perimeter_mask is None:
+                    raise RuntimeError(f"Cannot read perimeter mask data from: {perimeter_raster_path}.{self._get_gdal_error_message()}")
+            finally:
+                perimeter_ds = None
         
         # Read barrier masks for endpoint checking
-        with rasterio.open(valley_lines_raster_path) as src:
-            valley_mask = src.read(1)
-        with rasterio.open(ridge_lines_raster_path) as src:
-            ridge_mask = src.read(1)
+        valley_lines_ds = gdal.Open(valley_lines_raster_path, gdal.GA_ReadOnly)
+        if valley_lines_ds is None:
+            raise RuntimeError(f"Cannot open valley lines raster: {valley_lines_raster_path}.{self._get_gdal_error_message()}")
+            
+        try:
+            valley_lines_band = valley_lines_ds.GetRasterBand(1)
+            valley_mask = valley_lines_band.ReadAsArray()
+            if valley_mask is None:
+                raise RuntimeError(f"Cannot read valley mask data from: {valley_lines_raster_path}.{self._get_gdal_error_message()}")
+        finally:
+            valley_lines_ds = None
+            
+        ridge_lines_ds = gdal.Open(ridge_lines_raster_path, gdal.GA_ReadOnly)
+        if ridge_lines_ds is None:
+            raise RuntimeError(f"Cannot open ridge lines raster: {ridge_lines_raster_path}.{self._get_gdal_error_message()}")
+            
+        try:
+            ridge_lines_band = ridge_lines_ds.GetRasterBand(1)
+            ridge_mask = ridge_lines_band.ReadAsArray()
+            if ridge_mask is None:
+                raise RuntimeError(f"Cannot read ridge mask data from: {ridge_lines_raster_path}.{self._get_gdal_error_message()}")
+        finally:
+            ridge_lines_ds = None
         # Initialize variables
         all_keylines = []
         current_start_points = start_points.copy()
@@ -3734,11 +4234,14 @@ class TopoDrainCore:
             # Progress: 5% at start, 95% spread over expected_stages
             progress = 5 + int((stage - 1) * (95 / expected_stages))
             if feedback:
-                feedback.pushInfo(f"**** Stage {stage}/~{expected_stages}: Processing {len(current_start_points)} start points...***")
+                feedback.pushInfo(f"[CreateKeylinesCore] **** Stage {stage}/~{expected_stages}: Processing {len(current_start_points)} start points...***")
                 feedback.setProgress(min(progress, 99))
+                if feedback.isCanceled():
+                    feedback.reportError("[CreateKeylinesCore] Keyline creation was cancelled by user")
+                    raise RuntimeError("Operation cancelled by user")
             else:
-                print(f"**** Stage {stage}/~{expected_stages}: Processing {len(current_start_points)} start points...****")
-                print(f"Progress: {progress}%")
+                print(f"[CreateKeylinesCore] **** Stage {stage}/~{expected_stages}: Processing {len(current_start_points)} start points...****")
+                print(f"[CreateKeylinesCore] Progress: {progress}%")
             
             # Determine destination and barrier features based on stage
             if stage % 2 == 1:  # Odd stages: trace to ridges, valleys as barriers
@@ -3761,15 +4264,14 @@ class TopoDrainCore:
                 destination_features.append(perimeter)
                 
             if feedback:
-                feedback.pushInfo(f"Stage {stage}: Tracing to {target_type}...")
+                feedback.pushInfo(f"[CreateKeylinesCore] Stage {stage}: Tracing to {target_type}...")
             else:
-                print(f"Stage {stage}: Tracing to {target_type}...")
+                print(f"[CreateKeylinesCore] Stage {stage}: Tracing to {target_type}...")
         
             if feedback:
-                feedback.pushInfo(f"* for more details on tracing of stage {stage}, see in python console")
-
-            if feedback:
-                feedback.pushInfo(f"Current start points: {current_start_points}")
+                feedback.pushInfo(f"[CreateKeylinesCore] Current start points: {current_start_points}")
+            else:
+                print(f"[CreateKeylinesCore] Current start points: {current_start_points}")
 
             # Trace constant slope lines
             stage_lines = self.get_constant_slope_lines(
@@ -3781,31 +4283,35 @@ class TopoDrainCore:
                 allow_barriers_as_temp_destination=False,
                 slope_deviation_threshold=slope_deviation_threshold,
                 max_iterations_slope=max_iterations_slope,
-                feedback=None # want to keep feedback for the main loop, not for each tracing call here
+                feedback=feedback,
+                report_progress=False  # Disable progress reporting to avoid conflicts with main progress
             )
 
             if feedback:
-                feedback.pushInfo(f"Stage {stage}: Tracing complete, processing results...")
+                feedback.pushInfo(f"[CreateKeylinesCore] Stage {stage}: Tracing complete, processing results...")
+            else:
+                print(f"[CreateKeylinesCore] Stage {stage}: Tracing complete, processing results...")
 
             if stage_lines.empty:
                 if feedback:
-                    feedback.pushInfo(f"Stage {stage}: No lines generated, stopping...")
+                    feedback.pushInfo(f"[CreateKeylinesCore] Stage {stage}: No lines generated, stopping...")
                 else:
-                    print(f"Stage {stage}: No lines generated, stopping...")
+                    print(f"[CreateKeylinesCore] Stage {stage}: No lines generated, stopping...")
                 break
                 
             if feedback:
-                feedback.pushInfo(f"Stage {stage} complete: {len(stage_lines)} lines to {target_type}")
-                feedback.pushInfo(f"Stage lines: {stage_lines}")
+                feedback.pushInfo(f"[CreateKeylinesCore] Stage {stage} complete: {len(stage_lines)} lines to {target_type}")
+                feedback.pushInfo(f"[CreateKeylinesCore] Stage lines: {stage_lines}")
             else:
-                print(f"Stage {stage} complete: {len(stage_lines)} lines to {target_type}")
+                print(f"[CreateKeylinesCore] Stage {stage} complete: {len(stage_lines)} lines to {target_type}")
+                print(f"[CreateKeylinesCore] Stage lines: {stage_lines}") 
 
             # Apply slope adjustment if parameters are provided
             if change_after is not None and slope_after is not None:
                 if feedback:
-                    feedback.pushInfo(f"Stage {stage}: Applying slope adjustment after {change_after*100:.1f}% with new slope {slope_after}")
+                    feedback.pushInfo(f"[CreateKeylinesCore] Stage {stage}: Applying slope adjustment after {change_after*100:.1f}% with new slope {slope_after}")
                 else:
-                    print(f"Stage {stage}: Applying slope adjustment after {change_after*100:.1f}% with new slope {slope_after}")
+                    print(f"[CreateKeylinesCore] Stage {stage}: Applying slope adjustment after {change_after*100:.1f}% with new slope {slope_after}")
                 
                 # For even stages, we need to handle slope direction properly
                 if stage % 2 == 0:  # Even stage: lines traced ridge→valley with -slope_after
@@ -3815,7 +4321,9 @@ class TopoDrainCore:
                     # 3. Then reverse final lines to valley→ridge orientation
                     
                     if feedback:
-                        feedback.pushInfo(f"Stage {stage}: Even stage - applying slope adjustment from -slope_after to -slope...")
+                        feedback.pushInfo(f"[CreateKeylinesCore] Stage {stage}: Even stage - applying slope adjustment from -slope_after to -slope...")
+                    else:
+                        print(f"[CreateKeylinesCore] Stage {stage}: Even stage - applying slope adjustment from -slope_after to -slope...")
                     
                     # Apply slope adjustment: change from -slope_after to -slope
                     # The adjust_constant_slope_after function expects positive slopes, so we pass the absolute values
@@ -3830,7 +4338,8 @@ class TopoDrainCore:
                         allow_barriers_as_temp_destination=False,
                         slope_deviation_threshold=slope_deviation_threshold,
                         max_iterations_slope=max_iterations_slope,
-                        feedback=None  # Keep feedback at main level
+                        feedback=feedback,
+                        report_progress=False  # Disable progress reporting to avoid conflicts with main progress
                     )
                     
                     # update stage lines
@@ -3848,18 +4357,17 @@ class TopoDrainCore:
                         allow_barriers_as_temp_destination=False,
                         slope_deviation_threshold=slope_deviation_threshold,
                         max_iterations_slope=max_iterations_slope,
-                        feedback=None  # Keep feedback at main level
+                        feedback=feedback,
+                        report_progress=False  # Disable progress reporting to avoid conflicts with main progress
                     )
 
                     # update stage lines
                     stage_lines = adjusted_lines
                     
                 if feedback:
-                    feedback.pushInfo(f"Stage {stage}: Slope adjustment complete, {len(stage_lines)} adjusted lines")
+                    feedback.pushInfo(f"[CreateKeylinesCore] Stage {stage}: Slope adjustment complete, {len(stage_lines)} adjusted lines")
                 else:
-                    print(f"Stage {stage}: Slope adjustment complete, {len(stage_lines)} adjusted lines")
-
-
+                    print(f"[CreateKeylinesCore] Stage {stage}: Slope adjustment complete, {len(stage_lines)} adjusted lines")
 
             # Check endpoints and create new start points if they're on target features
             new_start_points = []
@@ -3869,27 +4377,40 @@ class TopoDrainCore:
             new_barrier_feature = ridge_lines if target_type == "ridges" else valley_lines
             
             if feedback:    
-                feedback.pushInfo(f"Stage {stage}: Checking endpoints on {target_type} using raster-based detection...")
+                feedback.pushInfo(f"[CreateKeylinesCore] Stage {stage}: Checking endpoints on {target_type} using raster-based detection...")
             else:
-                print(f"Stage {stage}: Checking endpoints on {target_type} using raster-based detection...")
+                print(f"[CreateKeylinesCore] Stage {stage}: Checking endpoints on {target_type} using raster-based detection...")
 
             # Iterate through each line in the stage_lines GeoDataFrame (for endpoint processing)
             # Note: stage_lines is oriented correctly for endpoint detection
-            with rasterio.open(dtm_path) as dtm_src:
+            dtm_ds = gdal.Open(dtm_path, gdal.GA_ReadOnly)
+            if dtm_ds is None:
+                raise RuntimeError(f"Cannot open DTM raster: {dtm_path}.{self._get_gdal_error_message()}")
+                
+            try:
+                dtm_geotransform = dtm_ds.GetGeoTransform()
+                dtm_rows = dtm_ds.RasterYSize
+                dtm_cols = dtm_ds.RasterXSize
+                
                 for line_idx, line_row in stage_lines.iterrows():
                     line_geom = line_row.geometry
                     if hasattr(line_geom, 'coords') and len(line_geom.coords) >= 2:
                         end_point = Point(line_geom.coords[-1])
                         if feedback:
-                            feedback.pushInfo(f"Stage {stage}: Checking endpoint {end_point.wkt} for new start point...")
+                            feedback.pushInfo(f"[CreateKeylinesCore] Stage {stage}: Checking endpoint {end_point.wkt} for new start point...")
+                        else:
+                            print(f"[CreateKeylinesCore] Stage {stage}: Checking endpoint {end_point.wkt} for new start point...")
                         
-                        # Get raster coordinates for endpoint
-                        end_r, end_c = dtm_src.index(end_point.x, end_point.y)
+                        # Get raster coordinates for endpoint using TopoDrainCore utility function
+                        pixel_coords = TopoDrainCore._coords_to_pixel_indices([end_point.coords[0]], dtm_geotransform)
+                        end_c, end_r = pixel_coords[0]
                         
                         # Check if endpoint is within raster bounds
-                        if not (0 <= end_r < dtm_src.height and 0 <= end_c < dtm_src.width):
+                        if not (0 <= end_r < dtm_rows and 0 <= end_c < dtm_cols):
                             if feedback:
-                                feedback.pushInfo(f"Stage {stage}: Endpoint outside raster bounds, skipping...")
+                                feedback.pushInfo(f"[CreateKeylinesCore] Stage {stage}: Endpoint outside raster bounds, skipping...")
+                            else:
+                                print(f"[CreateKeylinesCore] Stage {stage}: Endpoint outside raster bounds, skipping...")    
                             continue
                         
                         # Check if endpoint reached the perimeter using raster lookup
@@ -3899,17 +4420,23 @@ class TopoDrainCore:
                             reached_perimeter = (perimeter_value == 1)
                             
                             if feedback:
-                                feedback.pushInfo(f"Stage {stage}: Perimeter raster value at endpoint: {perimeter_value}")
+                                feedback.pushInfo(f"[CreateKeylinesCore] Stage {stage}: Perimeter raster value at endpoint: {perimeter_value}")
+                            else:
+                                print(f"[CreateKeylinesCore] Stage {stage}: Perimeter raster value at endpoint: {perimeter_value}")  
                             
                             if reached_perimeter:
                                 if feedback:
-                                    feedback.pushInfo(f"Stage {stage}: Endpoint is on perimeter raster cell, adding line and skipping further tracing.")
-                                
+                                    feedback.pushInfo(f"[CreateKeylinesCore] Stage {stage}: Endpoint is on perimeter raster cell, adding line and skipping further tracing.")
+                                else:
+                                    print(f"[CreateKeylinesCore] Stage {stage}: Endpoint is on perimeter raster cell, adding line and skipping further tracing.")
+
                                 # adjust line orientation for even stages to ensure valley→ridge direction
                                 if stage % 2 == 0:  
                                     final_line_geom = TopoDrainCore._reverse_line_direction(line_geom)
                                     if feedback:
-                                        feedback.pushInfo(f"Stage {stage}: Reversed line direction (ridge→valley to valley→ridge)")
+                                        feedback.pushInfo(f"[CreateKeylinesCore] Stage {stage}: Reversed line direction (ridge→valley to valley→ridge)")
+                                    else:
+                                        print(f"[CreateKeylinesCore] Stage {stage}: Reversed line direction (ridge→valley to valley→ridge)") 
                                 else:
                                     final_line_geom = line_geom
 
@@ -3922,17 +4449,23 @@ class TopoDrainCore:
                         is_on_barrier = (barrier_value == 1)
                         
                         if feedback:
-                            feedback.pushInfo(f"Stage {stage}: Barrier raster value at endpoint: {barrier_value}")
+                            feedback.pushInfo(f"[CreateKeylinesCore] Stage {stage}: Barrier raster value at endpoint: {barrier_value}")
+                        else:
+                            print(f"[CreateKeylinesCore] Stage {stage}: Barrier raster value at endpoint: {barrier_value}")
                         
                         if is_on_barrier:
                             if feedback:
-                                feedback.pushInfo(f"Stage {stage}: Endpoint is on barrier raster cell, trying to get a new start point...")
+                                feedback.pushInfo(f"[CreateKeylinesCore] Stage {stage}: Endpoint is on barrier raster cell, trying to get a new start point...")
+                            else:
+                                print(f"[CreateKeylinesCore] Stage {stage}: Endpoint is on barrier raster cell, trying to get a new start point...") 
                             new_start_point = TopoDrainCore._get_linedirection_start_point(
                                 new_barrier_raster_path, line_geom, max_offset=10
                             )
                             if new_start_point:
                                 if feedback:
-                                    feedback.pushInfo(f"Stage {stage}: New start point found at {new_start_point.wkt}")
+                                    feedback.pushInfo(f"[CreateKeylinesCore] Stage {stage}: New start point found at {new_start_point.wkt}")
+                                else:
+                                    print(f"[CreateKeylinesCore] Stage {stage}: New start point found at {new_start_point.wkt}") 
                                 new_start_points.append(new_start_point)
                                 # Extend line_geom to include the new start point
                                 line_geom = TopoDrainCore._snap_line_to_point(
@@ -3940,27 +4473,31 @@ class TopoDrainCore:
                                 )
                             else:
                                 if feedback:
-                                    feedback.pushInfo(f"Stage {stage}: No valid start point found.")
+                                    feedback.pushInfo(f"[CreateKeylinesCore] Stage {stage}: No valid start point found.")
                                 else:
-                                    print(f"Stage {stage}: No valid start point found.")
+                                    print(f"[CreateKeylinesCore] Stage {stage}: No valid start point found.")
 
                         # No slope adjustment - use the (possibly extended) line from endpoint processing
                         if stage % 2 == 0:
                             # Even stage without slope adjustment: reverse ridge→valley to valley→ridge
                             final_line_geom = TopoDrainCore._reverse_line_direction(line_geom)
                             if feedback:
-                                feedback.pushInfo(f"Stage {stage}: Reversed line direction (ridge→valley to valley→ridge)")
+                                feedback.pushInfo(f"[CreateKeylinesCore] Stage {stage}: Reversed line direction (ridge→valley to valley→ridge)")
+                            else:
+                                print(f"[CreateKeylinesCore] Stage {stage}: Reversed line direction (ridge→valley to valley→ridge)")
                         else:
                             final_line_geom = line_geom  # Odd stage already valley→ridge
                     
                         # Add line to all_keylines (now correctly oriented valley → ridge)
                         all_keylines.append(final_line_geom)
+            finally:
+                dtm_ds = None
 
             if not new_start_points:
                 if feedback:
-                    feedback.pushInfo(f"Stage {stage}: No endpoints on {target_type}, stopping iteration...")
+                    feedback.pushInfo(f"[CreateKeylinesCore] Stage {stage}: No endpoints on {target_type}, stopping iteration...")
                 else:
-                    print(f"Stage {stage}: No endpoints on {target_type}, stopping iteration...")
+                    print(f"[CreateKeylinesCore] Stage {stage}: No endpoints on {target_type}, stopping iteration...")
                 break
             
             # Create GeoDataFrame from new start points
@@ -3970,18 +4507,18 @@ class TopoDrainCore:
             )
         
             if feedback:
-                feedback.pushInfo(f"Stage {stage}: Generated {len(new_start_points)} new start points beyond {target_type}")
+                feedback.pushInfo(f"[CreateKeylinesCore] Stage {stage}: Generated {len(new_start_points)} new start points beyond {target_type}")
             else:
-                print(f"Stage {stage}: Generated {len(new_start_points)} new start points beyond {target_type}")
+                print(f"[CreateKeylinesCore] Stage {stage}: Generated {len(new_start_points)} new start points beyond {target_type}")
             
             # Increment stage
             stage += 1
 
         if stage > max_iterations_keyline:
             if feedback:
-                feedback.reportWarning(f"Maximum iterations ({max_iterations_keyline}) reached, stopping iteration...")
+                feedback.reportWarning(f"[CreateKeylinesCore] Maximum iterations ({max_iterations_keyline}) reached, stopping iteration...")
             else:
-                warnings.warn(f"Maximum iterations ({max_iterations_keyline}) reached, stopping iteration...")
+                warnings.warn(f"[CreateKeylinesCore] Maximum iterations ({max_iterations_keyline}) reached, stopping iteration...")
 
         # Create combined GeoDataFrame
         if all_keylines:
@@ -3994,10 +4531,13 @@ class TopoDrainCore:
         
         if feedback:
             feedback.setProgress(100)
-            feedback.pushInfo(f"Keyline creation complete: {len(combined_gdf)} total keylines from {stage-1} stages")
+            if feedback.isCanceled():
+                feedback.reportError("Keyline creation was cancelled by user")
+                raise RuntimeError("Operation cancelled by user")
+            feedback.pushInfo(f"[CreateKeylinesCore] Keyline creation complete: {len(combined_gdf)} total keylines from {stage-1} stages")
         else:
-            print(f"Keyline creation complete: {len(combined_gdf)} total keylines from {stage-1} stages")
-            print("Progress: 100%")
+            print(f"[CreateKeylinesCore] Keyline creation complete: {len(combined_gdf)} total keylines from {stage-1} stages")
+            print("[CreateKeylinesCore] Progress: 100%")
             
         return combined_gdf
 
@@ -4056,10 +4596,29 @@ class TopoDrainCore:
         ridge_lines_raster_path = self._vector_to_mask_raster([ridge_lines], dtm_path, output_path=ridge_lines_raster_path, unique_values=False, flatten_lines=True, buffer_lines=True)
         
         # Read masks for start point classification
-        with rasterio.open(valley_lines_raster_path) as src:
-            valley_mask = src.read(1)
-        with rasterio.open(ridge_lines_raster_path) as src:
-            ridge_mask = src.read(1)
+        valley_lines_ds = gdal.Open(valley_lines_raster_path, gdal.GA_ReadOnly)
+        if valley_lines_ds is None:
+            raise RuntimeError(f"Cannot open valley lines raster: {valley_lines_raster_path}.{self._get_gdal_error_message()}")
+            
+        try:
+            valley_lines_band = valley_lines_ds.GetRasterBand(1)
+            valley_mask = valley_lines_band.ReadAsArray()
+            if valley_mask is None:
+                raise RuntimeError(f"Cannot read valley mask data from: {valley_lines_raster_path}.{self._get_gdal_error_message()}")
+        finally:
+            valley_lines_ds = None
+            
+        ridge_lines_ds = gdal.Open(ridge_lines_raster_path, gdal.GA_ReadOnly)
+        if ridge_lines_ds is None:
+            raise RuntimeError(f"Cannot open ridge lines raster: {ridge_lines_raster_path}.{self._get_gdal_error_message()}")
+            
+        try:
+            ridge_lines_band = ridge_lines_ds.GetRasterBand(1)
+            ridge_mask = ridge_lines_band.ReadAsArray()
+            if ridge_mask is None:
+                raise RuntimeError(f"Cannot read ridge mask data from: {ridge_lines_raster_path}.{self._get_gdal_error_message()}")
+        finally:
+            ridge_lines_ds = None
             
         # Classify start points based on their location
         valley_start_points = []
@@ -4071,15 +4630,24 @@ class TopoDrainCore:
         else:
             print(f"Classifying {len(start_points)} start points...")
         
-        with rasterio.open(dtm_path) as dtm_src:
+        dtm_ds = gdal.Open(dtm_path, gdal.GA_ReadOnly)
+        if dtm_ds is None:
+            raise RuntimeError(f"Cannot open DTM raster: {dtm_path}.{self._get_gdal_error_message()}")
+            
+        try:
+            dtm_geotransform = dtm_ds.GetGeoTransform()
+            dtm_rows = dtm_ds.RasterYSize
+            dtm_cols = dtm_ds.RasterXSize
+            
             for idx, row in start_points.iterrows():
                 point = row.geometry
                 
-                # Get raster coordinates for the point
-                point_r, point_c = dtm_src.index(point.x, point.y)
+                # Get raster coordinates for the point using TopoDrainCore utility function
+                pixel_coords = TopoDrainCore._coords_to_pixel_indices([point.coords[0]], dtm_geotransform)
+                point_c, point_r = pixel_coords[0]
                 
                 # Check if point is within raster bounds
-                if not (0 <= point_r < dtm_src.height and 0 <= point_c < dtm_src.width):
+                if not (0 <= point_r < dtm_rows and 0 <= point_c < dtm_cols):
                     if feedback:
                         feedback.pushWarning(f"Start point {idx} is outside raster bounds, treating as neutral")
                     else:
@@ -4107,6 +4675,8 @@ class TopoDrainCore:
                 else:
                     # Point is on neither - neutral point
                     neutral_start_points.append(row)
+        finally:
+            dtm_ds = None
         
         # Create GeoDataFrames for each category
         valley_start_gdf = gpd.GeoDataFrame(valley_start_points, crs=start_points.crs) if valley_start_points else gpd.GeoDataFrame(crs=start_points.crs)
@@ -4139,6 +4709,8 @@ class TopoDrainCore:
             
             if feedback:
                 feedback.pushInfo(f"Processing {len(valley_neutral_gdf)} valley/neutral start points...")
+            else:
+                print(f"Processing {len(valley_neutral_gdf)} valley/neutral start points...")
             
             valley_keylines = self.create_keylines_core(
                 dtm_path=dtm_path,
@@ -4160,8 +4732,10 @@ class TopoDrainCore:
         # Process ridge start points (swap valley and ridge roles)
         if not ridge_start_gdf.empty:
             if feedback:
-                feedback.pushInfo(f"Processing {len(ridge_start_gdf)} ridge start points (with swapped valley/ridge roles)...")
-            
+                feedback.pushInfo(f"[CreateKeylines] Processing {len(ridge_start_gdf)} ridge start points (with swapped valley/ridge roles)...")
+            else:
+                print(f"[CreateKeylines] Processing {len(ridge_start_gdf)} ridge start points (with swapped valley/ridge roles)...")
+
             ridge_keylines = self.create_keylines_core(
                 dtm_path=dtm_path,
                 start_points=ridge_start_gdf,
@@ -4189,9 +4763,9 @@ class TopoDrainCore:
             combined_gdf = gpd.GeoDataFrame(crs=start_points.crs)
         
         if feedback:
-            feedback.pushInfo(f"Keyline creation complete: {len(combined_gdf)} total keylines from {len(valley_start_gdf)} valley, {len(ridge_start_gdf)} ridge, and {len(neutral_start_gdf)} neutral start points")
+            feedback.pushInfo(f"[CreateKeylines] Keyline creation complete: {len(combined_gdf)} total keylines from {len(valley_start_gdf)} valley, {len(ridge_start_gdf)} ridge, and {len(neutral_start_gdf)} neutral start points")
         else:
-            print(f"Keyline creation complete: {len(combined_gdf)} total keylines from {len(valley_start_gdf)} valley, {len(ridge_start_gdf)} ridge, and {len(neutral_start_gdf)} neutral start points")
+            print(f"[CreateKeylines] Keyline creation complete: {len(combined_gdf)} total keylines from {len(valley_start_gdf)} valley, {len(ridge_start_gdf)} ridge, and {len(neutral_start_gdf)} neutral start points")
         
         return combined_gdf
 
@@ -4207,7 +4781,8 @@ class TopoDrainCore:
         max_iterations_barrier: int = 30,
         slope_deviation_threshold: float = 0.2,
         max_iterations_slope: int = 20,
-        feedback=None
+        feedback=None,
+        report_progress: bool = True
     ) -> gpd.GeoDataFrame:
         """
         Modify constant slope lines by changing to a secondary slope after a specified distance.
@@ -4227,27 +4802,41 @@ class TopoDrainCore:
             slope_deviation_threshold (float): Maximum allowed relative deviation from expected slope (0.0-1.0, e.g., 0.2 for 20% deviation before line cutting).
             max_iterations_slope (int): Maximum number of iterations for line refinement.
             feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting.
+            report_progress (bool): Whether to report progress via setProgress calls. Default True. Set to False when called from create_keylines_core to avoid progress conflicts.
             
         Returns:
             gpd.GeoDataFrame: Modified lines with secondary slopes applied.
         """
         if feedback:
+            if feedback.isCanceled():
+                feedback.reportError("Slope adjustment was cancelled by user")
+                raise RuntimeError("Operation cancelled by user")
+            
+
+        if feedback:
             feedback.pushInfo(f"[AdjustConstantSlopeAfter] Starting adjustment of {len(input_lines)} lines...")
-            feedback.setProgress(0)
         else:
             print(f"[AdjustConstantSlopeAfter] Starting adjustment of {len(input_lines)} lines...")
-        
+        if feedback and report_progress:
+            feedback.setProgress(0)
+
         # Validate change_after parameter
         if not (0.0 <= change_after <= 1.0):
             raise ValueError("change_after must be between 0.0 and 1.0")
         
         # Phase 1: Process all lines to create first parts and collect start points for second parts
         if feedback:
+            if feedback.isCanceled():
+                feedback.reportError("Slope adjustment was cancelled by user")
+                raise RuntimeError("Operation cancelled by user")
+
+        if feedback:
             feedback.pushInfo(f"[AdjustConstantSlopeAfter] Phase 1: Processing {len(input_lines)} lines to create first parts...")
-            feedback.setProgress(10)
         else:
             print(f"[AdjustConstantSlopeAfter] Phase 1: Processing {len(input_lines)} lines to create first parts...")
-        
+        if feedback and report_progress:
+            feedback.setProgress(10)
+
         first_parts_data = []  # Store first part data with mapping info
         all_start_points = []  # Collect all start points for second parts
         line_mapping = {}      # Map start point index to original line index
@@ -4257,12 +4846,13 @@ class TopoDrainCore:
             
             # Handle MultiLineString by stitching into a single LineString
             if isinstance(line_geom, MultiLineString):
-                if feedback:
-                    feedback.pushInfo(f"[AdjustConstantSlopeAfter] Converting MultiLineString to LineString using _merge_lines_by_distance")
+                # Converting MultiLineString to LineString (reduced logging)
                 line_geom = TopoDrainCore._merge_lines_by_distance(line_geom)
             elif not isinstance(line_geom, LineString):
                 if feedback:
                     feedback.pushInfo(f"[AdjustConstantSlopeAfter] Skipping unsupported geometry type: {type(line_geom)} at index {idx}")
+                else:
+                    print(f"[AdjustConstantSlopeAfter] Skipping unsupported geometry type: {type(line_geom)} at index {idx}")   
                 # Keep original line for unsupported geometry types
                 first_parts_data.append({
                     'original_row': row,
@@ -4280,6 +4870,8 @@ class TopoDrainCore:
             if split_distance <= 0 or split_distance >= line_length:
                 if feedback:
                     feedback.pushInfo(f"[AdjustConstantSlopeAfter] Invalid split distance for line {idx}, keeping original line")
+                else:
+                    print(f"[AdjustConstantSlopeAfter] Invalid split distance for line {idx}, keeping original line")   
                 # Keep original line if split point is invalid
                 first_parts_data.append({
                     'original_row': row,
@@ -4334,6 +4926,8 @@ class TopoDrainCore:
                     # Fallback: use original line if we can't create valid first part
                     if feedback:
                         feedback.pushInfo(f"[AdjustConstantSlopeAfter] Could not create valid first part for line {idx}, keeping original line")
+                    else:
+                        print(f"[AdjustConstantSlopeAfter] Could not create valid first part for line {idx}, keeping original line")
                     first_parts_data.append({
                         'original_row': row,
                         'first_part_line': None,
@@ -4357,11 +4951,17 @@ class TopoDrainCore:
         second_part_lines = gpd.GeoDataFrame(geometry=[])  # Empty GeoDataFrame with geometry column
         if all_start_points:
             if feedback:
+                if feedback.isCanceled():
+                    feedback.reportError("Slope adjustment was cancelled by user")
+                    raise RuntimeError("Operation cancelled by user")
+                
+            if feedback:
                 feedback.pushInfo(f"[AdjustConstantSlopeAfter] Phase 2: Tracing {len(all_start_points)} second parts in parallel...")
-                feedback.setProgress(50)
             else:
                 print(f"[AdjustConstantSlopeAfter] Phase 2: Tracing {len(all_start_points)} second parts in parallel...")
-            
+            if feedback and report_progress:
+                feedback.setProgress(50)
+
             # Set CRS after creation when we have geometry column
             second_part_lines = second_part_lines.set_crs(input_lines.crs)
             
@@ -4381,28 +4981,38 @@ class TopoDrainCore:
                     max_iterations_barrier=max_iterations_barrier,
                     slope_deviation_threshold=slope_deviation_threshold,
                     max_iterations_slope=max_iterations_slope,
-                    feedback=feedback  # Pass feedback to the main tracing call
+                    feedback=feedback, 
+                    report_progress=False  
                 )
-                
+
                 if feedback:
                     feedback.pushInfo(f"[AdjustConstantSlopeAfter] Successfully traced {len(second_part_lines)} second parts")
+                else:
+                    print(f"[AdjustConstantSlopeAfter] Successfully traced {len(second_part_lines)} second parts")
             except Exception as e:
                 if feedback:
-                    feedback.pushInfo(f"[AdjustConstantSlopeAfter] Error tracing second parts: {str(e)}")
+                    feedback.reportError(f"[AdjustConstantSlopeAfter] Error tracing second parts: {str(e)}")
+                    raise RuntimeError(f"[AdjustConstantSlopeAfter] Error tracing second parts: {str(e)}")
                 else:
-                    print(f"[AdjustConstantSlopeAfter] Error tracing second parts: {str(e)}")
+                    raise RuntimeError(f"[AdjustConstantSlopeAfter] Error tracing second parts: {str(e)}")
                 # Continue with empty second_part_lines
         else:
-            if feedback:
-                feedback.pushInfo(f"[AdjustConstantSlopeAfter] No second parts to trace")
+            # No second parts to trace (reduced logging)
+            pass
         
         # Phase 3: Combine first and second parts
         if feedback:
+            if feedback.isCanceled():
+                feedback.reportError("Slope adjustment was cancelled by user")
+                raise RuntimeError("Operation cancelled by user")
+
+        if feedback:
             feedback.pushInfo(f"[AdjustConstantSlopeAfter] Phase 3: Combining first and second parts...")
-            feedback.setProgress(80)
         else:
             print(f"[AdjustConstantSlopeAfter] Phase 3: Combining first and second parts...")
-        
+        if feedback and report_progress:    
+            feedback.setProgress(80)
+                 
         adjusted_lines = []
         
         for data_idx, part_data in enumerate(first_parts_data):
@@ -4444,23 +5054,19 @@ class TopoDrainCore:
                         new_row['geometry'] = combined_line
                         adjusted_lines.append(new_row)
                         
-                        if feedback:
-                            feedback.pushInfo(f"[AdjustConstantSlopeAfter] Successfully combined line parts for line {data_idx}")
+                        # Successfully combined line parts (reduced logging)
                     else:
-                        if feedback:
-                            feedback.pushInfo(f"[AdjustConstantSlopeAfter] Second part is not LineString for line {data_idx}, keeping first part only")
+                        # Second part is not LineString, keeping first part only (reduced logging)
                         new_row = original_row.copy()
                         new_row['geometry'] = first_part_line
                         adjusted_lines.append(new_row)
                 else:
-                    if feedback:
-                        feedback.pushInfo(f"[AdjustConstantSlopeAfter] No matching second part found for line {data_idx}, keeping first part only")
+                    # No matching second part found, keeping first part only (reduced logging)
                     new_row = original_row.copy()
                     new_row['geometry'] = first_part_line
                     adjusted_lines.append(new_row)
             else:
-                if feedback:
-                    feedback.pushInfo(f"[AdjustConstantSlopeAfter] No second parts available for line {data_idx}, keeping first part only")
+                # No second parts available, keeping first part only (reduced logging)
                 new_row = original_row.copy()
                 new_row['geometry'] = first_part_line
                 adjusted_lines.append(new_row)
@@ -4472,11 +5078,18 @@ class TopoDrainCore:
             result_gdf = gpd.GeoDataFrame(crs=input_lines.crs)
         
         if feedback:
-            feedback.setProgress(100)
+            if feedback.isCanceled():
+                feedback.reportError("Slope adjustment was cancelled by user")
+                raise RuntimeError("Operation cancelled by user")
+        
+
+        if feedback:
             feedback.pushInfo(f"[AdjustConstantSlopeAfter] Adjustment complete: {len(result_gdf)} adjusted lines")
         else:
             print(f"[AdjustConstantSlopeAfter] Adjustment complete: {len(result_gdf)} adjusted lines")
-        
+        if feedback and report_progress:
+            feedback.setProgress(100)
+
         return result_gdf
 
 

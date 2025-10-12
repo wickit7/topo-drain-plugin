@@ -13,27 +13,14 @@ about=It automates the extraction of main valleys and ridges, creates off-contou
     DISCLAIMER: Influencing surface runoff on land is complex and requires significant expertise. This tool is intended as an aid for users with experience in land surface water management.
     
     Core algorithms leverage WhiteboxTools (Lindsay, 2017–2020; see https://github.com/jblindsay/whitebox-tools).
-    So make shure you have installed and configured the plugin "WhiteboxTools for QGIS" (i.e. see https://www.youtube.com/watch?v=xJXDBsNbcTg).
+    So make shure you have installed and configured the plugin "WhiteboxTools for QGIS"!
+    - Installation video: https://www.youtube.com/watch?v=xJXDBsNbcTg
     
-
-    This plugin requires several Python packages (numpy, rasterio, shapely, pandas, geopandas, scipy). These are NOT always included in the default QGIS Python environment. Most QGIS installations need only rasterio.
-    
-    For help installing Python packages in QGIS, see:
+    This plugin requires several Python packages (numpy, shapely, pandas, geopandas, scipy).
+    These packages are typically included in common newer QGIS distributions, but may be missing in some installations (especially custom builds). If a package is missing, follow the installation instructions below:
     - Windows, QGIS installed with OSGeo4W: https://landscapearchaeology.org/2018/installing-python-packages-in-qgis-3-for-windows/
     - macOS (terminal): https://gis.stackexchange.com/questions/351280/installing-python-modules-for-qgis-3-on-mac
-   
-    These links show how to use pip to install dependencies. When using pip take care to install compatible python package versions:
-       - Open OSGeo4W Shell (Windows, QGIS installed with OSGeo4W) or Terminal (Mac/Linux/Windows without OSGeo4W) (see provided links above)
-       - Check installed packages with version information: pip list
-       - Install missing packages with version constraint: pip install rasterio "numpy==YOUR_VERSION"
-       - This prevents pip from upgrading numpy which may breaks QGIS compatibility
-    Do the same for other missing packages if not already installed (e.g. pandas, geopandas):
-    - pip install pandas "numpy==YOUR_VERSION"
-    - pip install geopandas "pandas==YOUR_VERSION"
-
-    Alternatively: Use QGIS Plugin "qpip" for installing the python packages (fast but not recommended because can lead to incompatible versions). If so delete folder "dependencies" in "...\QGIS\QGIS3\profiles\default\python\" and try to install with pip as explained above.
-
-
+    Take care to install compatible package versions.
 
     A series of manual videos will follow soon: How to install a plugin with dependencies; how to use the tool, i.e. how to create a keyline design.
 
@@ -86,7 +73,7 @@ deprecated=False
 # (or upgraded) can be specified.
 # Check the documentation for more information.
 # The plugin name should match the exact folder name in QGIS plugins directory
-plugin_dependencies=plugin:wbt_for_qgis;python:numpy;python:pandas;python:geopandas;python:rasterio;python:shapely;python:scipy
+plugin_dependencies=plugin:wbt_for_qgis;python:numpy;python:pandas;python:geopandas;python:shapely;python:scipy
 
 # If the plugin can run on QGIS Server.
 server=False

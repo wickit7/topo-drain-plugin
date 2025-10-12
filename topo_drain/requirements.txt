@@ -1,6 +1,5 @@
 numpy
 pandas
 geopandas
-rasterio
 shapely
 scipy
