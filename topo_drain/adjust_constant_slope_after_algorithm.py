@@ -363,6 +363,7 @@ Parameters:
             max_iterations_barrier=max_iterations_barrier,
             slope_deviation_threshold=slope_deviation_threshold,
             max_iterations_slope=max_iterations_slope,
+            report_progress=True,
             feedback=feedback
         )
 

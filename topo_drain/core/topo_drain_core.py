@@ -542,7 +542,7 @@ class TopoDrainCore:
             LineString: Line with endpoint snapped to the given point.
         """
         if not isinstance(line, LineString):
-            warnings.warn("Cannot snap endpoint for MultiLineString geometry")
+            warnings.warn("Warning: Cannot snap endpoint for MultiLineString geometry")
             return line
 
         coords = list(line.coords)
@@ -712,12 +712,12 @@ class TopoDrainCore:
                     # Convert Shapely geometry to OGR geometry
                     ogr_geom = ogr.CreateGeometryFromWkt(geom.wkt)
                     if ogr_geom is None:
-                        warnings.warn(f"Failed to convert geometry {i} to OGR format, skipping.{self._get_gdal_error_message()}")
+                        warnings.warn(f"Warning: Failed to convert geometry {i} to OGR format, skipping.{self._get_gdal_error_message()}")
                         continue
                     
                     # Validate geometry before setting
                     if not ogr_geom.IsValid():
-                        warnings.warn(f"Invalid geometry {i}, attempting to fix or skipping.{self._get_gdal_error_message()}")
+                        warnings.warn(f"Warning: Invalid geometry {i}, attempting to fix or skipping.{self._get_gdal_error_message()}")
                         # Try to make it valid
                         try:
                             ogr_geom = ogr_geom.Buffer(0)  # Common trick to fix invalid geometries
@@ -733,7 +733,7 @@ class TopoDrainCore:
                     # Use the error checking helper for CreateFeature
                     result = mem_layer.CreateFeature(feature)
                     if result != ogr.OGRERR_NONE:
-                        warnings.warn(f"Failed to create feature {i}, skipping.{self._get_gdal_error_message()} (Error code: {result})")
+                        warnings.warn(f"Warning: Failed to create feature {i}, skipping.{self._get_gdal_error_message()} (Error code: {result})")
                     
                     feature = None  # Clean up feature
                     ogr_geom = None  # Clean up geometry
@@ -1188,7 +1188,7 @@ class TopoDrainCore:
         gdf = gpd.read_file(output_vector_path)
         
         if gdf.empty:
-            warnings.warn(f"No vector features found in {output_vector_path}.")
+            warnings.warn(f"Warning: No vector features found in {output_vector_path}.")
             return None
 
         all_geometries = list(gdf.geometry) 
@@ -1211,7 +1211,7 @@ class TopoDrainCore:
                     line_geometries.extend(list(geom.geoms))
         
         if not line_geometries:
-            warnings.warn("No valid LineString geometries found after vectorization.")
+            warnings.warn("Warning: No valid LineString geometries found after vectorization.")
             return None
         
         # Merge to one single LineString
@@ -1224,7 +1224,7 @@ class TopoDrainCore:
             
         # If single_part_line is empty, return None
         if not single_part_line:
-            warnings.warn("No valid line segments found after vectorization.")
+            warnings.warn("Warning: No valid line segments found after vectorization.")
             return None
         
         # 5) Snap start to destination cell center if requested, and ensure correct line direction
@@ -1263,7 +1263,7 @@ class TopoDrainCore:
 
         # Fallback: if no clear convex → concave transitions found
         if not candidates:
-            warnings.warn("No clear convex → concave inflection points found. Using strongest transition as fallback.")
+            warnings.warn("Warning: No clear convex → concave inflection points found. Using strongest transition as fallback.")
             best_strength = -np.inf
             best_index = None
             for i in range(window, len(curvature) - window):
@@ -1457,7 +1457,7 @@ class TopoDrainCore:
                 if not os.path.exists(facc_log_output_path):
                     raise RuntimeError(f"[ExtractValleys] Log-scaled accumulation output not found at {facc_log_output_path}")
             except Exception as e:
-                msg = f"[ExtractValleys] Log-scaled accumulation failed: {e}"
+                msg = f"[ExtractValleys] Warning: Log-scaled accumulation failed: {e}"
                 if feedback:
                     feedback.pushWarning(msg)
                 else:
@@ -1670,7 +1670,7 @@ class TopoDrainCore:
             print("[ExtractRidges] Inverting DTM for ridge extraction...")
         
         inverted_dtm = os.path.join(self.temp_directory, f"inverted_dtm_{postfix}.tif")
-        inverted_dtm = self._invert_dtm(dtm_path, inverted_dtm, feedback=None)  # Remove feedback to prevent multiple progress bars
+        inverted_dtm = self._invert_dtm(dtm_path, inverted_dtm, feedback=feedback)  # Remove feedback to prevent multiple progress bars
         
         if feedback:
             feedback.pushInfo(f"[ExtractRidges] DTM inversion complete: {inverted_dtm}")
@@ -1759,9 +1759,9 @@ class TopoDrainCore:
             valley_lines = valley_lines.copy()  # Avoid modifying original
             valley_lines['TRIB_ID'] = valley_lines['LINK_ID']
             if feedback:
-                feedback.pushWarning("[ExtractMainValleys] 'TRIB_ID' column not found in valley_lines, using 'LINK_ID' values as fallback")
+                feedback.pushWarning("[ExtractMainValleys] Warning: 'TRIB_ID' column not found in valley_lines, using 'LINK_ID' values as fallback")
             else:
-                warnings.warn("[ExtractMainValleys] 'TRIB_ID' column not found in valley_lines, using 'LINK_ID' values as fallback")
+                warnings.warn("[ExtractMainValleys] Warning: 'TRIB_ID' column not found in valley_lines, using 'LINK_ID' values as fallback")
 
         # Ensure DS_LINK_ID field is present in valley_lines (optional field, can be null)
         if 'DS_LINK_ID' not in valley_lines.columns:
@@ -1769,9 +1769,9 @@ class TopoDrainCore:
             valley_lines = valley_lines.copy()  # Avoid modifying original
             valley_lines['DS_LINK_ID'] = None
             if feedback:
-                feedback.pushWarning("[ExtractMainValleys] 'DS_LINK_ID' column not found in valley_lines, created with null values as fallback")
+                feedback.pushWarning("[ExtractMainValleys] Warning: 'DS_LINK_ID' column not found in valley_lines, created with null values as fallback")
             else:
-                warnings.warn("[ExtractMainValleys] 'DS_LINK_ID' column not found in valley_lines, created with null values as fallback")
+                warnings.warn("[ExtractMainValleys] Warning: 'DS_LINK_ID' column not found in valley_lines, created with null values as fallback")
 
         # Create perimeter from valley_lines extent if not provided
         if perimeter is None:
@@ -1946,9 +1946,9 @@ class TopoDrainCore:
 
             if points_unique.empty:
                 if feedback:
-                    feedback.pushWarning(f"[ExtractMainValleys] No unique valley points found in polygon {poly_idx + 1}, skipping...")
+                    feedback.pushWarning(f"[ExtractMainValleys] Warning: No unique valley points found in polygon {poly_idx + 1}, skipping...")
                 else:
-                    warnings.warn(f"[ExtractMainValleys] No unique valley points found in polygon {poly_idx + 1}, skipping...")
+                    warnings.warn(f"[ExtractMainValleys] Warning: No unique valley points found in polygon {poly_idx + 1}, skipping...")
                 continue
 
             if feedback:
@@ -1960,9 +1960,9 @@ class TopoDrainCore:
 
             if points_top.empty:
                 if feedback:
-                    feedback.pushWarning(f"[ExtractMainValleys] No main valley lines could be selected for polygon {poly_idx + 1}, skipping...")
+                    feedback.pushWarning(f"[ExtractMainValleys] Warning: No main valley lines could be selected for polygon {poly_idx + 1}, skipping...")
                 else:
-                    warnings.warn(f"[ExtractMainValleys] No main valley lines could be selected for polygon {poly_idx + 1}, skipping...")
+                    warnings.warn(f"[ExtractMainValleys] Warning: No main valley lines could be selected for polygon {poly_idx + 1}, skipping...")
                 continue
 
             selected_trib_ids = points_top["TRIB_ID"].unique()
@@ -3339,9 +3339,9 @@ class TopoDrainCore:
             last_iteration = (iteration == max_iterations_slope - 1)
             
             if last_iteration and cut_point is not None:
-                warnings.warn(f"[GetConstantSlopeLine] Last iteration reached without finding fully valid line segment")
+                warnings.warn(f"[GetConstantSlopeLine] Warning: Last iteration reached without finding fully valid line segment")
                 if feedback:
-                    feedback.pushWarning(f"[GetConstantSlopeLine] Last iteration reached without finding fully valid line segment")
+                    feedback.pushWarning(f"[GetConstantSlopeLine] Warning: Last iteration reached without finding fully valid line segment")
 
             if last_iteration or cut_point is None or reached_destination:
                 # If we are at the last iteration or reached destination, we can wan to add fully line segement instead of doing another iteration
@@ -3368,9 +3368,9 @@ class TopoDrainCore:
                     print(f"[GetConstantSlopeLine] Continuing from cut point: {cut_point}")
                 else:
                     # If cutting failed, use the whole segment
-                    warnings.warn(f"[GetConstantSlopeLine] Cutting failed, using whole line segment")
+                    warnings.warn(f"[GetConstantSlopeLine] Warning: Cutting failed, using whole line segment")
                     if feedback:
-                        feedback.pushWarning(f"[GetConstantSlopeLine] Cutting failed, using whole line segment")
+                        feedback.pushWarning(f"[GetConstantSlopeLine] Warning: Cutting failed, using whole line segment")
                     if accumulated_line_coords:
                         # Skip first coordinate to avoid duplication
                         accumulated_line_coords.extend(line_segment.coords[1:])
@@ -3380,9 +3380,9 @@ class TopoDrainCore:
 
         # --- Combine all segments into final line ---
         if not accumulated_line_coords or len(accumulated_line_coords) < 2:
-            warnings.warn("[GetConstantSlopeLine] No valid line segments could be extracted.")
+            warnings.warn("[GetConstantSlopeLine] Warning: No valid line segments could be extracted.")
             if feedback:
-                feedback.pushWarning("[GetConstantSlopeLine] No valid line segments could be extracted.")                
+                feedback.pushWarning("[GetConstantSlopeLine] Warning: No valid line segments could be extracted.")                
             return None
 
         final_line = LineString(accumulated_line_coords)
@@ -3466,6 +3466,9 @@ class TopoDrainCore:
             dest_ds = None  # Close destination dataset
         
         # Read barrier raster data using GDAL
+        if barrier_raster_path is None:
+            raise RuntimeError("Barrier raster path is None. _get_iterative_constant_slope_line requires a valid barrier raster path.")
+            
         barrier_ds = gdal.Open(barrier_raster_path, gdal.GA_ReadOnly)
         if barrier_ds is None:
             raise RuntimeError(f"Cannot open barrier raster: {barrier_raster_path}.{self._get_gdal_error_message()}")
@@ -3590,9 +3593,9 @@ class TopoDrainCore:
 
             # Check if a line segment was found
             if line_segment is None:
-                warnings.warn(f"[IterativeConstantSlopeLine] No line found in iteration {current_iteration + 1}")
+                warnings.warn(f"[IterativeConstantSlopeLine] Warning: No line found in iteration {current_iteration + 1}")
                 if feedback:
-                    feedback.pushWarning(f"[IterativeConstantSlopeLine] No line found in iteration {current_iteration + 1}")
+                    feedback.pushWarning(f"[IterativeConstantSlopeLine] Warning: No line found in iteration {current_iteration + 1}")
                 break
 
             line_coords = list(line_segment.coords)
@@ -3613,9 +3616,9 @@ class TopoDrainCore:
             
             last_iteration = (current_iteration == max_iterations_barrier - 1)
             if not final_destination_found and last_iteration:
-                warnings.warn("[IterativeConstantSlopeLine] Maximum iterations reached without finding a fully valid line")
+                warnings.warn("[IterativeConstantSlopeLine] Warning: Maximum iterations reached without finding a fully valid line")
                 if feedback:
-                    feedback.pushWarning("[IterativeConstantSlopeLine] Maximum iterations reached without finding a fully valid line")                    
+                    feedback.pushWarning("[IterativeConstantSlopeLine] Warning: Maximum iterations reached without finding a fully valid line")                    
 
             if final_destination_found or last_iteration: 
                 # If we reached the last iteration, add this final segment to avoid cutting in the last iteration:
@@ -3676,9 +3679,9 @@ class TopoDrainCore:
                 feedback.pushInfo(f"[IterativeConstantSlopeLine] Completed after {current_iteration + 1} iterations")
             return line
         else:
-            warnings.warn("[IterativeConstantSlopeLine] No valid line could be created")
+            warnings.warn("[IterativeConstantSlopeLine] Warning: No valid line could be created")
             if feedback:
-                feedback.pushWarning("[IterativeConstantSlopeLine] No valid line could be created")
+                feedback.pushWarning("[IterativeConstantSlopeLine] Warning: No valid line could be created")
             return None
 
     def get_constant_slope_lines(
@@ -3724,8 +3727,18 @@ class TopoDrainCore:
 
         if feedback:
             feedback.pushInfo("[ConstantSlopeLines] Starting tracing")
+            if report_progress:
+                feedback.setProgress(0)
         else:
             print("[ConstantSlopeLines] Starting tracing")
+
+        # Check for potential configuration issues
+        if allow_barriers_as_temp_destination and not barrier_features:
+            warning_msg = "[ConstantSlopeLines] Warning: allow_barriers_as_temp_destination=True but no barrier_features provided. This setting will have no effect."
+            if feedback:
+                feedback.pushWarning(warning_msg)
+            else:
+                warnings.warn(warning_msg)
 
         # store original start points for adding later to the traced line geometry if starting from adjusted start point
         original_pts = start_points.copy()
@@ -3800,8 +3813,6 @@ class TopoDrainCore:
                     raise RuntimeError(f"Cannot read barrier value mask data from: {barrier_value_raster_path}.{self._get_gdal_error_message()}")
             finally:
                 barrier_value_ds = None
-
-            # Barrier raster created (reduced logging)
 
             # Handle overlapping barrier and original destination cells --> adjust destination mask
             dest_barrier_overlap = (barrier_mask == 1) & (destination_mask == 1)
@@ -3888,6 +3899,8 @@ class TopoDrainCore:
                 print("[ConstantSlopeLines] No barrier features provided")
             barrier_mask = None
             barrier_raster_path = None
+            barrier_value_raster_path = None
+            barrier_id_to_geom = {}
             # Create point_barrier_info for all points as non-overlapping
             point_barrier_info = []
             for orig_idx, row in original_pts.iterrows():
@@ -3897,6 +3910,10 @@ class TopoDrainCore:
                     'barrier_feature_id': None,
                     'row': row
                 })
+            
+            # Count overlapping vs non-overlapping for reporting (all non-overlapping when no barriers)
+            overlapping_count = 0
+            non_overlapping_count = len(point_barrier_info)
 
         # --- Trace slope lines directly from point_barrier_info ---
         results = []
@@ -3905,6 +3922,8 @@ class TopoDrainCore:
 
         if feedback:
             feedback.pushInfo("[ConstantSlopeLines] Starting slope line tracing...")
+            if report_progress:
+                feedback.setProgress(40)
         else:
             print("[ConstantSlopeLines] Starting slope line tracing...")
 
@@ -3928,9 +3947,9 @@ class TopoDrainCore:
                 barrier_geom = barrier_id_to_geom.get(barrier_feature_id)
                 if barrier_geom is None:
                     if feedback:
-                        feedback.pushWarning(f"[ConstantSlopeLines] No barrier geometry found for feature ID {barrier_feature_id} - skipping point {orig_idx}")
+                        feedback.pushWarning(f"[ConstantSlopeLines] Warning: No barrier geometry found for feature ID {barrier_feature_id} - skipping point {orig_idx}")
                     else:
-                        warnings.warn(f"[ConstantSlopeLines] No barrier geometry found for feature ID {barrier_feature_id} - skipping point {orig_idx}")
+                        warnings.warn(f"[ConstantSlopeLines] Warning: No barrier geometry found for feature ID {barrier_feature_id} - skipping point {orig_idx}")
                     continue
 
                 # Get orthogonal offset points
@@ -3948,9 +3967,9 @@ class TopoDrainCore:
                         # Check if adjusted point is still on barrier (warn if so) ##### maybe not necessary
                         if offset_pt:
                             if feedback:
-                                feedback.pushWarning(f"[ConstantSlopeLines] No {offset_name} offset point could be created for {orig_idx}")
+                                feedback.pushWarning(f"[ConstantSlopeLines] Warning: No {offset_name} offset point could be created for {orig_idx}")
                             else:
-                                warnings.warn(f"[ConstantSlopeLines] No {offset_name} offset point could be created for {orig_idx}")
+                                warnings.warn(f"[ConstantSlopeLines] Warning: No {offset_name} offset point could be created for {orig_idx}")
                         continue
 
                     # Progress reporting 
@@ -3958,16 +3977,12 @@ class TopoDrainCore:
                     current_point += 1
 
                     if feedback:
-                        feedback.pushInfo(f"[ConstantSlopeLines] Processing point {current_point}/{total_points} ({progress_pct}%) - Point {orig_idx}...")
+                        feedback.pushInfo(f"[ConstantSlopeLines] Processing point {current_point}/{total_points} - Point {orig_idx}...")
                     elif not feedback:
                         print(f"[ConstantSlopeLines] Processing point {current_point}/{total_points} - Point {orig_idx}...")
 
-                    if feedback and report_progress:
-                        progress_pct = int((current_point / total_points) * 100)
-                        feedback.setProgress(progress_pct)
-
                     # Trace line from offset point
-                    if allow_barriers_as_temp_destination and barrier_features:
+                    if allow_barriers_as_temp_destination and barrier_features and barrier_value_raster_path is not None:
                         raw_line = self._get_iterative_constant_slope_line(
                             dtm_path=dtm_path,
                             start_point=offset_pt,
@@ -3991,6 +4006,16 @@ class TopoDrainCore:
                             feedback=feedback
                         )
 
+                    # Calculate progress percentage for 40-90% range
+                    progress_pct = int(40 + (current_point / total_points) * 50)
+
+                    if feedback:
+                        feedback.pushInfo(f"[ConstantSlopeLines] Processed {progress_pct}%")
+                    else:
+                        print(f"[ConstantSlopeLines] Processed {progress_pct}%")
+                    if feedback and report_progress:
+                        feedback.setProgress(progress_pct)
+
                     if not raw_line:
                         # No line generated (reduced logging)
                         continue
@@ -4006,23 +4031,18 @@ class TopoDrainCore:
                         **orig_attrs
                     })
 
-                    # Line created successfully (reduced logging)
-
             else:
                 # Point is not on barrier - trace directly from original point
                 current_point += 1
 
                 # Progress reporting
                 if feedback:
-                    feedback.pushInfo(f"[ConstantSlopeLines] Processing point {current_point}/{total_points} ({progress_pct}%) - Point {orig_idx}...")
+                    feedback.pushInfo(f"[ConstantSlopeLines] Processing point {current_point}/{total_points} - Point {orig_idx}...")
                 elif not feedback:
                     print(f"[ConstantSlopeLines] Processing point {current_point}/{total_points} - Point {orig_idx}...")
-                if feedback and report_progress:
-                    progress_pct = int((current_point / total_points) * 100)
-                    feedback.setProgress(progress_pct)
 
                 # Trace line from original point
-                if allow_barriers_as_temp_destination:
+                if allow_barriers_as_temp_destination and barrier_value_raster_path is not None:
                     raw_line = self._get_iterative_constant_slope_line(
                         dtm_path=dtm_path,
                         start_point=orig_pt,
@@ -4045,6 +4065,16 @@ class TopoDrainCore:
                         slope_deviation_threshold=slope_deviation_threshold,
                         feedback=feedback
                     )
+
+                # Calculate progress percentage for 40-90% range
+                progress_pct = int(40 + (current_point / total_points) * 50)
+
+                if feedback:
+                    feedback.pushInfo(f"[ConstantSlopeLines] Processed {progress_pct}%")
+                else:
+                    print(f"[ConstantSlopeLines] Processed {progress_pct}%")
+                if feedback and report_progress:
+                    feedback.setProgress(progress_pct)
 
                 if not raw_line:
                     if feedback:
@@ -4518,7 +4548,7 @@ class TopoDrainCore:
             if feedback:
                 feedback.reportWarning(f"[CreateKeylinesCore] Maximum iterations ({max_iterations_keyline}) reached, stopping iteration...")
             else:
-                warnings.warn(f"[CreateKeylinesCore] Maximum iterations ({max_iterations_keyline}) reached, stopping iteration...")
+                warnings.warn(f"[CreateKeylinesCore] Warning: Maximum iterations ({max_iterations_keyline}) reached, stopping iteration...")
 
         # Create combined GeoDataFrame
         if all_keylines:
@@ -4649,9 +4679,9 @@ class TopoDrainCore:
                 # Check if point is within raster bounds
                 if not (0 <= point_r < dtm_rows and 0 <= point_c < dtm_cols):
                     if feedback:
-                        feedback.pushWarning(f"Start point {idx} is outside raster bounds, treating as neutral")
+                        feedback.pushWarning(f"Warning: Start point {idx} is outside raster bounds, treating as neutral")
                     else:
-                        warnings.warn(f"Start point {idx} is outside raster bounds, treating as neutral")
+                        warnings.warn(f"Warning: Start point {idx} is outside raster bounds, treating as neutral")
                     neutral_start_points.append(row)
                     continue
                 
@@ -4662,9 +4692,9 @@ class TopoDrainCore:
                 if valley_value == 1 and ridge_value == 1:
                     # Point is on both valley and ridge - treat as neutral with warning
                     if feedback:
-                        feedback.pushWarning(f"Start point {idx} is on both valley and ridge lines, treating as neutral")
+                        feedback.pushWarning(f"Warning: Start point {idx} is on both valley and ridge lines, treating as neutral")
                     else:
-                        warnings.warn(f"Start point {idx} is on both valley and ridge lines, treating as neutral")
+                        warnings.warn(f"Warning: Start point {idx} is on both valley and ridge lines, treating as neutral")
                     neutral_start_points.append(row)
                 elif valley_value == 1:
                     # Point is on valley line
@@ -4687,11 +4717,11 @@ class TopoDrainCore:
         if feedback:
             feedback.pushInfo(f"Start point classification: {len(valley_start_gdf)} on valleys, {len(ridge_start_gdf)} on ridges, {len(neutral_start_gdf)} neutral")
             if len(neutral_start_gdf) > 0:
-                feedback.pushWarning(f"{len(neutral_start_gdf)} neutral start points should ideally be positioned on either ridge or valley lines")
+                feedback.pushWarning(f"Warning: {len(neutral_start_gdf)} neutral start points should ideally be positioned on either ridge or valley lines")
         else:
             print(f"Start point classification: {len(valley_start_gdf)} on valleys, {len(ridge_start_gdf)} on ridges, {len(neutral_start_gdf)} neutral")
             if len(neutral_start_gdf) > 0:
-                warnings.warn(f"{len(neutral_start_gdf)} neutral start points should ideally be positioned on either ridge or valley lines")
+                warnings.warn(f"Warning: {len(neutral_start_gdf)} neutral start points should ideally be positioned on either ridge or valley lines")
 
         # Initialize list to collect all keylines
         all_keylines = []
@@ -4815,14 +4845,22 @@ class TopoDrainCore:
 
         if feedback:
             feedback.pushInfo(f"[AdjustConstantSlopeAfter] Starting adjustment of {len(input_lines)} lines...")
+            if report_progress:
+                feedback.setProgress(0)
         else:
             print(f"[AdjustConstantSlopeAfter] Starting adjustment of {len(input_lines)} lines...")
-        if feedback and report_progress:
-            feedback.setProgress(0)
 
         # Validate change_after parameter
         if not (0.0 <= change_after <= 1.0):
             raise ValueError("change_after must be between 0.0 and 1.0")
+        
+        # Check for potential configuration issues
+        if allow_barriers_as_temp_destination and not barrier_features:
+            warning_msg = "[AdjustConstantSlopeAfter] Warning: allow_barriers_as_temp_destination=True but no barrier_features provided. This setting will have no effect."
+            if feedback:
+                feedback.pushWarning(warning_msg)
+            else:
+                warnings.warn(warning_msg)
         
         # Phase 1: Process all lines to create first parts and collect start points for second parts
         if feedback:
@@ -4832,17 +4870,23 @@ class TopoDrainCore:
 
         if feedback:
             feedback.pushInfo(f"[AdjustConstantSlopeAfter] Phase 1: Processing {len(input_lines)} lines to create first parts...")
+            if report_progress:
+                feedback.setProgress(10)
         else:
             print(f"[AdjustConstantSlopeAfter] Phase 1: Processing {len(input_lines)} lines to create first parts...")
-        if feedback and report_progress:
-            feedback.setProgress(10)
 
         first_parts_data = []  # Store first part data with mapping info
         all_start_points = []  # Collect all start points for second parts
         line_mapping = {}      # Map start point index to original line index
+        total_lines = len(input_lines)
         
         for idx, row in input_lines.iterrows():
             line_geom = row.geometry
+            
+            # Progress reporting for Phase 1 (10-30% range)
+            if feedback and report_progress:
+                phase1_progress = int(10 + ((idx + 1) / total_lines) * 20)
+                feedback.setProgress(phase1_progress)
             
             # Handle MultiLineString by stitching into a single LineString
             if isinstance(line_geom, MultiLineString):
@@ -4957,10 +5001,10 @@ class TopoDrainCore:
                 
             if feedback:
                 feedback.pushInfo(f"[AdjustConstantSlopeAfter] Phase 2: Tracing {len(all_start_points)} second parts in parallel...")
+                if report_progress:
+                    feedback.setProgress(40)
             else:
                 print(f"[AdjustConstantSlopeAfter] Phase 2: Tracing {len(all_start_points)} second parts in parallel...")
-            if feedback and report_progress:
-                feedback.setProgress(50)
 
             # Set CRS after creation when we have geometry column
             second_part_lines = second_part_lines.set_crs(input_lines.crs)
@@ -4982,7 +5026,7 @@ class TopoDrainCore:
                     slope_deviation_threshold=slope_deviation_threshold,
                     max_iterations_slope=max_iterations_slope,
                     feedback=feedback, 
-                    report_progress=False  
+                    report_progress=True  
                 )
 
                 if feedback:
@@ -5008,14 +5052,20 @@ class TopoDrainCore:
 
         if feedback:
             feedback.pushInfo(f"[AdjustConstantSlopeAfter] Phase 3: Combining first and second parts...")
+            if report_progress:
+                feedback.setProgress(80)
         else:
             print(f"[AdjustConstantSlopeAfter] Phase 3: Combining first and second parts...")
-        if feedback and report_progress:    
-            feedback.setProgress(80)
                  
         adjusted_lines = []
+        total_parts = len(first_parts_data)
         
         for data_idx, part_data in enumerate(first_parts_data):
+            # Progress reporting for Phase 3 (80-90% range)
+            if feedback and report_progress and total_parts > 0:
+                phase3_progress = int(80 + ((data_idx + 1) / total_parts) * 10)
+                feedback.setProgress(phase3_progress)
+                
             original_row = part_data['original_row']
             first_part_line = part_data['first_part_line']
             needs_second_part = part_data['needs_second_part']
@@ -5085,10 +5135,10 @@ class TopoDrainCore:
 
         if feedback:
             feedback.pushInfo(f"[AdjustConstantSlopeAfter] Adjustment complete: {len(result_gdf)} adjusted lines")
+            if report_progress:
+                feedback.setProgress(100)
         else:
             print(f"[AdjustConstantSlopeAfter] Adjustment complete: {len(result_gdf)} adjusted lines")
-        if feedback and report_progress:
-            feedback.setProgress(100)
 
         return result_gdf
 
