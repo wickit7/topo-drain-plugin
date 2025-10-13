@@ -4167,43 +4167,51 @@ class TopoDrainCore:
         else:
             print("[CreateKeylinesCore]Starting iterative keyline core creation process...")
             print("[CreateKeylinesCore] Progress: 5%")
-        # Create raster .tif files for valley_lines and ridge_lines to use in _get_linedirection_start_point
-        valley_lines_raster_path = os.path.join(self.temp_directory, "valley_lines_mask.tif")
-        ridge_lines_raster_path = os.path.join(self.temp_directory, "ridge_lines_mask.tif")
-
-        # Rasterize valley_lines - now returns path directly
-        valley_lines_raster_path = self._vector_to_mask_raster([valley_lines], dtm_path, output_path=valley_lines_raster_path, unique_values=False, flatten_lines=True, buffer_lines=True)
-
-        # Rasterize ridge_lines - now returns path directly
-        ridge_lines_raster_path = self._vector_to_mask_raster([ridge_lines], dtm_path, output_path=ridge_lines_raster_path, unique_values=False, flatten_lines=True, buffer_lines=True)
-        if feedback:
-            feedback.pushInfo("[CreateKeylinesCore] Starting iterative keyline creation process...")
-            feedback.setProgress(5)
-        else:
-            print("[CreateKeylinesCore] Starting iterative keyline creation process...")
-            print("[CreateKeylinesCore] Progress: 5%")
-        # Create raster .tif files for valley_lines and ridge_lines to use in _get_linedirection_start_point
-        valley_lines_raster_path = os.path.join(self.temp_directory, "valley_lines_mask.tif")
-        ridge_lines_raster_path = os.path.join(self.temp_directory, "ridge_lines_mask.tif")
-
-        # Rasterize valley_lines - now returns path directly
-        valley_lines_raster_path = self._vector_to_mask_raster([valley_lines], dtm_path, output_path=valley_lines_raster_path, unique_values=False, flatten_lines=True, buffer_lines=True)
-
-        # Rasterize ridge_lines - now returns path directly
-        ridge_lines_raster_path = self._vector_to_mask_raster([ridge_lines], dtm_path, output_path=ridge_lines_raster_path, unique_values=False, flatten_lines=True, buffer_lines=True)
         
+        # Create temporary raster .tif files for valley_lines and ridge_lines
+        valley_lines_raster_path = os.path.join(self.temp_directory, "valley_lines_mask.tif")
+        ridge_lines_raster_path = os.path.join(self.temp_directory, "ridge_lines_mask.tif")
+
+        # Rasterize valley_lines - now returns path directly
+        valley_lines_raster_path = self._vector_to_mask_raster([valley_lines], dtm_path, output_path=valley_lines_raster_path, unique_values=False, flatten_lines=True, buffer_lines=True)
+        # Rasterize ridge_lines - now returns path directly
+        ridge_lines_raster_path = self._vector_to_mask_raster([ridge_lines], dtm_path, output_path=ridge_lines_raster_path, unique_values=False, flatten_lines=True, buffer_lines=True)
+
+        # Read valley mask for endpoint checking
+        valley_lines_ds = gdal.Open(valley_lines_raster_path, gdal.GA_ReadOnly)
+        if valley_lines_ds is None:
+            raise RuntimeError(f"Cannot open valley lines raster: {valley_lines_raster_path}.{self._get_gdal_error_message()}")
+        try:
+            valley_lines_band = valley_lines_ds.GetRasterBand(1)
+            valley_mask = valley_lines_band.ReadAsArray()
+            if valley_mask is None:
+                raise RuntimeError(f"Cannot read valley mask data from: {valley_lines_raster_path}.{self._get_gdal_error_message()}")
+        finally:
+            valley_lines_ds = None
+
+        # Read ridge mask for endpoint checking
+        ridge_lines_ds = gdal.Open(ridge_lines_raster_path, gdal.GA_ReadOnly)
+        if ridge_lines_ds is None:
+            raise RuntimeError(f"Cannot open ridge lines raster: {ridge_lines_raster_path}.{self._get_gdal_error_message()}")
+        try:
+            ridge_lines_band = ridge_lines_ds.GetRasterBand(1)
+            ridge_mask = ridge_lines_band.ReadAsArray()
+            if ridge_mask is None:
+                raise RuntimeError(f"Cannot read ridge mask data from: {ridge_lines_raster_path}.{self._get_gdal_error_message()}")
+        finally:
+            ridge_lines_ds = None
+
         # Rasterize perimeter for precise endpoint checking
         perimeter_raster_path = None
         perimeter_mask = None
         if perimeter is not None:
             # If perimeter is a polygon, use its boundary for rasterization
             if perimeter.geom_type.isin(["Polygon", "MultiPolygon"]).any():
-                perimeter_is_polygon = True
                 perimeter_line = perimeter.copy()
                 perimeter_line["geometry"] = perimeter_line.boundary # maybe .unary_union?
             else:
                 perimeter_line = perimeter
-
+            # Create temporary .tif file for perimeter raster
             perimeter_raster_path = os.path.join(self.temp_directory, "perimeter_mask.tif")
             perimeter_raster_path = self._vector_to_mask_raster(
                 [perimeter_line],
@@ -4217,7 +4225,6 @@ class TopoDrainCore:
             perimeter_ds = gdal.Open(perimeter_raster_path, gdal.GA_ReadOnly)
             if perimeter_ds is None:
                 raise RuntimeError(f"Cannot open perimeter raster: {perimeter_raster_path}.{self._get_gdal_error_message()}")
-                
             try:
                 perimeter_band = perimeter_ds.GetRasterBand(1)
                 perimeter_mask = perimeter_band.ReadAsArray()
@@ -4226,37 +4233,20 @@ class TopoDrainCore:
             finally:
                 perimeter_ds = None
         
-        # Read barrier masks for endpoint checking
-        valley_lines_ds = gdal.Open(valley_lines_raster_path, gdal.GA_ReadOnly)
-        if valley_lines_ds is None:
-            raise RuntimeError(f"Cannot open valley lines raster: {valley_lines_raster_path}.{self._get_gdal_error_message()}")
-            
-        try:
-            valley_lines_band = valley_lines_ds.GetRasterBand(1)
-            valley_mask = valley_lines_band.ReadAsArray()
-            if valley_mask is None:
-                raise RuntimeError(f"Cannot read valley mask data from: {valley_lines_raster_path}.{self._get_gdal_error_message()}")
-        finally:
-            valley_lines_ds = None
-            
-        ridge_lines_ds = gdal.Open(ridge_lines_raster_path, gdal.GA_ReadOnly)
-        if ridge_lines_ds is None:
-            raise RuntimeError(f"Cannot open ridge lines raster: {ridge_lines_raster_path}.{self._get_gdal_error_message()}")
-            
-        try:
-            ridge_lines_band = ridge_lines_ds.GetRasterBand(1)
-            ridge_mask = ridge_lines_band.ReadAsArray()
-            if ridge_mask is None:
-                raise RuntimeError(f"Cannot read ridge mask data from: {ridge_lines_raster_path}.{self._get_gdal_error_message()}")
-        finally:
-            ridge_lines_ds = None
+        if feedback:
+            feedback.pushInfo("[CreateKeylinesCore] Starting iterative keyline creation process...")
+            feedback.setProgress(5)
+        else:
+            print("[CreateKeylinesCore] Starting iterative keyline creation process...")
+            print("[CreateKeylinesCore] Progress: 5%")
+
         # Initialize variables
         all_keylines = []
         current_start_points = start_points.copy()
         stage = 1
         
         # Set a maximum number of iterations to prevent infinite loops
-        expected_stages = (len(valley_lines) + len(ridge_lines)) + 1  # Rough estimate
+        expected_stages = (len(valley_lines) + len(ridge_lines)) + 1  # Rough estimate assuming valley to ridge to valley alternation
         max_iterations_keyline = expected_stages + 10  # Set a reasonable limit based on input features (+10 for safety)
 
         # Iterate until no new start points are found or max iterations reached
@@ -4289,7 +4279,7 @@ class TopoDrainCore:
                 else:
                     use_slope = -slope  # Invert slope for uphill tracing (no adjustment)
             
-            # Always add perimeter als destination feature if provided
+            # Always add perimeter as destination feature if provided
             if perimeter is not None:
                 destination_features.append(perimeter)
                 
