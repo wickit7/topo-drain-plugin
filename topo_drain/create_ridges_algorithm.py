@@ -11,10 +11,9 @@ from qgis.PyQt.QtGui import QIcon
 from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterRasterLayer,
                        QgsProcessingParameterRasterDestination,
                        QgsProcessingParameterVectorDestination, QgsProcessingParameterNumber,
-                       QgsProcessing, QgsProject, QgsProcessingException)
+                       QgsProcessing, QgsProcessingException)
 import os
-import geopandas as gpd
-from .utils import get_crs_from_layer, update_core_crs_if_needed
+from .utils import get_crs_from_layer, update_core_crs_if_needed, ensure_whiteboxtools_configured, save_gdf_to_file, get_raster_ext, get_vector_ext
 
 pluginPath = os.path.dirname(__file__)
 
@@ -111,7 +110,8 @@ class CreateRidgesAlgorithm(QgsProcessingAlgorithm):
                 self.ACCUM_THRESHOLD,
                 self.tr('Accumulation Threshold (see WBT `ExtractStreams`)'),
                 type=QgsProcessingParameterNumber.Integer,
-                defaultValue=1000
+                defaultValue=1000,
+                minValue=1
             )
         )
         # Output parameters
@@ -164,12 +164,21 @@ class CreateRidgesAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(streams_inverted_param)
 
     def processAlgorithm(self, parameters, context, feedback):
+        # Ensure WhiteboxTools is configured before running
+        if not ensure_whiteboxtools_configured(self, feedback):
+            return {}
+        
         # Validate and read input parameters
         dtm_layer = self.parameterAsRasterLayer(parameters, self.INPUT_DTM, context)
        
+        # Get DTM path and validate format
         dtm_path = dtm_layer.source()
-        if not dtm_path or not os.path.exists(dtm_path):
-            raise QgsProcessingException(f"DTM file not found: {dtm_path}")
+        dtm_ext = get_raster_ext(dtm_path, feedback)
+        
+        # Validate raster format compatibility with GDAL driver mapping
+        supported_raster_formats = list(self.core.gdal_driver_mapping.keys())
+        if hasattr(self.core, 'gdal_driver_mapping') and dtm_ext not in self.core.gdal_driver_mapping:
+            raise QgsProcessingException(f"DTM raster format '{dtm_ext}' is not supported. Supported formats: {supported_raster_formats}")
         
         # Use parameterAsOutputLayer to preserve checkbox state information
         ridge_output_layer = self.parameterAsOutputLayer(parameters, self.OUTPUT_RIDGES, context)
@@ -179,52 +188,44 @@ class CreateRidgesAlgorithm(QgsProcessingAlgorithm):
         facc_log_output_layer = self.parameterAsOutputLayer(parameters, self.OUTPUT_FACC_LOG_INVERTED, context)
         streams_output_layer = self.parameterAsOutputLayer(parameters, self.OUTPUT_STREAMS_INVERTED, context)
         
+        # Read numeric parameters
         accumulation_threshold = self.parameterAsInt(parameters, self.ACCUM_THRESHOLD, context)
         dist_facc = self.parameterAsDouble(parameters, self.DIST_FACC, context)
 
         # Extract actual file paths from layer objects for processing
-        ridge_file_path = ridge_output_layer if isinstance(ridge_output_layer, str) else ridge_output_layer
-        filled_file_path = filled_output_layer if isinstance(filled_output_layer, str) else filled_output_layer if filled_output_layer else None
-        fdir_file_path = fdir_output_layer if isinstance(fdir_output_layer, str) else fdir_output_layer if fdir_output_layer else None
-        facc_file_path = facc_output_layer if isinstance(facc_output_layer, str) else facc_output_layer if facc_output_layer else None
-        facc_log_file_path = facc_log_output_layer if isinstance(facc_log_output_layer, str) else facc_log_output_layer if facc_log_output_layer else None
-        streams_file_path = streams_output_layer if isinstance(streams_output_layer, str) else streams_output_layer if streams_output_layer else None
+        ridge_file_path = ridge_output_layer
+        
+        # Validate output vector format compatibility with OGR driver mapping
+        output_ext = get_vector_ext(ridge_file_path, feedback, check_existence=False)
+        supported_vector_formats = list(self.core.ogr_driver_mapping.keys()) if hasattr(self.core, 'ogr_driver_mapping') else []
+        if hasattr(self.core, 'ogr_driver_mapping') and output_ext not in self.core.ogr_driver_mapping:
+            feedback.pushWarning(f"Output file format '{output_ext}' is not in OGR driver mapping. Supported formats: {supported_vector_formats}. GeoPandas will attempt to save it automatically.")
+        
+        filled_file_path = filled_output_layer if filled_output_layer else None
+        fdir_file_path = fdir_output_layer if fdir_output_layer else None
+        facc_file_path = facc_output_layer if facc_output_layer else None
+        facc_log_file_path = facc_log_output_layer if facc_log_output_layer else None
+        streams_file_path = streams_output_layer if streams_output_layer else None
+
+        # Validate output raster format compatibility with GDAL driver mapping for optional outputs
+        supported_raster_formats = list(self.core.gdal_driver_mapping.keys()) if hasattr(self.core, 'gdal_driver_mapping') else []
+        for output_name, output_path in [
+            ("filled inverted DTM", filled_file_path),
+            ("inverted flow direction", fdir_file_path), 
+            ("inverted flow accumulation", facc_file_path),
+            ("log inverted flow accumulation", facc_log_file_path),
+            ("inverted streams", streams_file_path)
+        ]:
+            if output_path:  # Only validate if output is specified
+                output_raster_ext = get_raster_ext(output_path, feedback, check_existence=False)
+                if hasattr(self.core, 'gdal_driver_mapping') and output_raster_ext not in self.core.gdal_driver_mapping:
+                    feedback.pushWarning(f"Output {output_name} format '{output_raster_ext}' is not in GDAL driver mapping. Supported formats: {supported_raster_formats}. GDAL will attempt to save it automatically.")
 
         feedback.pushInfo("Reading CRS from DTM...")
-        # Read CRS from the DTM using QGIS layer
         dtm_crs = get_crs_from_layer(dtm_layer, fallback_crs="EPSG:2056")
         feedback.pushInfo(f"DTM Layer crs: {dtm_crs}")
-
-        # Update core CRS if needed (dtm_crs is guaranteed to be valid)
+        # Update core CRS if needed (dtm_crs is supposed to be valid)
         update_core_crs_if_needed(self.core, dtm_crs, feedback)
-
-        # Ensure WhiteboxTools is configured before running
-        if hasattr(self, 'plugin') and self.plugin:
-            if not self.plugin.ensure_whiteboxtools_configured():
-                raise QgsProcessingException("WhiteboxTools is not configured. Please install and configure the WhiteboxTools for QGIS plugin.")
-        else:
-            # Try to automatically find and connect to the TopoDrain plugin
-            feedback.pushInfo("Plugin reference not available - attempting to connect to TopoDrain plugin")
-            try:
-                from qgis.utils import plugins
-                if 'topo_drain' in plugins:
-                    topo_drain_plugin = plugins['topo_drain']
-                    # Set the plugin reference for this instance
-                    self.plugin = topo_drain_plugin
-                    feedback.pushInfo("Successfully connected to TopoDrain plugin")
-                    
-                    # Now try to configure WhiteboxTools
-                    if hasattr(topo_drain_plugin, 'ensure_whiteboxtools_configured'):
-                        if not topo_drain_plugin.ensure_whiteboxtools_configured():
-                            feedback.pushWarning("WhiteboxTools is not configured. Please install and configure the WhiteboxTools for QGIS plugin.")
-                        else:
-                            feedback.pushInfo("WhiteboxTools configuration verified")
-                    else:
-                        feedback.pushWarning("TopoDrain plugin found but configuration method not available")
-                else:
-                    feedback.pushWarning("TopoDrain plugin not found in QGIS registry - cannot verify WhiteboxTools configuration")
-            except Exception as e:
-                feedback.pushWarning(f"Could not connect to TopoDrain plugin: {e} - continuing without WhiteboxTools verification")
 
         feedback.pushInfo("Running extract ridges...")
         ridge_gdf = self.core.extract_ridges(
@@ -246,12 +247,8 @@ class CreateRidgesAlgorithm(QgsProcessingAlgorithm):
         ridge_gdf = ridge_gdf.set_crs(self.core.crs, allow_override=True)
         feedback.pushInfo(f"Ridge lines CRS: {ridge_gdf.crs}")
 
-        # Save result
-        try:
-            ridge_gdf.to_file(ridge_file_path)
-            feedback.pushInfo(f"Ridge lines saved to: {ridge_file_path}")
-        except Exception as e:
-            raise QgsProcessingException(f"Failed to save ridge output: {e}")
+        # Save result with proper format handling
+        save_gdf_to_file(ridge_gdf, ridge_file_path, self.core, feedback)
 
         results = {}
         # Add output parameters to results

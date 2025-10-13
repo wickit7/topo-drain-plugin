@@ -15,7 +15,7 @@ from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterRasterLayer
                        QgsProcessingParameterFeatureSource)
 import os
 import geopandas as gpd
-from .utils import get_crs_from_layer, update_core_crs_if_needed, clean_qvariant_data
+from .utils import get_crs_from_layer, update_core_crs_if_needed, ensure_whiteboxtools_configured, save_gdf_to_file, load_gdf_from_file, load_gdf_from_qgis_source, get_raster_ext, get_vector_ext
 
 pluginPath = os.path.dirname(__file__)
 
@@ -161,8 +161,8 @@ Parameters:
                 self.tr('Change Slope At Distance (0.5 = Original Slope from start to middle, then New Slope from middle to end)'),
                 type=QgsProcessingParameterNumber.Double,
                 defaultValue=0.5,
-                minValue=0.0,
-                maxValue=1.0
+                minValue=0.01,
+                maxValue=0.99
             )
         )
         
@@ -183,7 +183,7 @@ Parameters:
                 self.tr('Advanced: Slope Deviation Threshold (max allowed deviation before slope refinement, 0.0-1.0, default: 0.2 = 20%)'),
                 type=QgsProcessingParameterNumber.Double,
                 defaultValue=0.2,
-                minValue=0.0,
+                minValue=0.01,
                 maxValue=1.0,
                 optional=False
             )
@@ -192,22 +192,22 @@ Parameters:
         self.addParameter(
             QgsProcessingParameterNumber(
                 self.MAX_ITERATIONS_SLOPE,
-                self.tr('Advanced: Max Iterations Slope (maximum iterations for line refinement, 1-50, default: 20)'),
+                self.tr('Advanced: Max Iterations Slope (maximum iterations for line refinement, 1-100, default: 20)'),
                 type=QgsProcessingParameterNumber.Integer,
                 defaultValue=20,
                 minValue=1,
-                maxValue=50
+                maxValue=100
             )
         )
         
         self.addParameter(
             QgsProcessingParameterNumber(
                 self.MAX_ITERATIONS_BARRIER,
-                self.tr('Advanced: Max Iterations Barrier (maximum iterations when using barriers as temporary destinations, 1-50, default: 30)'),
+                self.tr('Advanced: Max Iterations Barrier (maximum iterations when using barriers as temporary destinations, 1-100, default: 30)'),
                 type=QgsProcessingParameterNumber.Integer,
                 defaultValue=30,
                 minValue=1,
-                maxValue=50
+                maxValue=100
             )
         )
         
@@ -221,15 +221,43 @@ Parameters:
         self.addParameter(adjusted_lines_param)
 
     def processAlgorithm(self, parameters, context, feedback):
+        # Ensure WhiteboxTools is configured before running
+        if not ensure_whiteboxtools_configured(self, feedback):
+            return {}
+        
         # Validate and read input parameters
         dtm_layer = self.parameterAsRasterLayer(parameters, self.INPUT_DTM, context)
         input_lines_source = self.parameterAsSource(parameters, self.INPUT_LINES, context)
         destination_layers = self.parameterAsLayerList(parameters, self.INPUT_DESTINATION_FEATURES, context)
         barrier_layers = self.parameterAsLayerList(parameters, self.INPUT_BARRIER_FEATURES, context)
         
+        # Get DTM path and validate format
         dtm_path = dtm_layer.source()
-        if not dtm_path or not os.path.exists(dtm_path):
-            raise QgsProcessingException(f"DTM file not found: {dtm_path}")
+        dtm_ext = get_raster_ext(dtm_path, feedback)
+        
+        # Validate raster format compatibility with GDAL driver mapping
+        supported_raster_formats = list(self.core.gdal_driver_mapping.keys())
+        if hasattr(self.core, 'gdal_driver_mapping') and dtm_ext not in self.core.gdal_driver_mapping:
+            raise QgsProcessingException(f"DTM raster format '{dtm_ext}' is not supported. Supported formats: {supported_raster_formats}")
+        
+        # Validate vector formats (warning only)
+        supported_vector_formats = list(self.core.ogr_driver_mapping.keys()) if hasattr(self.core, 'ogr_driver_mapping') else []
+        
+        # Validate vector formats for destination layers (warning only)
+        for i, layer in enumerate(destination_layers):
+            if layer and layer.source():
+                dest_path = layer.source()
+                dest_ext = get_vector_ext(dest_path, feedback)
+                if hasattr(self.core, 'ogr_driver_mapping') and dest_ext not in self.core.ogr_driver_mapping:
+                    feedback.pushWarning(f"Destination layer {i+1} format '{dest_ext}' is not in OGR driver mapping. Supported formats: {supported_vector_formats}. GeoPandas will attempt to load it automatically.")
+        
+        # Validate vector formats for barrier layers (warning only)
+        for i, layer in enumerate(barrier_layers):
+            if layer and layer.source():
+                barrier_path = layer.source()
+                barrier_ext = get_vector_ext(barrier_path, feedback)
+                if hasattr(self.core, 'ogr_driver_mapping') and barrier_ext not in self.core.ogr_driver_mapping:
+                    feedback.pushWarning(f"Barrier layer {i+1} format '{barrier_ext}' is not in OGR driver mapping. Supported formats: {supported_vector_formats}. GeoPandas will attempt to load it automatically.")
         
         adjusted_lines_output = self.parameterAsOutputLayer(parameters, self.OUTPUT_ADJUSTED_LINES, context)
         change_after = self.parameterAsDouble(parameters, self.CHANGE_AFTER, context)
@@ -240,40 +268,17 @@ Parameters:
         max_iterations_barrier = self.parameterAsInt(parameters, self.MAX_ITERATIONS_BARRIER, context)
 
         # Extract file paths
-        adjusted_lines_path = adjusted_lines_output if isinstance(adjusted_lines_output, str) else adjusted_lines_output
+        adjusted_lines_path = adjusted_lines_output
+        
+        # Validate output vector format compatibility with OGR driver mapping
+        output_ext = get_vector_ext(adjusted_lines_path, feedback, check_existence=False)
+        if hasattr(self.core, 'ogr_driver_mapping') and output_ext not in self.core.ogr_driver_mapping:
+            feedback.pushWarning(f"Output file format '{output_ext}' is not in OGR driver mapping. Supported formats: {supported_vector_formats}. GeoPandas will attempt to save it automatically.")
 
         feedback.pushInfo("Reading CRS from DTM...")
         # Read CRS from the DTM using QGIS layer
         dtm_crs = get_crs_from_layer(dtm_layer, fallback_crs="EPSG:2056")
         feedback.pushInfo(f"DTM Layer crs: {dtm_crs}")
-
-        # Ensure WhiteboxTools is configured before running
-        if hasattr(self, 'plugin') and self.plugin:
-            if not self.plugin.ensure_whiteboxtools_configured():
-                raise QgsProcessingException("WhiteboxTools is not configured. Please install and configure the WhiteboxTools for QGIS plugin.")
-        else:
-            # Try to automatically find and connect to the TopoDrain plugin
-            feedback.pushInfo("Plugin reference not available - attempting to connect to TopoDrain plugin")
-            try:
-                from qgis.utils import plugins
-                if 'topo_drain' in plugins:
-                    topo_drain_plugin = plugins['topo_drain']
-                    # Set the plugin reference for this instance
-                    self.plugin = topo_drain_plugin
-                    feedback.pushInfo("Successfully connected to TopoDrain plugin")
-                    
-                    # Now try to configure WhiteboxTools
-                    if hasattr(topo_drain_plugin, 'ensure_whiteboxtools_configured'):
-                        if not topo_drain_plugin.ensure_whiteboxtools_configured():
-                            feedback.pushWarning("WhiteboxTools is not configured. Please install and configure the WhiteboxTools for QGIS plugin.")
-                        else:
-                            feedback.pushInfo("WhiteboxTools configuration verified")
-                    else:
-                        feedback.pushWarning("TopoDrain plugin found but configuration method not available")
-                else:
-                    feedback.pushWarning("TopoDrain plugin not found in QGIS registry - cannot verify WhiteboxTools configuration")
-            except Exception as e:
-                feedback.pushWarning(f"Could not connect to TopoDrain plugin: {e} - continuing without WhiteboxTools verification")
 
         # Update core CRS if needed (dtm_crs is guaranteed to be valid)
         update_core_crs_if_needed(self.core, dtm_crs, feedback)
@@ -282,14 +287,10 @@ Parameters:
         
         # Convert QGIS layers to GeoDataFrames
         feedback.pushInfo("Converting input lines to GeoDataFrame...")
-        input_lines_gdf = gpd.GeoDataFrame.from_features(input_lines_source.getFeatures())
+        input_lines_gdf = load_gdf_from_qgis_source(input_lines_source, feedback)
         if input_lines_gdf.empty:
             raise QgsProcessingException("No input lines found in input layer")
 
-        # Clean QVariant objects from input lines data to avoid field type errors
-        feedback.pushInfo("Cleaning input lines data types...")
-        input_lines_gdf = clean_qvariant_data(input_lines_gdf)
-        
         # Set CRS from the source layer if GeoDataFrame doesn't have one
         if input_lines_gdf.crs is None:
             source_crs = input_lines_source.sourceCrs()
@@ -312,8 +313,8 @@ Parameters:
         for layer in destination_layers:
             if layer:
                 try:
-                    # Read without CRS first to avoid Windows PROJ crashes
-                    gdf = gpd.read_file(layer.source(), crs=None)
+                    # Load GeoDataFrame using utility function
+                    gdf = load_gdf_from_file(layer.source(), feedback)
                     # Manually set the safe CRS
                     gdf.crs = dtm_crs
                     feedback.pushInfo(f"Successfully loaded {len(gdf)} destination features with safe CRS: {dtm_crs}")
@@ -336,8 +337,8 @@ Parameters:
             for layer in barrier_layers:
                 if layer:
                     try:
-                        # Read without CRS first to avoid Windows PROJ crashes
-                        gdf = gpd.read_file(layer.source(), crs=None)
+                        # Load GeoDataFrame using utility function
+                        gdf = load_gdf_from_file(layer.source(), feedback)
                         # Manually set the safe CRS
                         gdf.crs = dtm_crs
                         feedback.pushInfo(f"Successfully loaded {len(gdf)} barrier features with safe CRS: {dtm_crs}")
@@ -362,6 +363,7 @@ Parameters:
             max_iterations_barrier=max_iterations_barrier,
             slope_deviation_threshold=slope_deviation_threshold,
             max_iterations_slope=max_iterations_slope,
+            report_progress=True,
             feedback=feedback
         )
 
@@ -372,16 +374,8 @@ Parameters:
         adjusted_lines_gdf = adjusted_lines_gdf.set_crs(self.core.crs, allow_override=True)
         feedback.pushInfo(f"Adjusted lines CRS: {adjusted_lines_gdf.crs}")
 
-        # Clean any QVariant objects from the GeoDataFrame before saving
-        feedback.pushInfo("Cleaning adjusted lines data types before saving...")
-        adjusted_lines_gdf = clean_qvariant_data(adjusted_lines_gdf)
-
-        # Save result
-        try:
-            adjusted_lines_gdf.to_file(adjusted_lines_path)
-            feedback.pushInfo(f"Adjusted constant slope lines saved to: {adjusted_lines_path}")
-        except Exception as e:
-            raise QgsProcessingException(f"Failed to save adjusted lines output: {e}")
+        # Save result with proper format handling
+        save_gdf_to_file(adjusted_lines_gdf, adjusted_lines_path, self.core, feedback)
 
         results = {}
         # Add output parameters to results

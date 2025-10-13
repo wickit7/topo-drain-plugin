@@ -12,8 +12,7 @@ from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterVectorLayer
                        QgsProcessingParameterNumber, QgsProcessingParameterBoolean,
                        QgsProcessing, QgsProcessingParameterFeatureSource, QgsProcessingException)
 import os
-import geopandas as gpd
-from .utils import get_crs_from_layer, update_core_crs_if_needed
+from .utils import get_crs_from_layer, update_core_crs_if_needed, ensure_whiteboxtools_configured, save_gdf_to_file, load_gdf_from_file, load_gdf_from_qgis_source, get_raster_ext, get_vector_ext
 
 pluginPath = os.path.dirname(__file__)
 
@@ -155,20 +154,34 @@ Line layer containing main ridge lines with attributes: LINK_ID, TRIB_ID, RANK, 
         self.addParameter(main_ridges_param)
 
     def processAlgorithm(self, parameters, context, feedback):
+        # Ensure WhiteboxTools is configured before running
+        if not ensure_whiteboxtools_configured(self, feedback):
+            return {}
+        
         # Validate and read input parameters
         ridge_lines_layer = self.parameterAsVectorLayer(parameters, self.INPUT_RIDGE_LINES, context)
         facc_raster_layer = self.parameterAsRasterLayer(parameters, self.INPUT_FACC_RASTER, context)
         perimeter_layer = self.parameterAsSource(parameters, self.INPUT_PERIMETER, context)
 
-        # Get file paths
+        # Get file paths and validate formats
         ridge_lines_path = ridge_lines_layer.source()
-        facc_raster_path = facc_raster_layer.source()
+        ridge_ext = get_vector_ext(ridge_lines_path, feedback)
         
-        # Validate file existence
-        if not ridge_lines_path or not os.path.exists(ridge_lines_path):
-            raise QgsProcessingException(f"Ridge lines file not found: {ridge_lines_path}")
-        if not facc_raster_path or not os.path.exists(facc_raster_path):
-            raise QgsProcessingException(f"Flow accumulation raster not found: {facc_raster_path}")
+        # Get FACC raster path and validate format
+        facc_raster_path = facc_raster_layer.source()
+        facc_ext = get_raster_ext(facc_raster_path, feedback)
+        
+        # Create supported formats lists
+        supported_vector_formats = list(self.core.ogr_driver_mapping.keys()) if hasattr(self.core, 'ogr_driver_mapping') else []
+        supported_raster_formats = list(self.core.gdal_driver_mapping.keys())
+        
+        # Validate vector format compatibility with OGR driver mapping (warning only)
+        if hasattr(self.core, 'ogr_driver_mapping') and ridge_ext not in self.core.ogr_driver_mapping:
+            feedback.pushWarning(f"Ridge lines format '{ridge_ext}' is not in OGR driver mapping. Supported formats: {supported_vector_formats}. GeoPandas will attempt to load it automatically.")
+        
+        # Validate raster format compatibility with GDAL driver mapping
+        if hasattr(self.core, 'gdal_driver_mapping') and facc_ext not in self.core.gdal_driver_mapping:
+            raise QgsProcessingException(f"Flow accumulation raster format '{facc_ext}' is not supported. Supported formats: {supported_raster_formats}")
         
         # Use parameterAsOutputLayer to preserve checkbox state information
         main_ridges_output_layer = self.parameterAsOutputLayer(parameters, self.OUTPUT_MAIN_RIDGES, context)
@@ -178,53 +191,25 @@ Line layer containing main ridge lines with attributes: LINK_ID, TRIB_ID, RANK, 
         clip_to_perimeter = self.parameterAsBool(parameters, self.CLIP_TO_PERIMETER, context)
 
         # Extract actual file path from layer object for processing
-        main_ridges_file_path = main_ridges_output_layer if isinstance(main_ridges_output_layer, str) else main_ridges_output_layer
+        main_ridges_file_path = main_ridges_output_layer
+        
+        # Validate output vector format compatibility with OGR driver mapping
+        output_ext = get_vector_ext(main_ridges_file_path, feedback, check_existence=False)
+        if hasattr(self.core, 'ogr_driver_mapping') and output_ext not in self.core.ogr_driver_mapping:
+            feedback.pushWarning(f"Output file format '{output_ext}' is not in OGR driver mapping. Supported formats: {supported_vector_formats}. GeoPandas will attempt to save it automatically.")
 
         feedback.pushInfo("Reading CRS from ridge lines...")
         # Read CRS from the ridge lines layer with safe fallback
         ridge_crs = get_crs_from_layer(ridge_lines_layer, fallback_crs="EPSG:2056")
         feedback.pushInfo(f"Ridge lines CRS: {ridge_crs}")
-
-        feedback.pushInfo("Processing extract_main_ridges via TopoDrainCore...")
-
-        # Ensure WhiteboxTools is configured before running
-        if hasattr(self, 'plugin') and self.plugin:
-            if not self.plugin.ensure_whiteboxtools_configured():
-                raise QgsProcessingException("WhiteboxTools is not configured. Please install and configure the WhiteboxTools for QGIS plugin.")
-        else:
-            # Try to automatically find and connect to the TopoDrain plugin
-            feedback.pushInfo("Plugin reference not available - attempting to connect to TopoDrain plugin")
-            try:
-                from qgis.utils import plugins
-                if 'topo_drain' in plugins:
-                    topo_drain_plugin = plugins['topo_drain']
-                    # Set the plugin reference for this instance
-                    self.plugin = topo_drain_plugin
-                    feedback.pushInfo("Successfully connected to TopoDrain plugin")
-                    
-                    # Now try to configure WhiteboxTools
-                    if hasattr(topo_drain_plugin, 'ensure_whiteboxtools_configured'):
-                        if not topo_drain_plugin.ensure_whiteboxtools_configured():
-                            feedback.pushWarning("WhiteboxTools is not configured. Please install and configure the WhiteboxTools for QGIS plugin.")
-                        else:
-                            feedback.pushInfo("WhiteboxTools configuration verified")
-                    else:
-                        feedback.pushWarning("TopoDrain plugin found but configuration method not available")
-                else:
-                    feedback.pushWarning("TopoDrain plugin not found in QGIS registry - cannot verify WhiteboxTools configuration")
-            except Exception as e:
-                feedback.pushWarning(f"Could not connect to TopoDrain plugin: {e} - continuing without WhiteboxTools verification")
-
         # Update core CRS if needed (ridge_crs is guaranteed to be valid)
         update_core_crs_if_needed(self.core, ridge_crs, feedback)
 
         # Load input data as GeoDataFrame with Windows-safe CRS handling
         feedback.pushInfo("Loading ridge lines...")
         try:
-            # Read without CRS first to avoid Windows PROJ crashes
-            ridge_lines_gdf = gpd.read_file(ridge_lines_path, crs=None)
-            # Manually set the safe CRS
-            ridge_lines_gdf.crs = ridge_crs
+            ridge_lines_gdf = load_gdf_from_file(ridge_lines_path, feedback)
+            ridge_lines_gdf.crs = self.core.crs
             feedback.pushInfo(f"Successfully loaded {len(ridge_lines_gdf)} ridge line features with safe CRS: {ridge_crs}")
         except Exception as e:
             feedback.pushInfo(f"Failed to load ridge lines with safe CRS handling: {e}")
@@ -238,10 +223,10 @@ Line layer containing main ridge lines with attributes: LINK_ID, TRIB_ID, RANK, 
         if perimeter_layer:
             feedback.pushInfo("Loading perimeter...")
             try:
-                # Use from_features to avoid CRS issues, then set safe CRS
-                perimeter_gdf = gpd.GeoDataFrame.from_features(perimeter_layer.getFeatures())
+                # Load perimeter features with automatic data cleaning
+                perimeter_gdf = load_gdf_from_qgis_source(perimeter_layer, feedback)
                 if not perimeter_gdf.empty:
-                    perimeter_gdf.crs = ridge_crs  # Use same safe CRS as ridge lines
+                    perimeter_gdf.crs = self.core.crs
                     feedback.pushInfo(f"Successfully loaded {len(perimeter_gdf)} perimeter features with safe CRS")
             except Exception as e:
                 feedback.pushInfo(f"Failed to load perimeter with safe CRS handling: {e}")
@@ -282,12 +267,8 @@ Line layer containing main ridge lines with attributes: LINK_ID, TRIB_ID, RANK, 
         main_ridges_gdf = main_ridges_gdf.set_crs(self.core.crs, allow_override=True)
         feedback.pushInfo(f"Main ridge lines CRS: {main_ridges_gdf.crs}")
 
-        # Save result
-        try:
-            main_ridges_gdf.to_file(main_ridges_file_path)
-            feedback.pushInfo(f"Main ridge lines saved to: {main_ridges_file_path}")
-        except Exception as e:
-            raise QgsProcessingException(f"Failed to save main ridges output: {e}")
+        # Save result with proper format handling
+        save_gdf_to_file(main_ridges_gdf, main_ridges_file_path, self.core, feedback)
         
         results = {}
         # Add output parameters to results
