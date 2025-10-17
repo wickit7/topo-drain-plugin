@@ -214,9 +214,9 @@ another valley line, alternating between the two."""
                 self.MAX_ITERATIONS_SLOPE,
                 self.tr('Advanced: Max Iterations Slope (maximum iterations for line refinement, 1-100, default: 20)'),
                 type=QgsProcessingParameterNumber.Integer,
-                defaultValue=20,
+                defaultValue=30,
                 minValue=1,
-                maxValue=100
+                maxValue=500
             )
         )
         

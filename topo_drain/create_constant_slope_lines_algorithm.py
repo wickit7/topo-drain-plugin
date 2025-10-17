@@ -42,6 +42,7 @@ class CreateConstantSlopeLinesAlgorithm(QgsProcessingAlgorithm):
     INPUT_START_POINTS = 'INPUT_START_POINTS'
     INPUT_DESTINATION_FEATURES = 'INPUT_DESTINATION_FEATURES'
     INPUT_BARRIER_FEATURES = 'INPUT_BARRIER_FEATURES'
+    INPUT_PERIMETER = 'INPUT_PERIMETER'
     OUTPUT_SLOPE_LINES = 'OUTPUT_SLOPE_LINES'
     SLOPE = 'SLOPE'
     ALLOW_BARRIERS_AS_TEMP_DESTINATION = 'ALLOW_BARRIERS_AS_TEMP_DESTINATION'
@@ -103,6 +104,7 @@ Parameters:
 - Start Points: Point features where slope lines should begin (e.g., keypoints)
 - Destination Features: Line or polygon features that slope lines should reach (e.g. main ridge lines, area of interest)
 - Barrier Features (optional): Line or polygon features to avoid during tracing (e.g. main valley lines)
+- Perimeter (optional): Polygon features defining area of interest. Acts as both barrier (boundary cannot be crossed) and is used to check if points are inside the perimeter area.
 - Slope: Desired slope as a decimal (e.g., 0.01 for 1% downhill, -0.01 for 1% uphill)
 - Change Slope At Distance (optional): Creates two segments - Desired Slope from start to this point, then New Slope to end (e.g., 0.5 = change at middle)
 - New Slope After Change Point (optional): New Slope to apply for the second segment (required if Change Slope At Distance is set)
@@ -145,6 +147,15 @@ Parameters:
                 self.INPUT_BARRIER_FEATURES,
                 self.tr('Barrier Features (lines or polygons to avoid during tracing)'),
                 layerType=QgsProcessing.TypeVectorAnyGeometry,
+                optional=True
+            )
+        )
+
+        self.addParameter(
+            QgsProcessingParameterVectorLayer(
+                self.INPUT_PERIMETER,
+                self.tr('Perimeter (Area of Interest) - acts as barrier and limits processing to interior points'),
+                types=[QgsProcessing.TypeVectorPolygon],
                 optional=True
             )
         )
@@ -212,9 +223,9 @@ Parameters:
                 self.MAX_ITERATIONS_SLOPE,
                 self.tr('Advanced: Max Iterations Slope (maximum iterations for line refinement, 1-100, default: 20)'),
                 type=QgsProcessingParameterNumber.Integer,
-                defaultValue=20,
+                defaultValue=30,
                 minValue=1,
-                maxValue=100
+                maxValue=500
             )
         )
         
@@ -225,7 +236,7 @@ Parameters:
                 type=QgsProcessingParameterNumber.Integer,
                 defaultValue=30,
                 minValue=1,
-                maxValue=100
+                maxValue=500
             )
         )
         
@@ -248,6 +259,7 @@ Parameters:
         start_points_source = self.parameterAsSource(parameters, self.INPUT_START_POINTS, context)
         destination_layers = self.parameterAsLayerList(parameters, self.INPUT_DESTINATION_FEATURES, context)
         barrier_layers = self.parameterAsLayerList(parameters, self.INPUT_BARRIER_FEATURES, context)
+        perimeter_layer = self.parameterAsVectorLayer(parameters, self.INPUT_PERIMETER, context)
         
         # Get DTM path and validate format
         dtm_path = dtm_layer.source()
@@ -368,18 +380,45 @@ Parameters:
                         barrier_gdfs.append(gdf)
                         feedback.pushInfo(f"Barrier layer: {len(gdf)} features")
 
+        # Convert perimeter to GeoDataFrame (optional) with Windows-safe CRS handling
+        perimeter_gdf = None
+        if perimeter_layer and perimeter_layer.source():
+            feedback.pushInfo("Converting perimeter to GeoDataFrame...")
+            try:
+                # Load GeoDataFrame using utility function
+                perimeter_layer_path = perimeter_layer.source()
+                perimeter_gdf = load_gdf_from_file(perimeter_layer_path, feedback)
+                # Manually set the safe CRS
+                perimeter_gdf.crs = dtm_crs
+                feedback.pushInfo(f"Successfully loaded {len(perimeter_gdf)} perimeter features with safe CRS: {dtm_crs}")
+            except Exception as e:
+                feedback.pushInfo(f"Failed to load perimeter: {e}")
+                raise QgsProcessingException(f"Failed to load perimeter: {e}")
+                
+            if not perimeter_gdf.empty:
+                perimeter_gdf = perimeter_gdf.to_crs(self.core.crs)
+                feedback.pushInfo(f"Perimeter: {len(perimeter_gdf)} features")
+            else:
+                feedback.pushInfo("Warning: Empty perimeter layer provided")
+                perimeter_gdf = None
+        else:
+            feedback.pushInfo("No perimeter layer provided (optional)")
+
+        if change_after is not None and slope_after is not None:
+            feedback.pushInfo(f"***** Phase 1/2 - Progress Reporting 1-100% - Creating first parts of line *****")
+
         feedback.pushInfo("Running constant slope lines tracing...")
         slope_lines_gdf = self.core.get_constant_slope_lines(
             dtm_path=dtm_path,
             start_points=start_points_gdf,
             destination_features=destination_gdfs,
             slope=slope,
+            perimeter=perimeter_gdf,
             barrier_features=barrier_gdfs if barrier_gdfs else None,
             allow_barriers_as_temp_destination=allow_barriers_as_temp_destination,
             max_iterations_barrier=max_iterations_barrier,
             slope_deviation_threshold=slope_deviation_threshold,
             max_iterations_slope=max_iterations_slope,
-            report_progress=True,
             feedback=feedback
         )
 
@@ -388,7 +427,8 @@ Parameters:
 
         # Apply slope adjustment if parameters are provided
         if change_after is not None and slope_after is not None:
-            feedback.pushInfo(f"Applying slope adjustment after {change_after*100:.1f}% with new slope {slope_after}")
+            feedback.pushInfo("***** Phase 2/2 - Progress Reporting 1-100% - Creating second parts of line *****")
+            feedback.pushInfo(f"Applying slope adjustment after {change_after} with new slope {slope_after}")
             
             # Apply the slope adjustment using the adjust_constant_slope_after method
             slope_lines_gdf = self.core.adjust_constant_slope_after(
@@ -402,7 +442,6 @@ Parameters:
                 max_iterations_barrier=max_iterations_barrier,
                 slope_deviation_threshold=slope_deviation_threshold,
                 max_iterations_slope=max_iterations_slope,
-                report_progress=True,
                 feedback=feedback
             )
             

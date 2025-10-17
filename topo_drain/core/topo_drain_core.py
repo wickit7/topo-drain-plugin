@@ -3229,9 +3229,9 @@ class TopoDrainCore:
                 feedback.reportError("Operation cancelled by user")
                 raise RuntimeError("Operation cancelled by user")
             
-            print(f"[GetConstantSlopeLine] *** Iteration {iteration + 1}/max. {max_iterations_slope} ***")
+            print(f"[GetConstantSlopeLine] *** Slope Iteration {iteration + 1}/max. {max_iterations_slope} ***")
             if feedback:
-                feedback.pushInfo(f"[GetConstantSlopeLine] *** Iteration {iteration + 1}/max. {max_iterations_slope} ***")
+                feedback.pushInfo(f"[GetConstantSlopeLine] *** Slope Iteration {iteration + 1}/max. {max_iterations_slope} ***")
 
             # --- Temporary file paths ---
             cost_raster_path = os.path.join(self.temp_directory, f"cost_iter_{iteration}.tif")
@@ -3423,10 +3423,10 @@ class TopoDrainCore:
             
             if last_iteration and cut_point is not None:
                 warnings.warn(f"[GetConstantSlopeLine] Warning: Last iteration reached without finding fully valid line segment")
-                print(f"[GetConstantSlopeLine] *** End of iteration {iteration+1} ***")
+                print(f"[GetConstantSlopeLine] *** End of Slope iteration {iteration+1} ***")
                 if feedback:
                     feedback.pushWarning(f"[GetConstantSlopeLine] Warning: Last iteration reached without finding fully valid line segment")
-                    feedback.pushInfo(f"[GetConstantSlopeLine] *** End of iteration {iteration+1} ***")
+                    feedback.pushInfo(f"[GetConstantSlopeLine] *** End of Slope iteration {iteration+1} ***")
 
             if last_iteration or cut_point is None or reached_destination:
                 # If we are at the last iteration or reached destination, we can add fully line segment instead of doing another iteration
@@ -3435,9 +3435,9 @@ class TopoDrainCore:
                     accumulated_line_coords.extend(line_segment.coords[1:])
                 else:
                     accumulated_line_coords.extend(line_segment.coords)
-                print(f"[GetConstantSlopeLine] *** End of iteration {iteration+1} ***")
+                print(f"[GetConstantSlopeLine] *** End of Slope iteration {iteration+1} ***")
                 if feedback:
-                    feedback.pushInfo(f"[GetConstantSlopeLine] *** End of iteration {iteration+1} ***")
+                    feedback.pushInfo(f"[GetConstantSlopeLine] *** End of Slope iteration {iteration+1} ***")
                 break
 
             else:
@@ -3452,18 +3452,18 @@ class TopoDrainCore:
 
                     # Store the cut point for the next iteration
                     current_start_point = cut_point
-                    print(f"[GetConstantSlopeLine] *** End of iteration {iteration+1} ***")
+                    print(f"[GetConstantSlopeLine] *** End of Slope iteration {iteration+1} ***")
                     print(f"[GetConstantSlopeLine] Continuing from cut point: {cut_point}")
-                    iteration += 1
                     if feedback:
-                        feedback.pushInfo(f"[GetConstantSlopeLine] *** End of iteration {iteration+1} ***")
+                        feedback.pushInfo(f"[GetConstantSlopeLine] *** End of Slope iteration {iteration+1} ***")
+                    iteration += 1
                 else:
                     # If cutting failed, use the whole segment
                     warnings.warn(f"[GetConstantSlopeLine] Warning: Cutting failed, using whole line segment")
-                    print(f"[GetConstantSlopeLine] *** End of iteration {iteration+1} ***")
+                    print(f"[GetConstantSlopeLine] *** End of Slope iteration {iteration+1} ***")
                     if feedback:
                         feedback.pushWarning(f"[GetConstantSlopeLine] Warning: Cutting failed, using whole line segment")
-                        feedback.pushInfo(f"[GetConstantSlopeLine] *** End of iteration {iteration+1} ***")
+                        feedback.pushInfo(f"[GetConstantSlopeLine] *** End of Slope iteration {iteration+1} ***")
                     if accumulated_line_coords:
                         # Skip first coordinate to avoid duplication
                         accumulated_line_coords.extend(line_segment.coords[1:])
@@ -3477,6 +3477,10 @@ class TopoDrainCore:
             if feedback:
                 feedback.pushWarning("[GetConstantSlopeLine] Warning: No valid line segments could be extracted.")                
             return None
+        else:
+            print(f"[GetConstantSlopeLine] Completed after {iteration + 1} iterations")
+            if feedback:
+                feedback.pushInfo(f"[GetConstantSlopeLine] Completed after {iteration + 1} iterations") 
 
         final_line = LineString(accumulated_line_coords)
 
@@ -3581,9 +3585,9 @@ class TopoDrainCore:
             barrier_ds = None  # Close barrier dataset
         
         while current_iteration < max_iterations_barrier:
-            print(f"[IterativeConstantSlopeLine] *** Iteration {current_iteration + 1}/{max_iterations_barrier} ***")
+            print(f"[IterativeConstantSlopeLine] *** Barrier Iteration {current_iteration + 1}/max. {max_iterations_barrier} ***")
             if feedback:
-                feedback.pushInfo(f"[IterativeConstantSlopeLine] *** Iteration {current_iteration + 1}/{max_iterations_barrier} ***")
+                feedback.pushInfo(f"[IterativeConstantSlopeLine] *** Barrier Iteration {current_iteration + 1}/max. {max_iterations_barrier} ***")
                 feedback.pushInfo("*for more information see in Python Console")
                 
             # Debug: Print start point and extracted value
@@ -3716,9 +3720,9 @@ class TopoDrainCore:
                 else:
                     accumulated_line_coords.extend(line_segment.coords)
                 
-                print(f"[IterativeConstantSlopeLine] *** End of iteration {current_iteration + 1} ***") 
+                print(f"[IterativeConstantSlopeLine] *** End of Barrier iteration {current_iteration + 1} ***") 
                 if feedback:
-                    feedback.pushInfo(f"[IterativeConstantSlopeLine] *** End of iteration {current_iteration + 1} ***")
+                    feedback.pushInfo(f"[IterativeConstantSlopeLine] *** End of Barrier iteration {current_iteration + 1} ***")
                 break
 
             else: 
@@ -3760,17 +3764,18 @@ class TopoDrainCore:
             # Prepare for next iteration
             current_barrier_value = end_barrier_value if end_barrier_value is not None else None  # Update barrier value for next iteration
             current_start_point = next_start_point  # Update start point for next iteration
-            print(f"[IterativeConstantSlopeLine] *** End of iteration {current_iteration + 1} ***")
+            print(f"[IterativeConstantSlopeLine] *** End of Barrier iteration {current_iteration + 1} ***")
             if feedback:
-                feedback.pushInfo(f"[IterativeConstantSlopeLine] *** End of iteration {current_iteration + 1} ***")
+                feedback.pushInfo(f"[IterativeConstantSlopeLine] *** End of Barrier iteration {current_iteration + 1} ***")
             current_iteration += 1
-
 
         if len(accumulated_line_coords) >= 2:
             line = LineString(accumulated_line_coords)
             print(f"[IterativeConstantSlopeLine] Completed after {current_iteration + 1} iterations")
+            print(f"[IterativeConstantSlopeLine] Finished processing")
             if feedback:
                 feedback.pushInfo(f"[IterativeConstantSlopeLine] Completed after {current_iteration + 1} iterations")
+                feedback.pushInfo(f"[IterativeConstantSlopeLine] Finished processing")
             return line
         else:
             warnings.warn("[IterativeConstantSlopeLine] Warning: No valid line could be created")
@@ -3955,7 +3960,6 @@ class TopoDrainCore:
         slope_deviation_threshold: float = 0.2,
         max_iterations_slope: int = 30,
         feedback=None,
-        report_progress: bool = True
     ) -> gpd.GeoDataFrame:
         """
         Trace lines with constant slope starting from given points using a cost-distance approach
@@ -3980,17 +3984,19 @@ class TopoDrainCore:
             max_iterations_slope (int): Maximum number of iterations for line refinement (1-50, higher values allow more complex paths). Default 30.
             slope_deviation_threshold (float): Maximum allowed relative deviation from expected slope (0.0-1.0, e.g., 0.2 for 20% deviation before line cutting). Default 0.2.
             feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting and logging.
-            report_progress (bool): Whether to report progress via setProgress calls. Default True.
             
         Returns:
             gpd.GeoDataFrame: Traced constant slope lines with geometry column containing LineString objects.
         """
 
         if feedback:
-            feedback.pushInfo("[GetConstantSlopeLines] Starting constant slope tracing from start points...")
+            feedback.pushInfo(f"[GetConstantSlopeLines] Starting constant slope tracing from {len(start_points)} start points...")
             feedback.setProgress(0)
+            if feedback.isCanceled():
+                feedback.reportError("[GetConstantSlopeLines] Constant slope line creation was cancelled by user")
+                raise RuntimeError("Operation cancelled by user")
         else:
-            print("[GetConstantSlopeLines] Starting constant slope tracing from start points...")
+            print(f"[GetConstantSlopeLines] Starting constant slope tracing from {len(start_points)} start points...")
             print("[GetConstantSlopeLines] Progress: 0%")
 
         # Read DTM raster metadata information (used multiple times below)
@@ -4007,6 +4013,8 @@ class TopoDrainCore:
         finally:
             dtm_ds = None
 
+        # Features will be processed right before they are needed to avoid scope issues
+
         # Prepare destination, barrier and perimeter features for rasterization
         # If perimeter is a polygon, use its boundary for rasterization
         if perimeter is not None and not perimeter.empty:
@@ -4020,7 +4028,11 @@ class TopoDrainCore:
 
         # Create unique value raster masks for barrier features to classify start points
         barrier_unique_raster_path = os.path.join(self.temp_directory, "barrier_unique.tif")
-        barrier_unique_raster_path, barrier_id_to_geom = self._vector_to_mask_raster([barrier_features], dtm_path, output_path=barrier_unique_raster_path, unique_values=True, flatten_lines=True, buffer_lines=True)
+        if barrier_features:
+            barrier_processed_for_classification = self._features_to_single_linestring(barrier_features)
+            barrier_unique_raster_path, barrier_id_to_geom = self._vector_to_mask_raster([barrier_processed_for_classification], dtm_path, output_path=barrier_unique_raster_path, unique_values=True, flatten_lines=False, buffer_lines=True)
+        else:
+            barrier_unique_raster_path, barrier_id_to_geom = self._vector_to_mask_raster([], dtm_path, output_path=barrier_unique_raster_path, unique_values=True, flatten_lines=False, buffer_lines=True)
         barrier_unique_ds = gdal.Open(barrier_unique_raster_path, gdal.GA_ReadOnly)
         if barrier_unique_ds is None:
             raise RuntimeError(f"Cannot open barrier lines raster: {barrier_unique_raster_path}.{self._get_gdal_error_message()}")
@@ -4033,7 +4045,6 @@ class TopoDrainCore:
             barrier_unique_ds = None
         
         # Combine perimeter features with barrier mask if perimeter is provided
-        perimeter_offset = 0  # Track the offset used for perimeter values
         if perimeter is not None and not perimeter.empty:
             perimeter_unique_raster_path = os.path.join(self.temp_directory, "perimeter_unique.tif")
             perimeter_unique_raster_path, perimeter_id_to_geom = self._vector_to_mask_raster([perimeter_lines], dtm_path, output_path=perimeter_unique_raster_path, unique_values=True, flatten_lines=True, buffer_lines=True)
@@ -4048,7 +4059,6 @@ class TopoDrainCore:
                 
                 # Combine perimeter with barrier mask using offset values to avoid conflicts
                 barrier_max_value = np.max(barrier_unique_mask)
-                perimeter_offset = barrier_max_value  # Store offset for later use
                 perimeter_nonzero = perimeter_unique_mask > 0
                 if np.any(perimeter_nonzero):
                     # Offset perimeter values and add them to barrier mask
@@ -4061,8 +4071,8 @@ class TopoDrainCore:
             finally:
                 perimeter_unique_ds = None
 
-        # Create binary masks here, we use it multiple times below
-        barrier_binary_mask = (barrier_unique_mask > 0).astype(np.uint8)
+        # Create binary masks here
+        barrier_binary_mask = (barrier_unique_mask > 0).astype(np.uint8) # perimeter included in barrier unique mask
         barrier_binary_raster_path = os.path.join(self.temp_directory, f"barrier_binary.tif")
         driver = gdal.GetDriverByName('GTiff')
         barrier_binary_ds = driver.Create(barrier_binary_raster_path, dtm_cols, dtm_rows, 1, gdal.GDT_Byte)
@@ -4073,9 +4083,10 @@ class TopoDrainCore:
             barrier_binary_band.WriteArray(barrier_binary_mask)
         finally:
             barrier_binary_ds = None
-        # Read destination binary mask (unique mask not needed for destination features)
+        # Process destination features and create binary destination mask
+        destination_processed = self._features_to_single_linestring(destination_features)
         destination_binary_raster_path = os.path.join(self.temp_directory, "destination_binary.tif")
-        destination_binary_raster_path = self._vector_to_mask_raster([destination_features], dtm_path, output_path=destination_binary_raster_path, unique_values=False, flatten_lines=True, buffer_lines=True)
+        destination_binary_raster_path = self._vector_to_mask_raster([destination_processed], dtm_path, output_path=destination_binary_raster_path, unique_values=False, flatten_lines=False, buffer_lines=True)
         destination_binary_ds = gdal.Open(destination_binary_raster_path, gdal.GA_ReadOnly)
         if destination_binary_ds is None:
             raise RuntimeError(f"Cannot open destination lines raster: {destination_binary_raster_path}.{self._get_gdal_error_message()}")
@@ -4132,8 +4143,8 @@ class TopoDrainCore:
                     warnings.warn(f"[GetConstantSlopeLines] Warning: Start point {idx} is outside raster bounds, skipping")
                 continue
             
-            # Check if point is on barrier or perimeter mask
-            barrier_value = int(barrier_unique_mask[point_r, point_c])
+            # Check if point is on barrier/perimeter or destination mask
+            barrier_value = int(barrier_unique_mask[point_r, point_c]) # perimeter included in barrier unique mask
             destination_value = int(destination_binary_mask[point_r, point_c])
                             
             if destination_value > 0:
@@ -4233,32 +4244,42 @@ class TopoDrainCore:
         barrier_count = len([pt for pt in updated_start_points if pt.get('barrier_id_key', -1) > 0])
         neutral_count = len(updated_start_points) - barrier_count
         if feedback:
-            feedback.pushInfo(f"[GetConstantSlopeLines] Created {len(updated_start_points_gdf)} offset start points: {barrier_count} from barriers, {neutral_count} neutral")
+            feedback.pushInfo(f"[GetConstantSlopeLines] Created {len(updated_start_points_gdf)} updated start points: {barrier_count} from barriers, {neutral_count} neutral")
         else:
-            print(f"[GetConstantSlopeLines] Created {len(updated_start_points_gdf)} offset start points: {barrier_count} from barriers, {neutral_count} neutral")
+            print(f"[GetConstantSlopeLines] Created {len(updated_start_points_gdf)} updated start points: {barrier_count} from barriers, {neutral_count} neutral")
         
         if feedback:
-            feedback.pushInfo(f"[GetConstantSlopeLines] Starting processing of start points...")
+            feedback.pushInfo(f"[GetConstantSlopeLines] Starting processing of {len(updated_start_points_gdf)} start points...")
             feedback.setProgress(10)
             if feedback.isCanceled():
                 feedback.reportError("[GetConstantSlopeLines] Constant slope line creation was cancelled by user")
                 raise RuntimeError("Operation cancelled by user")
         else:
-            print(f"[GetConstantSlopeLines] Starting processing of start points...")
+            print(f"[GetConstantSlopeLines] Starting processing of {len(updated_start_points_gdf)} start points...")
             print("[GetConstantSlopeLines] Progress: 10%")
 
         # Process each start point individually based on barrier classification
         constant_slope_lines = []
+        start_point_attributes = []  # Store attributes for each successfully traced line
+        total_points = len(updated_start_points_gdf)
 
         # Iterate over updated start points
-        for pt_idx, pt_row in updated_start_points.iterrows():
+        for pt_idx, pt_row in updated_start_points_gdf.iterrows():
             start_point = pt_row.geometry
             barrier_id = pt_row.get('barrier_id_key', -1)
-
+            
+            # Calculate progress (10% already used for initialization, 90% for processing points)
+            point_progress = 10 + int((pt_idx / total_points) * 85)
+            
             if feedback:
-                feedback.pushInfo(f"[GetConstantSlopeLines] Processing point {pt_idx} (barrier_id_key={barrier_id})")
+                feedback.setProgress(point_progress)
+                if feedback.isCanceled():
+                    feedback.reportError("[GetConstantSlopeLines] Constant slope line creation was cancelled by user")
+                    raise RuntimeError("Operation cancelled by user")
+                feedback.pushInfo(f"[GetConstantSlopeLines] Processing point {pt_idx + 1}/{total_points} (barrier_id_key={barrier_id})")
             else:
-                print(f"[GetConstantSlopeLines] Processing point {pt_idx} (barrier_id_key={barrier_id})")
+                print(f"[GetConstantSlopeLines] Processing point {pt_idx + 1}/{total_points} (barrier_id_key={barrier_id})")
+                print(f"[GetConstantSlopeLines] Progress: {point_progress}%")
 
             # Create barrier and destination masks by combining the unique masks for this specific point
             # Initialize barrier and destination masks
@@ -4269,7 +4290,7 @@ class TopoDrainCore:
                 # use binary barrier mask for simple tracing without barriers as temporary destinations
                 barrier_mask = barrier_binary_mask.copy()
 
-            # destination mask is always binary
+            # destination mask is always binary in case of constant slope tracing (compared to create_keylines)
             destination_mask = destination_binary_mask.copy()
 
             # Handle overlapping barrier and destination cells --> adjust destination mask
@@ -4277,11 +4298,10 @@ class TopoDrainCore:
             barrier_destination_overlap = (barrier_mask == 1) & (destination_mask == 1)
             if np.any(barrier_destination_overlap):
                 destination_mask[barrier_destination_overlap] = 0
+                overlap_count = np.sum(barrier_destination_overlap)
                 if feedback:
-                    overlap_count = np.sum(barrier_destination_overlap)
                     feedback.pushInfo(f"[GetConstantSlopeLines] Adjusted {overlap_count} overlapping barrier/destination cells for point {pt_idx}")
                 else:
-                    overlap_count = np.sum(barrier_destination_overlap)
                     print(f"[GetConstantSlopeLines] Adjusted {overlap_count} overlapping barrier/destination cells for point {pt_idx}")
             
             # Save barrier and destination masks as raster files
@@ -4323,13 +4343,30 @@ class TopoDrainCore:
                 feedback.pushInfo(f"[GetConstantSlopeLines] Start point: {start_point}")
                 feedback.pushInfo(f"[GetConstantSlopeLines] Destination raster: {destination_raster_path}")
                 feedback.pushInfo(f"[GetConstantSlopeLines] Barrier raster: {barrier_raster_path}")
+                feedback.pushInfo(f"[GetConstantSlopeLines] slope: {slope}, slope_deviation_threshold: {slope_deviation_threshold}, max_iterations_slope: {max_iterations_slope}")
+                if allow_barriers_as_temp_destination:
+                    feedback.pushInfo(f"[GetConstantSlopeLines] allow_barriers_as_temp_destination: True, max_iterations_barrier: {max_iterations_barrier}")
             else:
                 print(f"[GetConstantSlopeLines] Parameters for point {pt_idx}:")
                 print(f"[GetConstantSlopeLines] Start point: {start_point}")
                 print(f"[GetConstantSlopeLines] Destination raster: {destination_raster_path}")
                 print(f"[GetConstantSlopeLines] Barrier raster: {barrier_raster_path}")
+                print(f"[GetConstantSlopeLines] slope: {slope}, slope_deviation_threshold: {slope_deviation_threshold}, max_iterations_slope: {max_iterations_slope}")
+                if allow_barriers_as_temp_destination:
+                    print(f"[GetConstantSlopeLines] allow_barriers_as_temp_destination: True, max_iterations_barrier: {max_iterations_barrier}")
 
             # Trace the constant slope line for this point
+            if feedback:
+                if allow_barriers_as_temp_destination:
+                    feedback.pushInfo(f"[GetConstantSlopeLines] Starting iterative tracing for point {pt_idx + 1}/{total_points}...")
+                else:
+                    feedback.pushInfo(f"[GetConstantSlopeLines] Starting tracing for point {pt_idx + 1}/{total_points}...")
+            else:
+                if allow_barriers_as_temp_destination:
+                    print(f"[GetConstantSlopeLines] Starting iterative tracing for point {pt_idx + 1}/{total_points}...")
+                else:
+                    print(f"[GetConstantSlopeLines] Starting tracing for point {pt_idx + 1}/{total_points}...")
+            
             if allow_barriers_as_temp_destination:
                 try:
                     traced_line = self._get_iterative_constant_slope_line(
@@ -4346,19 +4383,22 @@ class TopoDrainCore:
                     )
 
                     if traced_line is not None and not traced_line.is_empty:
-                        if feedback:
-                            feedback.pushInfo(f"[GetConstantSlopeLines] Successfully traced line for point {pt_idx}")
-                        else:
-                            print(f"[GetConstantSlopeLines] Successfully traced line for point {pt_idx}")
                         constant_slope_lines.append(traced_line)
+                        # Store attributes from the original start point
+                        point_attrs = pt_row.drop('geometry').to_dict()  # Get all attributes except geometry
+                        start_point_attributes.append(point_attrs)
+                        if feedback:
+                            feedback.pushInfo(f"[GetConstantSlopeLines] Successfully traced iterative line for point {pt_idx + 1}/{total_points} (total lines: {len(constant_slope_lines)})")
+                        else:
+                            print(f"[GetConstantSlopeLines] Successfully traced iterative line for point {pt_idx + 1}/{total_points} (total lines: {len(constant_slope_lines)})")
                     else:
                         raise RuntimeError("No line traced")
                 
                 except Exception as e:
                     if feedback:
-                        feedback.reportError(f"[GetConstantSlopeLines] Error tracing line for point {pt_idx}: {str(e)}")
+                        feedback.reportError(f"[GetConstantSlopeLines] Error tracing iterative line for point {pt_idx + 1}: {str(e)}")
                     else:
-                        print(f"[GetConstantSlopeLines] Error tracing line for point {pt_idx}: {str(e)}")
+                        print(f"[GetConstantSlopeLines] Error tracing iterative line for point {pt_idx + 1}: {str(e)}")
 
             else:
                 try:
@@ -4374,23 +4414,27 @@ class TopoDrainCore:
                     )
 
                     if traced_line is not None and not traced_line.is_empty:
-                        if feedback:
-                            feedback.pushInfo(f"[GetConstantSlopeLines] Successfully traced line for point {pt_idx}")
-                        else:
-                            print(f"[GetConstantSlopeLines] Successfully traced line for point {pt_idx}")
                         constant_slope_lines.append(traced_line)
+                        # Store attributes from the original start point
+                        point_attrs = pt_row.drop('geometry').to_dict()  # Get all attributes except geometry
+                        start_point_attributes.append(point_attrs)
+                        if feedback:
+                            feedback.pushInfo(f"[GetConstantSlopeLines] Successfully traced line for point {pt_idx + 1}/{total_points} (total lines: {len(constant_slope_lines)})")
+                        else:
+                            print(f"[GetConstantSlopeLines] Successfully traced line for point {pt_idx + 1}/{total_points} (total lines: {len(constant_slope_lines)})")
                     else:
                         raise RuntimeError("No line traced")
                 
                 except Exception as e:
                     if feedback:
-                        feedback.reportError(f"[GetConstantSlopeLines] Error tracing line for point {pt_idx}: {str(e)}")
+                        feedback.reportError(f"[GetConstantSlopeLines] Error tracing line for point {pt_idx + 1}: {str(e)}")
                     else:
-                        print(f"[GetConstantSlopeLines] Error tracing line for point {pt_idx}: {str(e)}")
+                        print(f"[GetConstantSlopeLines] Error tracing line for point {pt_idx + 1}: {str(e)}")
 
         # Create result GeoDataFrame
         if constant_slope_lines:
-            result_gdf = gpd.GeoDataFrame(geometry=constant_slope_lines, crs=self.crs)
+            # Create GeoDataFrame with geometries and preserved attributes
+            result_gdf = gpd.GeoDataFrame(start_point_attributes, geometry=constant_slope_lines, crs=self.crs)
         else:
             result_gdf = gpd.GeoDataFrame(crs=self.crs)
         
@@ -4399,452 +4443,12 @@ class TopoDrainCore:
             if feedback.isCanceled():
                 feedback.reportError("[GetConstantSlopeLines] Constant slope line creation was cancelled by user")
                 raise RuntimeError("Operation cancelled by user")
-            feedback.pushInfo(f"[GetConstantSlopeLines] Constant slope line creation complete: {len(result_gdf)} total lines")
+            feedback.pushInfo(f"[GetConstantSlopeLines] Constant slope line creation complete: {len(result_gdf)}/{total_points} lines traced")
         else:
-            print(f"[GetConstantSlopeLines] Constant slope line creation complete: {len(result_gdf)} total lines")
+            print(f"[GetConstantSlopeLines] Constant slope line creation complete: {len(result_gdf)}/{total_points} lines traced")
             print("[GetConstantSlopeLines] Progress: 100%")
         
         return result_gdf
-
-
-
-
-
-    def get_constant_slope_lines_old(
-        self,
-        dtm_path: str,
-        start_points: gpd.GeoDataFrame,
-        destination_features: list[gpd.GeoDataFrame],
-        slope: float = 0.01,
-        barrier_features: list[gpd.GeoDataFrame] = None,
-        allow_barriers_as_temp_destination: bool = False,
-        max_iterations_barrier: int = 30,
-        slope_deviation_threshold: float = 0.2,
-        max_iterations_slope: int = 20,
-        feedback=None,
-        report_progress: bool = True
-    ) -> gpd.GeoDataFrame:
-        """
-        Trace lines with constant slope starting from given points using a cost-distance approach
-        based on slope deviation, snapping true original start-points only when they overlapped barrier lines.
-        All barrier_features (lines, polygons, points) are rasterized into barrier_mask,
-        but only the line geometries are used for splitting and offsetting start points.
-        
-        Args:
-            dtm_path (str): Path to the digital terrain model (GeoTIFF).
-            start_points (gpd.GeoDataFrame): Starting points for slope line tracing (e.g. Keypoints).
-            destination_features (list[gpd.GeoDataFrame]): List of destination features (e.g. main ridge lines, area of interest).
-            slope (float): Desired slope for the lines (e.g., 0.01 for 1% downhill).
-            barrier_features (list[gpd.GeoDataFrame], optional): List of barrier features to avoid (e.g. main valley lines).
-            allow_barriers_as_temp_destination (bool): If True, barriers are included as temporary destinations for iterative tracing.
-            max_iterations_barrier (int): Maximum number of iterations for iterative tracing when allowing barriers as temporary destinations. Default 30.
-            max_iterations_slope (int): Maximum number of iterations for line refinement (1-50, higher values allow more complex paths). Default 20.
-            slope_deviation_threshold (float): Maximum allowed relative deviation from expected slope (0.0-1.0, e.g., 0.2 for 20% deviation before line cutting). Default 0.2.
-            feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting/logging.
-            report_progress (bool): Whether to report progress via setProgress calls. Default True. Set to False when called from create_keylines_core to avoid progress conflicts.
-            
-        Returns:
-            gpd.GeoDataFrame: Traced constant slope lines.
-        """
-        if feedback:
-            if feedback.isCanceled():
-                feedback.reportError("Constant slope line tracing was cancelled by user")
-                raise RuntimeError("Operation cancelled by user")
-
-        if feedback:
-            feedback.pushInfo("[ConstantSlopeLines] Starting tracing")
-            if report_progress:
-                feedback.setProgress(0)
-        else:
-            print("[ConstantSlopeLines] Starting tracing")
-
-        # Check for potential configuration issues
-        if allow_barriers_as_temp_destination and not barrier_features:
-            warning_msg = "[ConstantSlopeLines] Warning: allow_barriers_as_temp_destination=True but no barrier_features provided. This setting will have no effect."
-            if feedback:
-                feedback.pushWarning(warning_msg)
-            else:
-                warnings.warn(warning_msg)
-
-        # store original start points for adding later to the traced line geometry if starting from adjusted start point
-        original_pts = start_points.copy()
-
-        # --- Destination mask ---
-        if feedback:
-            feedback.pushInfo("[ConstantSlopeLines] Building destination mask…")
-        else:
-            print("[ConstantSlopeLines] Building destination mask…")
-        
-        # Process destination features - convert polygons to boundaries and flatten to LineStrings
-        destination_processed = TopoDrainCore._features_to_single_linestring(destination_features)
-
-        # Create binary destination mask
-        destination_raster_path = self._vector_to_mask_raster([destination_processed], dtm_path, unique_values=False, flatten_lines=False, buffer_lines=True) # destination_processed are already flattened. Binary mask raster, no need of unique values
-
-        # Read destination mask for later processing
-        dest_ds = gdal.Open(destination_raster_path, gdal.GA_ReadOnly)
-        if dest_ds is None:
-            raise RuntimeError(f"Cannot open destination raster: {destination_raster_path}.{self._get_gdal_error_message()}")
-            
-        try:
-            dest_band = dest_ds.GetRasterBand(1)
-            destination_mask = dest_band.ReadAsArray()
-            if destination_mask is None:
-                raise RuntimeError(f"Cannot read destination mask data from: {destination_raster_path}.{self._get_gdal_error_message()}")
-        finally:
-            dest_ds = None
-            
-        if feedback:
-            feedback.pushInfo("[ConstantSlopeLines] Destination mask ready")
-        else:
-            print("[ConstantSlopeLines] Destination mask ready")
-
-        # --- Barrier mask ---
-        if barrier_features:
-            if feedback:
-                feedback.pushInfo("[ConstantSlopeLines] Preparing barrier mask...")
-            else:
-                print("[ConstantSlopeLines] Preparing barrier mask...")
-
-            # Process barrier features - convert polygons to boundaries like destinations
-            barrier_processed = TopoDrainCore._features_to_single_linestring(barrier_features)
-
-            # Create binary barrier mask (always binary: 0=free, 1=barrier)
-            barrier_raster_path = self._vector_to_mask_raster([barrier_processed], dtm_path, unique_values=False, flatten_lines=False, buffer_lines=True)
-            
-            # Create barrier value raster with unique values to identify which barrier feature each cell belongs to (needed for overlap analysis and allow barrier as destination option)
-            barrier_value_raster_path, barrier_id_to_geom = self._vector_to_mask_raster([barrier_processed], dtm_path, unique_values=True, flatten_lines=False, buffer_lines=True)
-
-            # Read barrier masks for processing
-            barrier_ds = gdal.Open(barrier_raster_path, gdal.GA_ReadOnly)
-            if barrier_ds is None:
-                raise RuntimeError(f"Cannot open barrier raster: {barrier_raster_path}.{self._get_gdal_error_message()}")
-                
-            try:
-                barrier_band = barrier_ds.GetRasterBand(1)
-                barrier_mask = barrier_band.ReadAsArray()
-                if barrier_mask is None:
-                    raise RuntimeError(f"Cannot read barrier mask data from: {barrier_raster_path}.{self._get_gdal_error_message()}")
-            finally:
-                barrier_ds = None
-                
-            barrier_value_ds = gdal.Open(barrier_value_raster_path, gdal.GA_ReadOnly)
-            if barrier_value_ds is None:
-                raise RuntimeError(f"Cannot open barrier value raster: {barrier_value_raster_path}.{self._get_gdal_error_message()}")
-                
-            try:
-                barrier_value_band = barrier_value_ds.GetRasterBand(1)
-                barrier_value_mask = barrier_value_band.ReadAsArray()
-                if barrier_value_mask is None:
-                    raise RuntimeError(f"Cannot read barrier value mask data from: {barrier_value_raster_path}.{self._get_gdal_error_message()}")
-            finally:
-                barrier_value_ds = None
-
-            # Handle overlapping barrier and original destination cells --> adjust destination mask
-            dest_barrier_overlap = (barrier_mask == 1) & (destination_mask == 1)
-            if np.any(dest_barrier_overlap):
-                num_overlaps = np.sum(dest_barrier_overlap)
-                if feedback:
-                    feedback.pushInfo(f"[ConstantSlopeLines] Found {num_overlaps} overlapping barrier/original destination cells")
-                else:
-                    print(f"[ConstantSlopeLines] Found {num_overlaps} overlapping barrier/original destination cells")
-                # Set destination_mask to 0 at overlapping cells, because not possible to be barrier and destination at the same time
-                destination_mask[dest_barrier_overlap] = 0
-                # update destination raster
-                dest_write_ds = gdal.Open(destination_raster_path, gdal.GA_Update)
-                if dest_write_ds is None:
-                    raise RuntimeError(f"Cannot open destination raster for writing: {destination_raster_path}.{self._get_gdal_error_message()}")
-                    
-                try:
-                    dest_write_band = dest_write_ds.GetRasterBand(1)
-                    dest_write_band.WriteArray(destination_mask)
-                    dest_write_ds.FlushCache()
-                finally:
-                    dest_write_ds = None
-            else:
-                if feedback:
-                    feedback.pushInfo("[ConstantSlopeLines] No overlapping barrier/original destination cells found")
-                else:
-                    print("[ConstantSlopeLines] No overlapping barrier/original destination cells found")
-            
-            # Check if start points are on barrier raster cells using precise raster-based overlap detection
-            if feedback:
-                feedback.pushInfo("[ConstantSlopeLines] Check if start points lies on barrier features...")
-            else:
-                print("[ConstantSlopeLines] Check if start points lies on barrier features...")
-            
-            # Get barrier values at each start point location using raster lookup
-            point_barrier_info = []
-            dtm_ds = gdal.Open(dtm_path, gdal.GA_ReadOnly)
-            if dtm_ds is None:
-                raise RuntimeError(f"Cannot open DTM raster: {dtm_path}.{self._get_gdal_error_message()}")
-                
-            try:
-                dtm_geotransform = dtm_ds.GetGeoTransform()
-                
-                for orig_idx, row in original_pts.iterrows():
-                    pt = row.geometry
-                    # Get raster indices for the point using TopoDrainCore utility function
-                    pixel_coords = TopoDrainCore._coords_to_pixel_indices([pt.coords[0]], dtm_geotransform)
-                    pt_c, pt_r = pixel_coords[0]
-                    
-                    # Check if point is within raster bounds
-                    if (0 <= pt_r < barrier_mask.shape[0] and 0 <= pt_c < barrier_mask.shape[1]):
-                        barrier_binary_value = int(barrier_mask[pt_r, pt_c])
-                        barrier_feature_id = int(barrier_value_mask[pt_r, pt_c])
-                        
-                        point_barrier_info.append({
-                            'orig_idx': orig_idx,
-                            'is_on_barrier': barrier_binary_value == 1,
-                            'barrier_feature_id': barrier_feature_id if barrier_binary_value == 1 else None,
-                            'row': row
-                        })
-                    else:
-                        # Point outside raster bounds - treat as non-overlapping
-                        point_barrier_info.append({
-                            'orig_idx': orig_idx,
-                            'is_on_barrier': False,
-                            'barrier_feature_id': None,
-                            'row': row
-                        })
-            finally:
-                dtm_ds = None
-            
-            # Count overlapping vs non-overlapping for reporting
-            overlapping_count = sum(1 for info in point_barrier_info if info['is_on_barrier'])
-            non_overlapping_count = len(point_barrier_info) - overlapping_count
-            
-            if feedback:
-                feedback.pushInfo(f"[ConstantSlopeLines]  → {overlapping_count} overlapping on barrier cells, {non_overlapping_count} non-overlapping")
-            else:
-                print(f"[ConstantSlopeLines]  → {overlapping_count} overlapping on barrier cells, {non_overlapping_count} non-overlapping")
-        else:
-            if feedback:
-                feedback.pushInfo("[ConstantSlopeLines] No barrier features provided")
-            else:
-                print("[ConstantSlopeLines] No barrier features provided")
-            barrier_mask = None
-            barrier_raster_path = None
-            barrier_value_raster_path = None
-            barrier_id_to_geom = {}
-            # Create point_barrier_info for all points as non-overlapping
-            point_barrier_info = []
-            for orig_idx, row in original_pts.iterrows():
-                point_barrier_info.append({
-                    'orig_idx': orig_idx,
-                    'is_on_barrier': False,
-                    'barrier_feature_id': None,
-                    'row': row
-                })
-            
-            # Count overlapping vs non-overlapping for reporting (all non-overlapping when no barriers)
-            overlapping_count = 0
-            non_overlapping_count = len(point_barrier_info)
-
-        # --- Trace slope lines directly from point_barrier_info ---
-        results = []
-        total_points = overlapping_count*2 + non_overlapping_count  # each overlapping point creates two lines (left and right offset)
-        current_point = 0
-
-        if feedback:
-            feedback.pushInfo("[ConstantSlopeLines] Starting slope line tracing...")
-            if report_progress:
-                feedback.setProgress(40)
-        else:
-            print("[ConstantSlopeLines] Starting slope line tracing...")
-
-        for info in point_barrier_info:
-            # Check for cancellation at the start of each point processing
-            if feedback and feedback.isCanceled():
-                feedback.reportError("Constant slope line tracing was cancelled by user")
-                raise RuntimeError("Operation cancelled by user")
-                
-            orig_idx = info['orig_idx']
-            orig_pt = info['row'].geometry
-            is_on_barrier = info['is_on_barrier']
-            barrier_feature_id = info['barrier_feature_id']
-            orig_attrs = original_pts.loc[orig_idx].drop(labels="geometry").to_dict()
-
-            if is_on_barrier:
-                # Point is on barrier - need to create adjusted start points
-                # Point is on barrier - create offset points (reduced logging)
-
-                # Get the specific barrier geometry that this point overlaps with
-                barrier_geom = barrier_id_to_geom.get(barrier_feature_id)
-                if barrier_geom is None:
-                    if feedback:
-                        feedback.pushWarning(f"[ConstantSlopeLines] Warning: No barrier geometry found for feature ID {barrier_feature_id} - skipping point {orig_idx}")
-                    else:
-                        warnings.warn(f"[ConstantSlopeLines] Warning: No barrier geometry found for feature ID {barrier_feature_id} - skipping point {orig_idx}")
-                    continue
-
-                # Get orthogonal offset points
-                left_pt, right_pt = TopoDrainCore._get_orthogonal_directions_start_points(
-                    barrier_raster_path=barrier_raster_path,
-                    point=orig_pt,
-                    line_geom=barrier_geom
-                )
-
-                # Trace from both offset points (if they exist)
-                adj_idx = 0
-                for offset_pt, offset_name in [(left_pt, "left"), (right_pt, "right")]:
-                    current_point += 1
-                    if offset_pt is None:
-                        # Check if adjusted point is still on barrier (warn if so) ##### maybe not necessary
-                        if offset_pt:
-                            if feedback:
-                                feedback.pushWarning(f"[ConstantSlopeLines] Warning: No {offset_name} offset point could be created for {orig_idx}")
-                            else:
-                                warnings.warn(f"[ConstantSlopeLines] Warning: No {offset_name} offset point could be created for {orig_idx}")
-                        continue
-
-                    # Progress reporting 
-                    adj_idx += 1
-                    current_point += 1
-
-                    if feedback:
-                        feedback.pushInfo(f"[ConstantSlopeLines] Processing point {current_point}/{total_points} - Point {orig_idx}...")
-                    elif not feedback:
-                        print(f"[ConstantSlopeLines] Processing point {current_point}/{total_points} - Point {orig_idx}...")
-
-                    # Trace line from offset point
-                    if allow_barriers_as_temp_destination and barrier_features and barrier_value_raster_path is not None:
-                        raw_line = self._get_iterative_constant_slope_line(
-                            dtm_path=dtm_path,
-                            start_point=offset_pt,
-                            destination_raster_path=destination_raster_path,
-                            slope=slope,
-                            barrier_raster_path=barrier_value_raster_path,  # Use barrier value raster for iterative tracing
-                            initial_barrier_value=barrier_feature_id,
-                            max_iterations_barrier=max_iterations_barrier,
-                            slope_deviation_threshold=slope_deviation_threshold,
-                            max_iterations_slope=max_iterations_slope,
-                            feedback=feedback
-                        )
-                    else:
-                        raw_line = self._get_constant_slope_line(
-                            dtm_path=dtm_path,
-                            start_point=offset_pt,
-                            destination_raster_path=destination_raster_path,
-                            slope=slope,
-                            barrier_raster_path=barrier_raster_path,  # Use binary barrier raster for simple tracing
-                            max_iterations_slope=max_iterations_slope,
-                            slope_deviation_threshold=slope_deviation_threshold,
-                            feedback=feedback
-                        )
-
-                    # Calculate progress percentage for 40-90% range
-                    progress_pct = int(40 + (current_point / total_points) * 50)
-
-                    if feedback:
-                        feedback.pushInfo(f"[ConstantSlopeLines] Processed {progress_pct}%")
-                    else:
-                        print(f"[ConstantSlopeLines] Processed {progress_pct}%")
-                    if feedback and report_progress:
-                        feedback.setProgress(progress_pct)
-
-                    if not raw_line:
-                        # No line generated (reduced logging)
-                        continue
-
-                    # Snap line to original start point
-                    raw_line = TopoDrainCore._snap_line_to_point(raw_line, orig_pt, "start")
-
-                    # Append to results
-                    results.append({
-                        "geometry": raw_line,
-                        "orig_index": orig_idx,
-                        "adj_index": adj_idx,
-                        **orig_attrs
-                    })
-
-            else:
-                # Point is not on barrier - trace directly from original point
-                current_point += 1
-
-                # Progress reporting
-                if feedback:
-                    feedback.pushInfo(f"[ConstantSlopeLines] Processing point {current_point}/{total_points} - Point {orig_idx}...")
-                elif not feedback:
-                    print(f"[ConstantSlopeLines] Processing point {current_point}/{total_points} - Point {orig_idx}...")
-
-                # Trace line from original point
-                if allow_barriers_as_temp_destination and barrier_value_raster_path is not None:
-                    raw_line = self._get_iterative_constant_slope_line(
-                        dtm_path=dtm_path,
-                        start_point=orig_pt,
-                        destination_raster_path=destination_raster_path,
-                        slope=slope,
-                        barrier_raster_path=barrier_value_raster_path,  # Use barrier value raster for iterative tracing
-                        initial_barrier_value=None,  # No initial barrier value for non-overlapping points
-                        max_iterations_barrier=max_iterations_barrier,  # max iterations for iterative tracing (nr of times barriers used as temporary destinations)
-                        slope_deviation_threshold=slope_deviation_threshold,
-                        max_iterations_slope=max_iterations_slope,
-                        feedback=feedback
-                    )
-                else:
-                    raw_line = self._get_constant_slope_line(
-                        dtm_path=dtm_path,
-                        start_point=orig_pt,
-                        destination_raster_path=destination_raster_path,
-                        slope=slope,
-                        barrier_raster_path=barrier_raster_path,  # Use binary barrier raster for simple tracing
-                        max_iterations_slope=max_iterations_slope,
-                        slope_deviation_threshold=slope_deviation_threshold,
-                        feedback=feedback
-                    )
-
-                # Calculate progress percentage for 40-90% range
-                progress_pct = int(40 + (current_point / total_points) * 50)
-
-                if feedback:
-                    feedback.pushInfo(f"[ConstantSlopeLines] Processed {progress_pct}%")
-                else:
-                    print(f"[ConstantSlopeLines] Processed {progress_pct}%")
-                if feedback and report_progress:
-                    feedback.setProgress(progress_pct)
-
-                if not raw_line:
-                    if feedback:
-                        feedback.pushInfo(f"[ConstantSlopeLines]   → No line for point {orig_idx}")
-                    else:
-                        print(f"[ConstantSlopeLines]   → No line for point {orig_idx}")
-                    continue
-
-                # Append to results (no snapping needed since we started from original point)
-                results.append({
-                    "geometry": raw_line,
-                    "orig_index": orig_idx,
-                    **orig_attrs
-                })
-
-                if feedback:
-                    feedback.pushInfo(f"[ConstantSlopeLines]   → Line created for {orig_idx}")
-                else:
-                    print(f"[ConstantSlopeLines]   → Line created for {orig_idx}")
-
-        if not results:
-            if feedback:
-                feedback.reportError("[ConstantSlopeLines] No slope lines could be created.")
-            raise RuntimeError("No slope lines could be created.")
-
-        if feedback:
-            if feedback.isCanceled():
-                feedback.reportError("Constant slope line tracing was cancelled by user")
-                raise RuntimeError("Operation cancelled by user")
-            
-        if feedback and report_progress:
-            feedback.setProgress(100)
-        if feedback:
-            feedback.pushInfo(f"[ConstantSlopeLines] Done: generated {len(results)} lines")
-        else:
-            print(f"[ConstantSlopeLines] Done: generated {len(results)} lines")
-
-        # build GeoDataFrame including all original attributes
-        out_gdf = gpd.GeoDataFrame(results, crs=self.crs)
-        
-        return out_gdf
-    
 
     def adjust_constant_slope_after(
         self,
@@ -4853,14 +4457,14 @@ class TopoDrainCore:
         change_after: float,
         slope_after: float,
         destination_features: list[gpd.GeoDataFrame],
+        perimeter: gpd.GeoDataFrame = None,
         barrier_features: list[gpd.GeoDataFrame] = None,
         allow_barriers_as_temp_destination: bool = False,
         max_iterations_barrier: int = 30,
         slope_deviation_threshold: float = 0.2,
         max_iterations_slope: int = 20,
-        feedback=None,
-        report_progress: bool = True
-    ) -> gpd.GeoDataFrame:
+        feedback=None
+        ) -> gpd.GeoDataFrame:
         """
         Modify constant slope lines by changing to a secondary slope after a specified distance.
         
@@ -4873,13 +4477,13 @@ class TopoDrainCore:
             change_after (float): Fraction of line length where slope changes (0.0-1.0, e.g., 0.5 = from halfway).
             slope_after (float): New slope to apply after the change point (e.g., 0.01 for 1% downhill).
             destination_features (list[gpd.GeoDataFrame]): Destination features for the new slope sections, e.g. ridge lines in case of keylines.
+            perimeter (gpd.GeoDataFrame, optional): Polygon features defining area of interest. Acts as both barrier (boundary cannot be crossed) and is used to check if points are inside the perimeter area.
             barrier_features (list[gpd.GeoDataFrame], optional): Barrier features to avoid, e.g. valley lines in case of keylines.
             allow_barriers_as_temp_destination (bool): If True, barriers are included as temporary destinations for iterative tracing.
             max_iterations_barrier (int): Maximum number of iterations when using barriers as temporary destinations.
             slope_deviation_threshold (float): Maximum allowed relative deviation from expected slope (0.0-1.0, e.g., 0.2 for 20% deviation before line cutting).
             max_iterations_slope (int): Maximum number of iterations for line refinement.
             feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting.
-            report_progress (bool): Whether to report progress via setProgress calls. Default True. Set to False when called from create_keylines_core to avoid progress conflicts.
             
         Returns:
             gpd.GeoDataFrame: Modified lines with secondary slopes applied.
@@ -4889,16 +4493,15 @@ class TopoDrainCore:
                 feedback.reportError("Slope adjustment was cancelled by user")
                 raise RuntimeError("Operation cancelled by user")
             
-
         if feedback:
             feedback.pushInfo(f"[AdjustConstantSlopeAfter] Starting adjustment of {len(input_lines)} lines...")
-            if report_progress:
-                feedback.setProgress(0)
+            feedback.setProgress(0)
         else:
             print(f"[AdjustConstantSlopeAfter] Starting adjustment of {len(input_lines)} lines...")
+            print("[AdjustConstantSlopeAfter] Progress: 0%")
 
         # Validate change_after parameter
-        if not (0.0 <= change_after <= 1.0):
+        if not (0.0 < change_after < 1.0):
             raise ValueError("change_after must be between 0.0 and 1.0")
         
         # Check for potential configuration issues
@@ -4917,8 +4520,7 @@ class TopoDrainCore:
 
         if feedback:
             feedback.pushInfo(f"[AdjustConstantSlopeAfter] Phase 1: Processing {len(input_lines)} lines to create first parts...")
-            if report_progress:
-                feedback.setProgress(10)
+            feedback.setProgress(10)
         else:
             print(f"[AdjustConstantSlopeAfter] Phase 1: Processing {len(input_lines)} lines to create first parts...")
 
@@ -4931,7 +4533,7 @@ class TopoDrainCore:
             line_geom = row.geometry
             
             # Progress reporting for Phase 1 (10-30% range)
-            if feedback and report_progress:
+            if feedback:
                 phase1_progress = int(10 + ((idx + 1) / total_lines) * 20)
                 feedback.setProgress(phase1_progress)
             
@@ -5047,17 +4649,16 @@ class TopoDrainCore:
                     raise RuntimeError("Operation cancelled by user")
                 
             if feedback:
-                feedback.pushInfo(f"[AdjustConstantSlopeAfter] Phase 2: Tracing {len(all_start_points)} second parts in parallel...")
-                if report_progress:
-                    feedback.setProgress(40)
+                feedback.pushInfo(f"[AdjustConstantSlopeAfter] Phase 2: Tracing {len(all_start_points)} second parts...")
+                feedback.setProgress(40)
             else:
-                print(f"[AdjustConstantSlopeAfter] Phase 2: Tracing {len(all_start_points)} second parts in parallel...")
+                print(f"[AdjustConstantSlopeAfter] Phase 2: Tracing {len(all_start_points)} second parts..")
 
             # Set CRS after creation when we have geometry column
-            second_part_lines = second_part_lines.set_crs(input_lines.crs)
+            second_part_lines = second_part_lines.set_crs(self.crs)
             
             # Create GeoDataFrame with all start points and add mapping information
-            start_points_gdf = gpd.GeoDataFrame(geometry=all_start_points, crs=input_lines.crs)
+            start_points_gdf = gpd.GeoDataFrame(geometry=all_start_points, crs=self.crs)
             start_points_gdf['original_line_idx'] = [line_mapping[i] for i in range(len(all_start_points))]
             
             try:
@@ -5067,14 +4668,14 @@ class TopoDrainCore:
                     start_points=start_points_gdf,
                     destination_features=destination_features,
                     slope=slope_after,
+                    perimeter=perimeter,
                     barrier_features=barrier_features,
                     allow_barriers_as_temp_destination=allow_barriers_as_temp_destination,
                     max_iterations_barrier=max_iterations_barrier,
                     slope_deviation_threshold=slope_deviation_threshold,
                     max_iterations_slope=max_iterations_slope,
-                    feedback=feedback, 
-                    report_progress=True  
-                )
+                    feedback=feedback
+            )
 
                 if feedback:
                     feedback.pushInfo(f"[AdjustConstantSlopeAfter] Successfully traced {len(second_part_lines)} second parts")
@@ -5099,8 +4700,7 @@ class TopoDrainCore:
 
         if feedback:
             feedback.pushInfo(f"[AdjustConstantSlopeAfter] Phase 3: Combining first and second parts...")
-            if report_progress:
-                feedback.setProgress(80)
+            feedback.setProgress(80)
         else:
             print(f"[AdjustConstantSlopeAfter] Phase 3: Combining first and second parts...")
                  
@@ -5109,7 +4709,7 @@ class TopoDrainCore:
         
         for data_idx, part_data in enumerate(first_parts_data):
             # Progress reporting for Phase 3 (80-90% range)
-            if feedback and report_progress and total_parts > 0:
+            if feedback and total_parts > 0:
                 phase3_progress = int(80 + ((data_idx + 1) / total_parts) * 10)
                 feedback.setProgress(phase3_progress)
                 
@@ -5170,10 +4770,10 @@ class TopoDrainCore:
         
         # Create result GeoDataFrame
         if adjusted_lines:
-            result_gdf = gpd.GeoDataFrame(adjusted_lines, crs=input_lines.crs).reset_index(drop=True)
+            result_gdf = gpd.GeoDataFrame(adjusted_lines, crs=self.crs).reset_index(drop=True)
         else:
-            result_gdf = gpd.GeoDataFrame(crs=input_lines.crs)
-        
+            result_gdf = gpd.GeoDataFrame(crs=self.crs)
+
         if feedback:
             if feedback.isCanceled():
                 feedback.reportError("Slope adjustment was cancelled by user")
@@ -5182,8 +4782,7 @@ class TopoDrainCore:
 
         if feedback:
             feedback.pushInfo(f"[AdjustConstantSlopeAfter] Adjustment complete: {len(result_gdf)} adjusted lines")
-            if report_progress:
-                feedback.setProgress(100)
+            feedback.setProgress(100)
         else:
             print(f"[AdjustConstantSlopeAfter] Adjustment complete: {len(result_gdf)} adjusted lines")
 
@@ -5594,9 +5193,9 @@ class TopoDrainCore:
         perimeter_count = len([pt for pt in updated_start_points if pt.get('perimeter_id_key', -1) > 0])
         neutral_count = len(updated_start_points) - valley_count - ridge_count - perimeter_count
         if feedback:
-            feedback.pushInfo(f"[CreateKeylines] Created {len(updated_start_points_gdf)} offset start points: {valley_count} from valleys, {ridge_count} from ridges, {perimeter_count} from perimeters, {neutral_count} neutral")
+            feedback.pushInfo(f"[CreateKeylines] Created {len(updated_start_points_gdf)} updated start points: {valley_count} from valleys, {ridge_count} from ridges, {perimeter_count} from perimeters, {neutral_count} neutral")
         else:
-            print(f"[CreateKeylines] Created {len(updated_start_points_gdf)} offset start points: {valley_count} from valleys, {ridge_count} from ridges, {perimeter_count} from perimeters, {neutral_count} neutral")
+            print(f"[CreateKeylines] Created {len(updated_start_points_gdf)} updated start points: {valley_count} from valleys, {ridge_count} from ridges, {perimeter_count} from perimeters, {neutral_count} neutral")
 
         # Start iteration, keep iterating until no new start points are found
         # Initialize variables
@@ -5614,13 +5213,13 @@ class TopoDrainCore:
             # Progress: 10% at start, 90% spread over iterations
             progress = 10 + int((iteration - 1) * (90 / expected_iterations_keyline))
             if feedback:
-                feedback.pushInfo(f"[CreateKeylines] **** Iteration {iteration}/ca. {expected_iterations_keyline}-max. {max_iterations_keyline}: Processing {len(current_start_points)} start points ****")
+                feedback.pushInfo(f"[CreateKeylines] **** Ridge/Valley Iteration {iteration}/ca. {expected_iterations_keyline}-max. {max_iterations_keyline}: Processing {len(current_start_points)} start points ****")
                 feedback.setProgress(min(progress, 99))
                 if feedback.isCanceled():
                     feedback.reportError("[CreateKeylines] Keyline creation was cancelled by user")
                     raise RuntimeError("Operation cancelled by user")
             else:
-                print(f"[CreateKeylines] **** Iteration {iteration}/ca. {expected_iterations_keyline}-max. {max_iterations_keyline}: Processing {len(current_start_points)} start points ****")
+                print(f"[CreateKeylines] **** Ridge/Valley Iteration {iteration}/ca. {expected_iterations_keyline}-max. {max_iterations_keyline}: Processing {len(current_start_points)} start points ****")
                 print(f"[CreateKeylines] Progress: {progress}%")
 
             # Process each start point individually based on valley_id_key, ridge_id_key, perimeter_id_key
@@ -5810,8 +5409,6 @@ class TopoDrainCore:
 
                 # Trace the constant slope line for this point
                 try:
-                    if feedback:
-                        feedback.pushInfo(f"[CreateKeylines] ********* Tracing line for point with slope {use_slope} *********")
                     traced_line = self._get_constant_slope_line(
                         dtm_path=dtm_path,
                         start_point=start_point,
@@ -5842,8 +5439,6 @@ class TopoDrainCore:
                 # Apply slope adjustment if needed
                 if use_change_after is not None and use_slope_after is not None:
                     try:
-                        if feedback:
-                            feedback.pushInfo(f"********* [CreateKeylines] Adjusting slope after {use_change_after} of line length to slope {use_slope_after} *********")
                         adjusted_line = self._adjust_constant_slope_after(
                             dtm_path=dtm_path,
                             input_line=traced_line,
@@ -5881,7 +5476,13 @@ class TopoDrainCore:
                     'ridge_id': ridge_id,
                     'perimeter_id': perimeter_id,
                     'direction_type': direction_type,
-                    'pt_idx': pt_idx
+                    'pt_idx': pt_idx,
+                    'valley_id': valley_id,
+                    'slope': use_slope,
+                    'change_after': use_change_after,
+                    'slope_after': use_slope_after,
+                    # Add any additional point attributes from the original point
+                    'point_attributes': pt_row.drop('geometry').to_dict()
                 }
                 iteration_keylines.append(line_data)
                     
@@ -5967,7 +5568,7 @@ class TopoDrainCore:
                 break
             
             # Apply line direction correction to ensure all lines are valley→ridge oriented
-            corrected_lines = []
+            corrected_lines_with_attributes = []
             for line_data in iteration_keylines:
                 line = line_data['line']
                 ridge_id = line_data['ridge_id']
@@ -5984,13 +5585,33 @@ class TopoDrainCore:
                         feedback.pushInfo(f"[CreateKeylines] Reversed line direction for ridge→valley traced line from point {pt_idx}")
                     else:
                         print(f"[CreateKeylines] Reversed line direction for ridge→valley traced line from point {pt_idx}")
-                    corrected_lines.append(corrected_line)
                 else:
                     # Keep original direction for valley→ridge traced lines
-                    corrected_lines.append(line)
+                    corrected_line = line
+                
+                # Create line attributes dictionary
+                line_attributes = {
+                    'geometry': corrected_line,
+                    'slope': line_data['slope'],
+                    'direction_type': line_data['direction_type'],
+                    'valley_id': line_data['valley_id'],
+                    'ridge_id': line_data['ridge_id'],
+                    'perimeter_id': line_data['perimeter_id']
+                }
+                
+                # Add change_after and slope_after if they were used
+                if line_data['change_after'] is not None:
+                    line_attributes['change_after'] = line_data['change_after']
+                if line_data['slope_after'] is not None:
+                    line_attributes['slope_after'] = line_data['slope_after']
+                
+                # Add any additional point attributes
+                line_attributes.update(line_data['point_attributes'])
+                
+                corrected_lines_with_attributes.append(line_attributes)
             
             # Add all corrected lines from this iteration to all_keylines
-            all_keylines.extend(corrected_lines)
+            all_keylines.extend(corrected_lines_with_attributes)
             
             if feedback:
                 feedback.pushInfo(f"[CreateKeylines] Iteration {iteration}: Generated {len(iteration_keylines)} keylines")
@@ -6000,10 +5621,10 @@ class TopoDrainCore:
             if not new_start_points:
                 if feedback:
                     feedback.pushInfo(f"[CreateKeylines] Iteration {iteration}: No new start points generated, stopping iteration")
-                    feedback.pushInfo(f"[CreateKeylines] **** End of iteration {iteration} ****")
+                    feedback.pushInfo(f"[CreateKeylines] **** End of Ridge/Valley iteration {iteration} ****")
                 else:
                     print(f"[CreateKeylines] Iteration {iteration}: No new start points generated, stopping iteration")
-                    print(f"[CreateKeylines] **** End of iteration {iteration} ****")
+                    print(f"[CreateKeylines] **** End of Ridge/Valley iteration {iteration} ****")
                 break
             
             # Create GeoDataFrame from new start points for next iteration
@@ -6011,10 +5632,10 @@ class TopoDrainCore:
             
             if feedback:
                 feedback.pushInfo(f"[CreateKeylines] Iteration {iteration}: Generated {len(new_start_points)} new start points for next iteration")
-                feedback.pushInfo(f"[CreateKeylines] **** End of iteration {iteration} ****")
+                feedback.pushInfo(f"[CreateKeylines] **** End of Ridge/Valley iteration {iteration} ****")
             else:
                 print(f"[CreateKeylines] Iteration {iteration}: Generated {len(new_start_points)} new start points for next iteration")
-                print(f"[CreateKeylines] **** End of iteration {iteration} ****")
+                print(f"[CreateKeylines] **** End of Ridge/Valley iteration {iteration} ****")
 
             # Increment iteration counter
             iteration += 1
@@ -6028,7 +5649,16 @@ class TopoDrainCore:
 
         # Create result GeoDataFrame
         if all_keylines:
-            result_gdf = gpd.GeoDataFrame(geometry=all_keylines, crs=self.crs)
+            # Extract geometries and attributes separately
+            geometries = [line_data['geometry'] for line_data in all_keylines]
+            attributes_list = []
+            
+            for line_data in all_keylines:
+                # Create attributes dict without geometry
+                attrs = {key: value for key, value in line_data.items() if key != 'geometry'}
+                attributes_list.append(attrs)
+            
+            result_gdf = gpd.GeoDataFrame(attributes_list, geometry=geometries, crs=self.crs)
         else:
             result_gdf = gpd.GeoDataFrame(crs=self.crs)
         
