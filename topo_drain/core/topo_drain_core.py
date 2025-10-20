@@ -19,7 +19,7 @@ from shapely.ops import linemerge, nearest_points, substring
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import savgol_filter
 import re
-from osgeo import gdal, gdal_array, ogr
+from osgeo import gdal, ogr
 
 # ---  Class TopoDrainCore ---
 class TopoDrainCore:
@@ -252,6 +252,27 @@ class TopoDrainCore:
                 feedback.reportError(error_msg)
             raise RuntimeError(error_msg)
         
+        # Helper function to determine if a message should be displayed
+        def should_show_message(msg):
+            if '%' not in msg:
+                return True  # Show all non-percentage messages
+            
+            try:
+                parts = msg.split('%')
+                if len(parts) > 1:
+                    progress_part = parts[0].strip().split()[-1]
+                    progress = int(progress_part)
+                    
+                    # Only show Initializing/Progress messages at 25% intervals
+                    if ("Initializing:" in msg or "Progress:" in msg):
+                        return progress % 25 == 0 or progress == 100
+                    else:
+                        return True  # Show other percentage messages
+                else:
+                    return True  # Show messages that contain % but can't be parsed
+            except (ValueError, IndexError):
+                return True  # Show messages that contain % but can't be parsed as progress
+
         # Create callback function for progress reporting and logging
         def callback_func(message):
             # Check for cancellation first - this allows immediate cancellation during WhiteboxTools execution
@@ -262,21 +283,24 @@ class TopoDrainCore:
                 # Parse progress percentage if available and report_progress is True
                 if '%' in message and report_progress:
                     try:
-                        # Extract progress from messages like "Progress: 45%"
+                        # Extract progress from messages like "Progress: 45%" or "Initializing: 45%"
                         parts = message.split('%')
                         if len(parts) > 1:
                             progress_part = parts[0].strip().split()[-1]
                             progress = int(progress_part)
-                            feedback.setProgress(progress)
+                            
+                            # Only report progress at 25% intervals (0, 25, 50, 75, 100) to reduce noise
+                            if progress % 25 == 0 or progress == 100:
+                                feedback.setProgress(progress)
                     except (ValueError, IndexError):
                         pass  # If parsing fails, just ignore progress
                 
-                # Send all output to feedback (always enabled regardless of report_progress)
-                # if message.strip():
-                #     feedback.pushConsoleInfo(message.strip())
+                # Filter and send console output
+                if message.strip() and should_show_message(message):
+                    feedback.pushConsoleInfo(message.strip())
             else:
-                # Print to console when no feedback available
-                if message.strip():
+                # Print to console when no feedback available - also apply filtering
+                if message.strip() and should_show_message(message):
                     print(f"[WBT] {message.strip()}")
         
         # Get the tool method from WhiteboxTools object
@@ -4013,8 +4037,6 @@ class TopoDrainCore:
         finally:
             dtm_ds = None
 
-        # Features will be processed right before they are needed to avoid scope issues
-
         # Prepare destination, barrier and perimeter features for rasterization
         # If perimeter is a polygon, use its boundary for rasterization
         if perimeter is not None and not perimeter.empty:
@@ -4058,7 +4080,7 @@ class TopoDrainCore:
                     raise RuntimeError(f"Cannot read perimeter mask data from: {perimeter_unique_raster_path}.{self._get_gdal_error_message()}")
                 
                 # Combine perimeter with barrier mask using offset values to avoid conflicts
-                barrier_max_value = np.max(barrier_unique_mask)
+                barrier_max_value = np.max(barrier_unique_mask) # get max value in barrier mask for offsetting perimeter IDs
                 perimeter_nonzero = perimeter_unique_mask > 0
                 if np.any(perimeter_nonzero):
                     # Offset perimeter values and add them to barrier mask
@@ -4113,6 +4135,8 @@ class TopoDrainCore:
                         raise RuntimeError(f"Cannot read perimeter polygon mask data from: {perimeter_polygon_raster_path}.{self._get_gdal_error_message()}")
             finally:
                 perimeter_polygon_ds = None
+        else:
+            perimeter_polygon_mask = None  # No perimeter polygon provided
 
         if feedback:
             feedback.pushInfo(f"[GetConstantSlopeLines] Raster masks created for barrier, destination and perimeter")
@@ -4179,8 +4203,10 @@ class TopoDrainCore:
                     # Check if left point is within raster bounds and inside perimeter polygon
                     is_inside_perimeter = False
                     if 0 <= left_r < dtm_rows and 0 <= left_c < dtm_cols:
-                        if perimeter_polygon_mask is not None and perimeter_polygon_mask[left_r, left_c] > 0:
-                            is_inside_perimeter = True
+                        if perimeter_polygon_mask is not None:
+                            is_inside_perimeter = perimeter_polygon_mask[left_r, left_c] > 0
+                        else:
+                            is_inside_perimeter = True  # Assume inside perimeter when no perimeter is provided
                     # Only add left point if it's inside perimeter
                     if is_inside_perimeter:
                         left_row = row.copy()
@@ -4204,8 +4230,10 @@ class TopoDrainCore:
                     # Check if right point is within raster bounds and inside perimeter polygon
                     is_inside_perimeter = False
                     if 0 <= right_r < dtm_rows and 0 <= right_c < dtm_cols:
-                        if perimeter_polygon_mask is not None and perimeter_polygon_mask[right_r, right_c] > 0:
-                            is_inside_perimeter = True
+                        if perimeter_polygon_mask is not None:
+                            is_inside_perimeter = perimeter_polygon_mask[right_r, right_c] > 0
+                        else:
+                            is_inside_perimeter = True  # Assume inside perimeter when no perimeter is provided
                     # Only add right point if it's inside perimeter
                     if is_inside_perimeter:
                         right_row = row.copy()
@@ -4384,8 +4412,9 @@ class TopoDrainCore:
 
                     if traced_line is not None and not traced_line.is_empty:
                         constant_slope_lines.append(traced_line)
-                        # Store attributes from the original start point
+                        # Store attributes from the original start point plus input parameters
                         point_attrs = pt_row.drop('geometry').to_dict()  # Get all attributes except geometry
+                        point_attrs['slope'] = slope  # Add input parameter
                         start_point_attributes.append(point_attrs)
                         if feedback:
                             feedback.pushInfo(f"[GetConstantSlopeLines] Successfully traced iterative line for point {pt_idx + 1}/{total_points} (total lines: {len(constant_slope_lines)})")
@@ -4415,8 +4444,9 @@ class TopoDrainCore:
 
                     if traced_line is not None and not traced_line.is_empty:
                         constant_slope_lines.append(traced_line)
-                        # Store attributes from the original start point
+                        # Store attributes from the original start point plus input parameters
                         point_attrs = pt_row.drop('geometry').to_dict()  # Get all attributes except geometry
+                        point_attrs['slope'] = slope  # Add input parameters
                         start_point_attributes.append(point_attrs)
                         if feedback:
                             feedback.pushInfo(f"[GetConstantSlopeLines] Successfully traced line for point {pt_idx + 1}/{total_points} (total lines: {len(constant_slope_lines)})")
@@ -4719,8 +4749,11 @@ class TopoDrainCore:
             start_point_index = part_data['start_point_index']
             
             if not needs_second_part or first_part_line is None:
-                # Keep original line
-                adjusted_lines.append(original_row)
+                # Keep original line with input parameters
+                new_row = original_row.copy()
+                new_row['change_after'] = change_after
+                new_row['slope_after'] = slope_after
+                adjusted_lines.append(new_row)
                 continue
             
             # Find corresponding second part line(s)
@@ -4746,9 +4779,11 @@ class TopoDrainCore:
                         
                         combined_line = LineString(combined_coords)
                         
-                        # Create new row with combined geometry and original attributes
+                        # Create new row with combined geometry and original attributes plus input parameters
                         new_row = original_row.copy()
                         new_row['geometry'] = combined_line
+                        new_row['change_after'] = change_after
+                        new_row['slope_after'] = slope_after
                         adjusted_lines.append(new_row)
                         
                         # Successfully combined line parts (reduced logging)
@@ -4756,16 +4791,22 @@ class TopoDrainCore:
                         # Second part is not LineString, keeping first part only (reduced logging)
                         new_row = original_row.copy()
                         new_row['geometry'] = first_part_line
+                        new_row['change_after'] = change_after
+                        new_row['slope_after'] = slope_after
                         adjusted_lines.append(new_row)
                 else:
                     # No matching second part found, keeping first part only (reduced logging)
                     new_row = original_row.copy()
                     new_row['geometry'] = first_part_line
+                    new_row['change_after'] = change_after
+                    new_row['slope_after'] = slope_after
                     adjusted_lines.append(new_row)
             else:
                 # No second parts available, keeping first part only (reduced logging)
                 new_row = original_row.copy()
                 new_row['geometry'] = first_part_line
+                new_row['change_after'] = change_after
+                new_row['slope_after'] = slope_after
                 adjusted_lines.append(new_row)
         
         # Create result GeoDataFrame
@@ -5124,8 +5165,10 @@ class TopoDrainCore:
                     # Check if left point is within raster bounds and inside perimeter polygon
                     is_inside_perimeter = False
                     if 0 <= left_r < dtm_rows and 0 <= left_c < dtm_cols:
-                        if perimeter_polygon_mask is not None and perimeter_polygon_mask[left_r, left_c] > 0:
-                            is_inside_perimeter = True
+                        if perimeter_polygon_mask is not None:
+                            is_inside_perimeter = perimeter_polygon_mask[left_r, left_c] > 0
+                        else:
+                            is_inside_perimeter = True  # Assume inside perimeter when no perimeter is provided
                     # Only add left point if it's inside perimeter
                     if is_inside_perimeter:
                         left_row = row.copy()
@@ -5149,8 +5192,10 @@ class TopoDrainCore:
                     # Check if right point is within raster bounds and inside perimeter polygon
                     is_inside_perimeter = False
                     if 0 <= right_r < dtm_rows and 0 <= right_c < dtm_cols:
-                        if perimeter_polygon_mask is not None and perimeter_polygon_mask[right_r, right_c] > 0:
-                            is_inside_perimeter = True
+                        if perimeter_polygon_mask is not None:
+                            is_inside_perimeter = perimeter_polygon_mask[right_r, right_c] > 0
+                        else:
+                            is_inside_perimeter = True  # Assume inside perimeter when no perimeter is provided
                     # Only add right point if it's inside perimeter
                     if is_inside_perimeter:
                         right_row = row.copy()
@@ -5482,7 +5527,7 @@ class TopoDrainCore:
                     'change_after': use_change_after,
                     'slope_after': use_slope_after,
                     # Add any additional point attributes from the original point
-                    'point_attributes': pt_row.drop('geometry').to_dict()
+                    #'point_attributes': pt_row.drop('geometry').to_dict() # debug
                 }
                 iteration_keylines.append(line_data)
                     
@@ -5589,24 +5634,20 @@ class TopoDrainCore:
                     # Keep original direction for valley→ridge traced lines
                     corrected_line = line
                 
-                # Create line attributes dictionary
+                # Create line attributes dictionary with input parameters
                 line_attributes = {
                     'geometry': corrected_line,
-                    'slope': line_data['slope'],
-                    'direction_type': line_data['direction_type'],
-                    'valley_id': line_data['valley_id'],
-                    'ridge_id': line_data['ridge_id'],
-                    'perimeter_id': line_data['perimeter_id']
+                    'slope': slope,
                 }
                 
                 # Add change_after and slope_after if they were used
                 if line_data['change_after'] is not None:
-                    line_attributes['change_after'] = line_data['change_after']
+                    line_attributes['change_after'] = change_after
                 if line_data['slope_after'] is not None:
-                    line_attributes['slope_after'] = line_data['slope_after']
+                    line_attributes['slope_after'] = slope_after
                 
                 # Add any additional point attributes
-                line_attributes.update(line_data['point_attributes'])
+                #line_attributes.update(line_data['point_attributes']) #debug
                 
                 corrected_lines_with_attributes.append(line_attributes)
             
