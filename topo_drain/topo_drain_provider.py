@@ -40,6 +40,7 @@ from .create_keylines_algorithm import CreateKeylinesAlgorithm
 from .extract_main_valleys_algorithm import ExtractMainValleysAlgorithm
 from .extract_main_ridges_algorithm import ExtractMainRidgesAlgorithm
 from .get_keypoints_algorithm import GetKeypointsAlgorithm
+from .get_points_along_lines_algorithm import GetPointsAlongLinesAlgorithm
 from .adjust_constant_slope_after_algorithm import AdjustConstantSlopeAfterAlgorithm
 
 pluginPath = os.path.dirname(__file__)
@@ -92,6 +93,10 @@ class TopoDrainProvider(QgsProcessingProvider):
         get_keypoints_alg = GetKeypointsAlgorithm(core=self.core)
         get_keypoints_alg.plugin = self.plugin
         self.addAlgorithm(get_keypoints_alg)
+        
+        get_points_along_lines_alg = GetPointsAlongLinesAlgorithm(core=self.core)
+        get_points_along_lines_alg.plugin = self.plugin
+        self.addAlgorithm(get_points_along_lines_alg)
         
         adjust_constant_slope_after_alg = AdjustConstantSlopeAfterAlgorithm(core=self.core)
         adjust_constant_slope_after_alg.plugin = self.plugin

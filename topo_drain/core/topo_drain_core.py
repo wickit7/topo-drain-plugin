@@ -2181,7 +2181,7 @@ class TopoDrainCore:
         )
 
         return gdf
-
+    
     def get_keypoints(
         self,
         valley_lines: gpd.GeoDataFrame,
@@ -2375,6 +2375,238 @@ class TopoDrainCore:
             print(f"[GetKeypoints] Keypoint detection complete: {len(gdf)} keypoints found from {processed_lines}/{total_lines} valley lines (skipped: {skipped_lines})")
 
         return gdf
+
+    def get_points_along_lines(
+        self,
+        input_lines: gpd.GeoDataFrame,
+        reference_points: gpd.GeoDataFrame = None,
+        distance_between_points: float = 10.0,
+        feedback=None
+        ) -> gpd.GeoDataFrame:
+        """
+        Distribute points along input lines at specified intervals. If reference points are provided, 
+        the points will be placed in an optimal way: So that the distance is at least the specified 
+        distance from the nearest reference point and as much points as possible can be created.
+
+        Args:
+            input_lines (GeoDataFrame): Input lines (e.g. valley centerlines).
+            reference_points (GeoDataFrame, optional): Input reference points (e.g. keypoints). 
+                If provided, points will be placed optimally to maintain minimum distance from reference points.
+            distance_between_points (float): Distance between points to be created along lines (in meters). Default 10.0.
+            feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting/logging.
+
+        Returns:
+            GeoDataFrame: Points along lines with preserved line attributes plus additional point metadata.
+        """
+        if feedback:
+            feedback.pushInfo(f"[GetPointsAlongLines] Starting point distribution along {len(input_lines)} lines...")
+            feedback.setProgress(0)
+        else:
+            print(f"[GetPointsAlongLines] Starting point distribution along {len(input_lines)} lines...")
+
+        if input_lines.empty:
+            if feedback:
+                feedback.pushWarning("[GetPointsAlongLines] No input lines provided")
+            else:
+                warnings.warn("[GetPointsAlongLines] Warning: No input lines provided")
+            return gpd.GeoDataFrame(crs=self.crs)
+
+        # Validate distance parameter
+        if distance_between_points <= 0:
+            raise ValueError("distance_between_points must be positive")
+
+        all_points = []
+        total_lines = len(input_lines)
+
+        for line_idx, line_row in input_lines.iterrows():
+            line_geom = line_row.geometry
+            
+            # Progress reporting
+            if feedback:
+                progress = int((line_idx / total_lines) * 90)  # Reserve 10% for final processing
+                feedback.setProgress(progress)
+                if feedback.isCanceled():
+                    feedback.reportError("[GetPointsAlongLines] Process cancelled by user")
+                    raise RuntimeError("Process cancelled by user")
+                feedback.pushInfo(f"[GetPointsAlongLines] Processing line {line_idx + 1}/{total_lines}")
+            else:
+                print(f"[GetPointsAlongLines] Processing line {line_idx + 1}/{total_lines}")
+
+            # Handle different geometry types
+            if isinstance(line_geom, LineString):
+                line_points = self._distribute_points_on_line(
+                    line_geom, reference_points, distance_between_points, line_row, line_idx
+                )
+                all_points.extend(line_points)
+            elif isinstance(line_geom, MultiLineString):
+                for sub_line_idx, sub_line in enumerate(line_geom.geoms):
+                    line_points = self._distribute_points_on_line(
+                        sub_line, reference_points, distance_between_points, line_row, 
+                        f"{line_idx}_{sub_line_idx}"
+                    )
+                    all_points.extend(line_points)
+            else:
+                if feedback:
+                    feedback.pushWarning(f"[GetPointsAlongLines] Skipping unsupported geometry type: {type(line_geom)}")
+                else:
+                    warnings.warn(f"[GetPointsAlongLines] Warning: Skipping unsupported geometry type: {type(line_geom)}")
+
+        # Create result GeoDataFrame
+        if all_points:
+            result_gdf = gpd.GeoDataFrame(all_points, crs=self.crs)
+        else:
+            result_gdf = gpd.GeoDataFrame(crs=self.crs)
+
+        if feedback:
+            feedback.setProgress(100)
+            feedback.pushInfo(f"[GetPointsAlongLines] Point distribution complete: {len(result_gdf)} points created from {total_lines} lines")
+        else:
+            print(f"[GetPointsAlongLines] Point distribution complete: {len(result_gdf)} points created from {total_lines} lines")
+
+        return result_gdf
+
+    def _distribute_points_on_line(
+        self, 
+        line_geom: LineString, 
+        reference_points: gpd.GeoDataFrame, 
+        distance_between_points: float, 
+        line_row, 
+        line_id
+        ) -> list:
+        """
+        Distribute points along a single LineString. If reference points are provided,
+        optimizes placement starting from reference points and expanding outward.
+        
+        Args:
+            line_geom (LineString): The line geometry to distribute points along
+            reference_points (GeoDataFrame): Reference points to maintain distance from
+            distance_between_points (float): Target distance between points
+            line_row: The original line row data to preserve attributes
+            line_id: Identifier for the line
+            
+        Returns:
+            list: List of point dictionaries with geometry and attributes
+        """
+        line_length = line_geom.length
+        if line_length < distance_between_points:
+            # Line too short for any points with the specified distance
+            return []
+
+        # Find reference points that are ON this line (within very small tolerance for floating point precision)
+        ref_distances_on_line = []
+        if reference_points is not None and not reference_points.empty:
+            ref_point_tolerance = 0.1  # Very small tolerance for floating point precision (10 cm)
+            
+            for _, ref_row in reference_points.iterrows():
+                # Check if reference point is actually on this line (not just nearby)
+                ref_distance_to_line = line_geom.distance(ref_row.geometry)
+                if ref_distance_to_line <= ref_point_tolerance:
+                    # Project reference point onto the line to get its distance along the line
+                    distance_along = line_geom.project(ref_row.geometry)
+                    ref_distances_on_line.append(distance_along)
+
+        # Simple case: no reference points or no reference points found ON this line
+        if not ref_distances_on_line:
+            num_points = int(line_length // distance_between_points)
+            if num_points == 0:
+                return []
+                
+            points = []
+            for i in range(num_points):
+                distance_along = (i + 1) * distance_between_points
+                if distance_along <= line_length:
+                    point_geom = line_geom.interpolate(distance_along)
+                    
+                    # Create point with line attributes plus additional metadata
+                    point_data = line_row.drop('geometry').to_dict()  # Preserve original line attributes
+                    point_data.pop('RANK', None)  # Remove RANK attribute if present
+                    point_data.pop('DS_LINK_ID', None)  # Remove DS_LINK_ID attribute if present
+                    point_data['geometry'] = point_geom
+                    point_data['line_id'] = line_id
+                    point_data['distance_along_line'] = distance_along
+                    point_data['point_index'] = i
+                    point_data['is_reference_point'] = False
+                    points.append(point_data)
+            return points
+        
+        # Complex case: optimize placement considering reference points
+        
+        # Remove duplicates and sort reference distances along the line
+        ref_distances_on_line = sorted(set(ref_distances_on_line))
+        
+        # Generate all candidate distances starting from each reference point
+        all_candidate_distances = set()
+        
+        for ref_distance in ref_distances_on_line:
+            # Always include the reference point location itself
+            all_candidate_distances.add(ref_distance)
+            
+            # Expand forward (toward end of line) from reference point
+            current_dist = ref_distance + distance_between_points
+            while current_dist <= line_length:
+                all_candidate_distances.add(current_dist)
+                current_dist += distance_between_points
+            
+            # Expand backward (toward start of line) from reference point
+            current_dist = ref_distance - distance_between_points
+            while current_dist >= 0:
+                all_candidate_distances.add(current_dist)
+                current_dist -= distance_between_points
+        
+        # Convert to sorted list for processing
+        candidate_distances = sorted([dist for dist in all_candidate_distances if 0 <= dist <= line_length])
+        
+        # Select final points ensuring minimum distance between them
+        # Priority: reference points first, then other candidates
+        selected_distances = []
+        
+        # First pass: Add all reference points (they have highest priority)
+        for ref_distance in ref_distances_on_line:
+            selected_distances.append(ref_distance)
+        
+        # Second pass: Add other candidates if they maintain minimum distance
+        for candidate_dist in candidate_distances:
+            # Skip if this is already a reference point
+            if candidate_dist in ref_distances_on_line:
+                continue
+                
+            # Check if this candidate maintains minimum distance from all selected points
+            valid = True
+            for selected_dist in selected_distances:
+                if abs(candidate_dist - selected_dist) < distance_between_points:
+                    valid = False
+                    break
+            
+            if valid:
+                selected_distances.append(candidate_dist)
+        
+        # Sort final distances for consistent output
+        selected_distances.sort()
+        
+        # Create point objects from selected distances
+        points = []
+        for i, dist in enumerate(selected_distances):
+            point_geom = line_geom.interpolate(dist)
+            
+            # Check if this point is at a reference point location
+            is_reference_point = False
+            for ref_distance in ref_distances_on_line:
+                if abs(dist - ref_distance) < 0.1:  # Small tolerance for floating point comparison
+                    is_reference_point = True
+                    break
+            
+            # Create point with line attributes plus additional metadata
+            point_data = line_row.drop('geometry').to_dict()  # Preserve original line attributes
+            point_data.pop('RANK', None)  # Remove RANK attribute if present
+            point_data.pop('DS_LINK_ID', None)  # Remove DS_LINK_ID attribute if present
+            point_data['geometry'] = point_geom
+            point_data['line_id'] = line_id
+            point_data['distance_along_line'] = dist
+            point_data['point_index'] = i
+            point_data['is_reference_point'] = is_reference_point  # Flag indicating if this was a reference point
+            points.append(point_data)
+        
+        return points
 
     @staticmethod
     def _get_orthogonal_directions_start_points(
