@@ -42,6 +42,7 @@ from .extract_main_ridges_algorithm import ExtractMainRidgesAlgorithm
 from .get_keypoints_algorithm import GetKeypointsAlgorithm
 from .get_points_along_lines_algorithm import GetPointsAlongLinesAlgorithm
 from .adjust_constant_slope_after_algorithm import AdjustConstantSlopeAfterAlgorithm
+from .delineate_watersheds_algorithm import DelineateWatershedsAlgorithm
 
 pluginPath = os.path.dirname(__file__)
 
@@ -101,6 +102,10 @@ class TopoDrainProvider(QgsProcessingProvider):
         adjust_constant_slope_after_alg = AdjustConstantSlopeAfterAlgorithm(core=self.core)
         adjust_constant_slope_after_alg.plugin = self.plugin
         self.addAlgorithm(adjust_constant_slope_after_alg)
+        
+        delineate_watersheds_alg = DelineateWatershedsAlgorithm(core=self.core)
+        delineate_watersheds_alg.plugin = self.plugin
+        self.addAlgorithm(delineate_watersheds_alg)
         
         # add additional algorithms here
         # self.addAlgorithm(MyOtherAlgorithm())

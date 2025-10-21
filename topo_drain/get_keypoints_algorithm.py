@@ -78,10 +78,10 @@ class GetKeypointsAlgorithm(QgsProcessingAlgorithm):
         return self.tr('Get Keypoints (along Main Valley Lines)')
 
     def group(self):
-        return self.tr('Basic Watershed Analysis')
+        return self.tr('Point Analysis')
 
     def groupId(self):
-        return 'basic_watershed_analysis'
+        return 'point_analysis'
 
     def shortHelpString(self):
         return self.tr(

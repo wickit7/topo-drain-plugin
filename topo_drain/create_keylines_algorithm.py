@@ -75,10 +75,10 @@ class CreateKeylinesAlgorithm(QgsProcessingAlgorithm):
         return self.tr('Create Keylines')
 
     def group(self):
-        return self.tr('Slope Analysis')
+        return self.tr('Slope Line Analysis')
 
     def groupId(self):
-        return 'slope_analysis'
+        return 'slope_line_analysis'
 
     def shortHelpString(self):
         return self.tr(

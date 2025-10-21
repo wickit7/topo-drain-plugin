@@ -263,11 +263,8 @@ class TopoDrainCore:
                     progress_part = parts[0].strip().split()[-1]
                     progress = int(progress_part)
                     
-                    # Only show Initializing/Progress messages at 25% intervals
-                    if ("Initializing:" in msg or "Progress:" in msg):
-                        return progress % 25 == 0 or progress == 100
-                    else:
-                        return True  # Show other percentage messages
+                    # Show all percentage messages at 25% intervals
+                    return progress % 25 == 0 or progress == 100
                 else:
                     return True  # Show messages that contain % but can't be parsed
             except (ValueError, IndexError):
@@ -1704,6 +1701,205 @@ class TopoDrainCore:
         except Exception as e:
             raise RuntimeError(f"[ExtractValleys] Failed to extract valleys: {e}")
         
+
+    def delineate_watersheds(
+        self,
+        outlet_points: gpd.GeoDataFrame,
+        fdir_input_path: str,
+        streams_input_path: str = None,
+        max_snap_distance: float = 0,
+        feedback=None
+    ) -> gpd.GeoDataFrame:
+        """
+        Delineate watersheds for given outlet points using WhiteboxTools.
+
+        Args:
+            outlet_points (GeoDataFrame): Points for which the watershed should be delineated.
+            fdir_input_path (str): Path to the flow-direction raster (supports all GDAL formats in gdal_driver_mapping).
+            streams_input_path (str, optional): Path to the stream raster. Needed if max_snap_distance > 0.
+            max_snap_distance (float, optional): Distance which outlet point can be moved towards location with highest flow accumulation. Default: 0.
+            feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting/logging (for QGIS Plugin).
+
+        Returns:
+            GeoDataFrame: Delineated watershed basins as polygons with attributes.
+        """
+        if self.wbt is None:
+            raise RuntimeError("WhiteboxTools not initialized. Check WhiteboxTools configuration: QGIS settings -> Options -> Processing -> Provider -> WhiteboxTools -> WhiteboxTools executable.")
+
+        if feedback:
+            feedback.pushInfo("[WatershedDelineation] Starting watershed delineation process...")
+            feedback.pushInfo("[WatershedDelineation] *Detailed WhiteboxTools output can be viewed in the Python Console")
+            feedback.setProgress(0)
+        else:
+            print("[WatershedDelineation] Starting watershed delineation process...")
+
+        if outlet_points.empty:
+            raise RuntimeError("[WatershedDelineation] Input outlet_points is empty")
+
+        # Generate temporary file paths
+        pour_points_path = os.path.join(self.temp_directory, "pour_points.shp")
+        snapped_points_path = os.path.join(self.temp_directory, "snapped_pour_points.shp")
+        watershed_raster_path = os.path.join(self.temp_directory, "watershed_raster.tif")
+        watershed_vector_path = os.path.join(self.temp_directory, "watershed_vector.shp")
+
+        try:
+            # Step 1: Save outlet points to temporary shapefile
+            if feedback:
+                feedback.pushInfo("[WatershedDelineation] Step 1/4: Preparing outlet points...")
+                feedback.setProgress(2)
+                if feedback.isCanceled():
+                    feedback.reportError('Process cancelled by user at step 1.')
+                    raise RuntimeError('Process cancelled by user.')
+            else:
+                print("[WatershedDelineation] Step 1/4: Preparing outlet points...")
+
+            outlet_points.to_file(pour_points_path)
+            
+            # Determine which points to use for watershed delineation
+            points_for_watershed = pour_points_path
+            
+            # Step 2: Snap pour points to streams if requested
+            if streams_input_path and max_snap_distance > 0:
+                if feedback:
+                    feedback.pushInfo(f"[WatershedDelineation] Step 2/4: Snapping pour points to streams (max distance: {max_snap_distance})...")
+                    feedback.setProgress(5)
+                    if feedback.isCanceled():
+                        feedback.reportError('Process cancelled by user during point snapping.')
+                        raise RuntimeError('Process cancelled by user.')
+                else:
+                    print(f"[WatershedDelineation] Step 2/4: Snapping pour points to streams (max distance: {max_snap_distance})...")
+                
+                try:
+                    ret = self._execute_wbt(
+                        'jenson_snap_pour_points',
+                        feedback=feedback,
+                        report_progress=False,  # Don't override main progress bar
+                        pour_pts=pour_points_path,
+                        streams=streams_input_path,
+                        output=snapped_points_path,
+                        snap_dist=max_snap_distance
+                    )
+                    
+                    if ret != 0 or not os.path.exists(snapped_points_path):
+                        raise RuntimeError(f"[WatershedDelineation] Pour point snapping failed: WhiteboxTools returned {ret}, output not found at {snapped_points_path}")
+                    
+                    points_for_watershed = snapped_points_path
+                    
+                except Exception as e:
+                    # Check if cancellation was the cause
+                    if feedback and feedback.isCanceled():
+                        feedback.reportError("Process cancelled by user during pour point snapping.")
+                        raise RuntimeError('Process cancelled by user.')
+                    raise RuntimeError(f"[WatershedDelineation] Pour point snapping failed: {e}")
+            else:
+                if feedback:
+                    feedback.pushInfo("[WatershedDelineation] Step 2/4: Skipping point snapping (no streams provided or max_snap_distance = 0)...")
+                    feedback.setProgress(25)
+                else:
+                    print("[WatershedDelineation] Step 2/4: Skipping point snapping (no streams provided or max_snap_distance = 0)...")
+
+            # Step 3: Delineate watersheds
+            if feedback:
+                feedback.pushInfo("[WatershedDelineation] Step 3/4: Delineating watersheds...")
+                feedback.setProgress(50)
+                if feedback.isCanceled():
+                    feedback.reportError('Process cancelled by user during watershed delineation.')
+                    raise RuntimeError('Process cancelled by user.')
+            else:
+                print("[WatershedDelineation] Step 3/4: Delineating watersheds...")
+            
+            try:
+                ret = self._execute_wbt(
+                    'watershed',
+                    feedback=feedback,
+                    report_progress=False,  # Don't override main progress bar
+                    d8_pntr=fdir_input_path,
+                    pour_pts=points_for_watershed,
+                    output=watershed_raster_path,
+                    esri_pntr=False
+                )
+                
+                if ret != 0 or not os.path.exists(watershed_raster_path):
+                    raise RuntimeError(f"[WatershedDelineation] Watershed delineation failed: WhiteboxTools returned {ret}, output not found at {watershed_raster_path}")
+                
+            except Exception as e:
+                # Check if cancellation was the cause
+                if feedback and feedback.isCanceled():
+                    feedback.reportError("Process cancelled by user during watershed delineation.")
+                    raise RuntimeError('Process cancelled by user.')
+                raise RuntimeError(f"[WatershedDelineation] Watershed delineation failed: {e}")
+
+            # Step 4: Convert watershed raster to vector polygons
+            if feedback:
+                feedback.pushInfo("[WatershedDelineation] Step 4/4: Converting watershed raster to vector polygons...")
+                feedback.setProgress(75)
+                if feedback.isCanceled():
+                    feedback.reportError('Process cancelled by user during raster to vector conversion.')
+                    raise RuntimeError('Process cancelled by user.')
+            else:
+                print("[WatershedDelineation] Step 4/4: Converting watershed raster to vector polygons...")
+            
+            try:
+                ret = self._execute_wbt(
+                    'raster_to_vector_polygons',
+                    feedback=feedback,
+                    report_progress=False,  # Don't override main progress bar
+                    i=watershed_raster_path,
+                    output=watershed_vector_path
+                )
+                
+                if ret != 0 or not os.path.exists(watershed_vector_path):
+                    raise RuntimeError(f"[WatershedDelineation] Raster to vector conversion failed: WhiteboxTools returned {ret}, output not found at {watershed_vector_path}")
+                
+            except Exception as e:
+                # Check if cancellation was the cause
+                if feedback and feedback.isCanceled():
+                    feedback.reportError("Process cancelled by user during raster to vector conversion.")
+                    raise RuntimeError('Process cancelled by user.')
+                raise RuntimeError(f"[WatershedDelineation] Raster to vector conversion failed: {e}")
+
+            # Step 5: Load and process results
+            if feedback:
+                feedback.pushInfo(f"[WatershedDelineation] Loading watershed polygons from {watershed_vector_path}")
+                feedback.setProgress(90)
+            else:
+                print(f"[WatershedDelineation] Loading watershed polygons from {watershed_vector_path}")
+
+            # Check if the file exists and is non-empty before reading
+            if not os.path.exists(watershed_vector_path):
+                raise RuntimeError(f"[WatershedDelineation] Watershed vector output file not found: {watershed_vector_path}")
+            
+            gdf = gpd.read_file(watershed_vector_path)
+            if gdf.empty:
+                raise RuntimeError(f"[WatershedDelineation] Watershed vector output file is empty: {watershed_vector_path}")
+
+            # Always create a reliable WATERSHED_ID field as primary identifier
+            # This addresses Windows case-sensitivity and temporary layer issues
+            if 'FID' in gdf.columns or 'fid' in gdf.columns:
+                fid_col = 'FID' if 'FID' in gdf.columns else 'fid'
+                gdf['WATERSHED_ID'] = gdf[fid_col]
+            else:
+                gdf['WATERSHED_ID'] = range(1, len(gdf) + 1)
+
+            # Add area calculation
+            gdf['AREA'] = gdf.geometry.area
+
+            if feedback:
+                feedback.pushInfo("[WatershedDelineation] Created reliable 'WATERSHED_ID' field for cross-platform compatibility")
+                feedback.pushInfo(f"[WatershedDelineation] Completed: {len(gdf)} watershed polygons delineated successfully!")
+                feedback.setProgress(100)
+                if feedback.isCanceled():
+                    feedback.reportError('Process cancelled by user at completion.')
+                    raise RuntimeError('Process cancelled by user.')
+            else:
+                print("[WatershedDelineation] Created reliable 'WATERSHED_ID' field for cross-platform compatibility")
+                print(f"[WatershedDelineation] Completed: {len(gdf)} watershed polygons delineated successfully!")
+            
+            return gdf
+
+        except Exception as e:
+            raise RuntimeError(f"[WatershedDelineation] Failed to delineate watersheds: {e}")
+
 
     def extract_ridges(
         self,

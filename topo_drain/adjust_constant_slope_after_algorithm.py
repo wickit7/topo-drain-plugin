@@ -71,10 +71,10 @@ class AdjustConstantSlopeAfterAlgorithm(QgsProcessingAlgorithm):
         return self.tr('Adjust Constant Slope After Distance')
 
     def group(self):
-        return self.tr('Slope Analysis')
+        return self.tr('Slope Line Analysis')
 
     def groupId(self):
-        return 'slope_analysis'
+        return 'slope_line_analysis'
 
     def shortHelpString(self):
         return self.tr(
