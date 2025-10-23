@@ -108,7 +108,7 @@ Input Requirements:
 - Max Snap Distance: Maximum distance to snap outlet points to streams (0 = no snapping)
 
 Output:
-- Watershed polygons with WATERSHED_ID and AREA attributes
+- Watershed polygons with BASIN_ID and AREA attributes
 
 Use Cases:
 - Hydrological modeling and catchment analysis
@@ -116,7 +116,7 @@ Use Cases:
 - Environmental impact assessment
 - Agricultural watershed design
 - Flood risk assessment"""
-        )
+    )
 
     def icon(self):
         return QIcon(os.path.join(pluginPath, 'icons', 'topo_drain.svg'))

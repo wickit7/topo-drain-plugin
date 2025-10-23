@@ -1873,26 +1873,26 @@ class TopoDrainCore:
             if gdf.empty:
                 raise RuntimeError(f"[WatershedDelineation] Watershed vector output file is empty: {watershed_vector_path}")
 
-            # Always create a reliable WATERSHED_ID field as primary identifier
+            # Always create a reliable BASIN_ID field as primary identifier
             # This addresses Windows case-sensitivity and temporary layer issues
             if 'FID' in gdf.columns or 'fid' in gdf.columns:
                 fid_col = 'FID' if 'FID' in gdf.columns else 'fid'
-                gdf['WATERSHED_ID'] = gdf[fid_col]
+                gdf['BASIN_ID'] = gdf[fid_col]
             else:
-                gdf['WATERSHED_ID'] = range(1, len(gdf) + 1)
+                gdf['BASIN_ID'] = range(1, len(gdf) + 1)
 
             # Add area calculation
             gdf['AREA'] = gdf.geometry.area
 
             if feedback:
-                feedback.pushInfo("[WatershedDelineation] Created reliable 'WATERSHED_ID' field for cross-platform compatibility")
+                feedback.pushInfo("[WatershedDelineation] Created reliable 'BASIN_ID' field for cross-platform compatibility")
                 feedback.pushInfo(f"[WatershedDelineation] Completed: {len(gdf)} watershed polygons delineated successfully!")
                 feedback.setProgress(100)
                 if feedback.isCanceled():
                     feedback.reportError('Process cancelled by user at completion.')
                     raise RuntimeError('Process cancelled by user.')
             else:
-                print("[WatershedDelineation] Created reliable 'WATERSHED_ID' field for cross-platform compatibility")
+                print("[WatershedDelineation] Created reliable 'BASIN_ID' field for cross-platform compatibility")
                 print(f"[WatershedDelineation] Completed: {len(gdf)} watershed polygons delineated successfully!")
             
             return gdf
