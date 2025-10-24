@@ -17,7 +17,6 @@ import geopandas as gpd
 from shapely.geometry import LineString, MultiLineString, Point, Polygon, box
 from shapely.ops import linemerge, nearest_points, substring
 from scipy.ndimage import gaussian_filter1d
-import re
 from osgeo import gdal, ogr
 
 # ---  Class TopoDrainCore ---
@@ -363,7 +362,6 @@ class TopoDrainCore:
             warnings.warn(f"[_merge_lines_by_distance] Error: Unsupported input type: {type(line_geometries)}")
             return None
 
-        
         if not line_list:
             return None
         
@@ -2140,16 +2138,7 @@ class TopoDrainCore:
             else:
                 print("[ExtractMainValleys] No perimeter provided, using valley lines extent...")
             
-            # Get the bounding box of valley_lines and create a polygon
-            bounds = valley_lines.total_bounds  # [minx, miny, maxx, maxy]
-            bbox_polygon = Polygon([
-                (bounds[0], bounds[1]),  # bottom-left
-                (bounds[2], bounds[1]),  # bottom-right
-                (bounds[2], bounds[3]),  # top-right
-                (bounds[0], bounds[3]),  # top-left
-                (bounds[0], bounds[1])   # close polygon
-            ])
-            perimeter = gpd.GeoDataFrame([{'geometry': bbox_polygon}], crs=valley_lines.crs)
+            perimeter = self._perimeter_from_features([valley_lines])
 
         if feedback:
             feedback.pushInfo("[ExtractMainValleys] Reading flow accumulation raster...")
@@ -2458,6 +2447,7 @@ class TopoDrainCore:
         min_distance: float = 10.0,
         min_keypoints: int = 1,
         csv_output_path: str = None,
+        max_iterations: int = 20,
         feedback=None
         ) -> gpd.GeoDataFrame:
         """
@@ -2479,6 +2469,7 @@ class TopoDrainCore:
             min_distance (float): Minimum distance between selected keypoints (in meters).
             min_keypoints (int): Minimum number of keypoint candidates to find before fallback methods (default: 1).
             csv_output_path (str, optional): Path to save CSV file with elevation profiles and curvature data. If None, no CSV is created.
+            max_iterations (int): Maximum iterations for keypoint selection to enforce min_distance.
             feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting/logging.
 
         Returns:
@@ -2605,7 +2596,6 @@ class TopoDrainCore:
                 accepted = []
                 excluded_indices = set()  # Track indices that are too close to accepted points
                 iteration = 0
-                max_iterations = 10  # Prevent infinite loops
                 
                 while len(accepted) < min_keypoints and iteration < max_iterations:
                     iteration += 1
@@ -4589,7 +4579,6 @@ class TopoDrainCore:
         return combined_line
 
 
-
     def get_constant_slope_lines(
         self,
         dtm_path: str,
@@ -5099,6 +5088,7 @@ class TopoDrainCore:
         
         return result_gdf
 
+
     def adjust_constant_slope_after(
         self,
         dtm_path: str,
@@ -5447,6 +5437,7 @@ class TopoDrainCore:
             print(f"[AdjustConstantSlopeAfter] Adjustment complete: {len(result_gdf)} adjusted lines")
 
         return result_gdf
+
 
     def create_keylines(
             self, 
