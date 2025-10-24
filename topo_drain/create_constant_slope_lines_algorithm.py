@@ -164,7 +164,7 @@ Parameters:
             QgsProcessingParameterBoolean(
                 self.ALLOW_BARRIERS_AS_TEMP_DESTINATION,
                 self.tr('Allow Barriers as Temporary Destination (enables zig-zag tracing between barriers)'),
-                defaultValue=False
+                defaultValue=True
             )
         )
         

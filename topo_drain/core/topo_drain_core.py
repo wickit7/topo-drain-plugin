@@ -17,7 +17,6 @@ import geopandas as gpd
 from shapely.geometry import LineString, MultiLineString, Point, Polygon, box
 from shapely.ops import linemerge, nearest_points, substring
 from scipy.ndimage import gaussian_filter1d
-from scipy.signal import savgol_filter
 import re
 from osgeo import gdal, ogr
 
@@ -1328,46 +1327,119 @@ class TopoDrainCore:
 
     ## TopoDrainCore functions
     @staticmethod
-    def _find_inflection_candidates(curvature: np.ndarray, window: int) -> list:
+    def _find_inflection_candidates(curvature: np.ndarray, feedback=None) -> list:
         """
-        Detect inflection points where the curvature changes from convex to concave,
-        using a moving average window. If none found, return point of strongest transition.
+        Find inflection point candidates for polynomial functions using multiple strategies:
+        1. Exact zero crossings (sign changes in curvature) - returns multiple if found
+        2. Local extrema in curvature (peaks and valleys in second derivative) - returns multiple if found
+        3. Strongest curvature transitions as fallback - returns single best candidate
+        
+        For valley profiles, we prioritize concave → convex transitions (negative to positive curvature)
+        which represent morphological changes from steep to gentle slopes.
 
         Args:
-            curvature (np.ndarray): Smoothed 2nd derivative of elevation profile.
-            window (int): Number of points before/after to average.
+            curvature (np.ndarray): Second derivative of elevation profile (analytical for polynomials).
+            feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting/logging.
 
         Returns:
-            list of tuples: Sorted (index, strength) candidates (at least one guaranteed).
+            list of tuples: Sorted (index, strength, method) candidates, prioritized by detection method.
         """
-        candidates = []
+        n = len(curvature)
+        
+        if feedback:
+            feedback.pushInfo(f"[FindInflectionCandidates] Analyzing curvature profile with {n} points")
+        else:
+            print(f"[FindInflectionCandidates] Analyzing curvature profile with {n} points")
+        
+        # Strategy 1: Find exact zero crossings (sign changes)
+        zero_crossings = []
+        for i in range(1, n):
+            if curvature[i-1] * curvature[i] < 0:  # Sign change detected
+                # Calculate strength as the magnitude of the transition
+                strength = abs(curvature[i] - curvature[i-1])
+                zero_crossings.append((i, strength, 'zero_crossing'))
+        
+        if feedback:
+            feedback.pushInfo(f"[FindInflectionCandidates] Found {len(zero_crossings)} zero crossings (exact inflection points)")
+        else:
+            print(f"[FindInflectionCandidates] Found {len(zero_crossings)} zero crossings (exact inflection points)")
 
-        for i in range(window, len(curvature) - window):
-            before_avg = np.mean(curvature[i - window:i])
-            after_avg = np.mean(curvature[i + 1:i + 1 + window])
-            # Look for convex → concave transitions (positive to negative curvature)
-            if before_avg > 0 and after_avg < 0:
-                strength = abs(before_avg) + abs(after_avg)
-                candidates.append((i, strength))
-
-        # Fallback: if no clear convex → concave transitions found
-        if not candidates:
-            warnings.warn("Warning: No clear convex → concave inflection points found. Using strongest transition as fallback.")
-            best_strength = -np.inf
-            best_index = None
-            for i in range(window, len(curvature) - window):
-                before_avg = np.mean(curvature[i - window:i])
-                after_avg = np.mean(curvature[i + 1:i + 1 + window])
-                # Look for any significant transition (prioritize convex → concave)
-                strength = before_avg - after_avg  # Higher when going from positive to negative
-                if strength > best_strength:
-                    best_strength = strength
+        # Strategy 2: Find local extrema in curvature (peaks/valleys in 2nd derivative)
+        local_extrema = []
+        for i in range(1, n-1):
+            # Local maximum (peak in curvature)
+            if curvature[i] > curvature[i-1] and curvature[i] > curvature[i+1]:
+                strength = curvature[i]  # Height of the peak
+                local_extrema.append((i, abs(strength), 'local_max'))
+            # Local minimum (valley in curvature)
+            elif curvature[i] < curvature[i-1] and curvature[i] < curvature[i+1]:
+                strength = curvature[i]  # Depth of the valley
+                local_extrema.append((i, abs(strength), 'local_min'))
+        
+        if feedback:
+            feedback.pushInfo(f"[FindInflectionCandidates] Found {len(local_extrema)} local extrema in curvature")
+        else:
+            print(f"[FindInflectionCandidates] Found {len(local_extrema)} local extrema in curvature")
+        # Combine all candidates with priority-based sorting
+        all_candidates = []
+        
+        # Highest priority: Zero crossings (exact mathematical inflection points)
+        # Sort by strength within this priority group
+        zero_crossings_sorted = sorted(zero_crossings, key=lambda x: x[1], reverse=True)
+        for idx, strength, method in zero_crossings_sorted:
+            all_candidates.append((idx, strength, method, 1))  # Priority 1 (highest)
+        
+        # Medium priority: Local extrema (important morphological features)  
+        # Sort by strength within this priority group
+        local_extrema_sorted = sorted(local_extrema, key=lambda x: x[1], reverse=True)
+        for idx, strength, method in local_extrema_sorted:
+            all_candidates.append((idx, strength, method, 2))  # Priority 2 (medium)
+        
+        # Return results based on what we found
+        if zero_crossings:
+            # Return all zero crossings if found (multiple mathematical inflection points)
+            zero_crossings_sorted = sorted(zero_crossings, key=lambda x: x[1], reverse=True)
+            result_candidates = [(idx, strength, method) for idx, strength, method in zero_crossings_sorted]
+        elif local_extrema:
+            # Return all local extrema if found (multiple morphological features)
+            local_extrema_sorted = sorted(local_extrema, key=lambda x: x[1], reverse=True)
+            result_candidates = [(idx, strength, method) for idx, strength, method in local_extrema_sorted]
+        else:
+            # Fallback: find single strongest transition point
+            if feedback:
+                feedback.pushWarning("[FindInflectionCandidates] No zero crossings or local extrema found. Using strongest single transition as fallback.")
+            else:
+                print("Warning: [FindInflectionCandidates] No zero crossings or local extrema found. Using strongest single transition as fallback.")
+            
+            max_curvature_change = 0
+            best_index = n // 2  # Default to middle
+            
+            for i in range(1, n-1):
+                # Find point with largest change in curvature
+                change = abs(curvature[i+1] - curvature[i-1])
+                if change > max_curvature_change:
+                    max_curvature_change = change
                     best_index = i
-            candidates = [(best_index, best_strength)]
-
-        # Sort by strength (strongest transitions first)
-        sorted_candidates = sorted(candidates, key=lambda x: x[1], reverse=True)
-        return sorted_candidates
+            
+            result_candidates = [(best_index, max_curvature_change, 'max_change')]
+            
+            if feedback:
+                feedback.pushInfo(f"[FindInflectionCandidates] Added fallback candidate at index {best_index} with strength {max_curvature_change:.3f}")
+            else:
+                print(f"[FindInflectionCandidates] Added fallback candidate at index {best_index} with strength {max_curvature_change:.3f}")
+        
+        if feedback:
+            feedback.pushInfo(f"[FindInflectionCandidates] Returning {len(result_candidates)} candidates")
+            if result_candidates:
+                top_candidate = result_candidates[0]
+                feedback.pushInfo(f"[FindInflectionCandidates] Top candidate: method='{top_candidate[2]}', strength={top_candidate[1]:.3f}, index={top_candidate[0]}")
+        else:
+            print(f"[FindInflectionCandidates] Returning {len(result_candidates)} candidates")
+            if result_candidates:
+                top_candidate = result_candidates[0]
+                print(f"[FindInflectionCandidates] Top candidate: method='{top_candidate[2]}', strength={top_candidate[1]:.3f}, index={top_candidate[0]}")
+        
+        return result_candidates
 
     ## Core functions
     def extract_valleys(
@@ -2382,11 +2454,10 @@ class TopoDrainCore:
         self,
         valley_lines: gpd.GeoDataFrame,
         dtm_path: str,
-        smoothing_window: int = 9,
-        polyorder: int = 2,
+        polynomial_degree: int = 3,
         min_distance: float = 10.0,
-        max_keypoints: int = 5,
-        find_window_cells: int = 10,
+        min_keypoints: int = 1,
+        csv_output_path: str = None,
         feedback=None
         ) -> gpd.GeoDataFrame:
         """
@@ -2396,32 +2467,28 @@ class TopoDrainCore:
         channel heads or slope breaks.
 
         The elevation profile is extracted along each valley line using the DTM at
-        pixel resolution (all values along the line) and smoothed using a Savitzky-Golay 
-        filter. The second derivative is then computed, and points with the strongest 
-        convex → concave transitions are selected as keypoints.
+        pixel resolution (all values along the line) and fitted with a polynomial.
+        The analytical second derivative is then computed, and inflection points are
+        detected using multiple mathematical strategies including exact zero crossings
+        and local extrema in curvature.
 
         Args:
             valley_lines (GeoDataFrame): Valley centerlines with geometries and unique LINK_ID.
             dtm_path (str): Path to the input DTM raster.
-            smoothing_window (int): Window size for Savitzky-Golay filter (must be odd).
-            polyorder (int): Polynomial order for Savitzky-Golay smoothing.
+            polynomial_degree (int): Degree of polynomial for fitting the elevation profile.
             min_distance (float): Minimum distance between selected keypoints (in meters).
-            max_keypoints (int): Maximum number of keypoints to retain per valley line.
-            find_window_cells (int): Number of cells to consider for curvature detection.
+            min_keypoints (int): Minimum number of keypoint candidates to find before fallback methods (default: 1).
+            csv_output_path (str, optional): Path to save CSV file with elevation profiles and curvature data. If None, no CSV is created.
             feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting/logging.
 
         Returns:
             GeoDataFrame: Detected keypoints as point geometries with metadata.
         """
         results = []
+        
+        # Data collection for CSV export (only if path is provided)
+        csv_data = {} if csv_output_path else None
 
-        # Validate smoothing window (must be odd)
-        if smoothing_window % 2 == 0:
-            smoothing_window += 1
-            if feedback:
-                feedback.pushInfo(f"[GetKeypoints] Smoothing window adjusted to {smoothing_window} (must be odd)")
-            else:
-                print(f"[GetKeypoints] Smoothing window adjusted to {smoothing_window} (must be odd)")
         if feedback:
             feedback.pushInfo(f"[GetKeypoints] Starting keypoint detection on {len(valley_lines)} valley lines...")
             feedback.setProgress(0)
@@ -2445,7 +2512,7 @@ class TopoDrainCore:
             res = abs(geotransform[1])  # pixel width
             dtm_band = dtm_ds.GetRasterBand(1)
             
-            # Auto-calculate find_window_distance based on pixel size
+            # Initialize progress counters
             processed_lines = 0
             skipped_lines = 0
             total_lines = len(valley_lines)
@@ -2499,40 +2566,135 @@ class TopoDrainCore:
                         # Handle any GDAL errors
                         elevations.append(0.0)
 
-                # Smooth elevation profile first
-                elev_smooth = savgol_filter(elevations, smoothing_window, polyorder)
+                # Polynomial fitting for elevation profile
+                # Use normalized distance for better numerical stability
+                distances_norm = distances / length if length > 0 else distances
+                try:
+                    # Fit polynomial to elevation data
+                    poly_coeffs = np.polyfit(distances_norm, elevations, polynomial_degree)
+                    poly_func = np.poly1d(poly_coeffs)
+                    elev_smooth = poly_func(distances_norm)
+                    
+                    # Analytical second derivative for curvature
+                    if polynomial_degree >= 2:
+                        # Get second derivative coefficients
+                        second_deriv_coeffs = np.polyder(poly_coeffs, 2)
+                        second_deriv_func = np.poly1d(second_deriv_coeffs)
+                        # Scale by distance normalization factor squared
+                        curvature = second_deriv_func(distances_norm) / (length/max(length, 1))**2
+                    else:
+                        # Fallback to numerical gradient for low-degree polynomials
+                        curvature = np.gradient(np.gradient(elev_smooth))
+                except np.linalg.LinAlgError:
+                    # Fallback to simple numerical gradient if polynomial fitting fails
+                    if feedback:
+                        feedback.pushWarning(f"[GetKeypoints] Polynomial fitting failed for line {line_id}, using numerical gradient fallback")
+                    else:
+                        warnings.warn(f"[GetKeypoints] Polynomial fitting failed for line {line_id}, using numerical gradient fallback")
+                    elev_smooth = np.array(elevations)  # Use original elevations
+                    curvature = np.gradient(np.gradient(elev_smooth))
                 
-                # Calculate curvature (second derivative) directly from smoothed data using numpy gradient
-                # This avoids double-smoothing while still working with clean data
-                curvature = np.gradient(np.gradient(elev_smooth))
+                # Store data for CSV export only if output path is provided
+                if csv_data is not None:
+                    csv_data[f"Distance {line_id}"] = distances
+                    csv_data[f"Elevation {line_id}"] = elevations
+                    csv_data[f"Polynomial_Fit {line_id}"] = elev_smooth
+                    csv_data[f"Curvature {line_id}"] = curvature
                 
-                # Alternative approaches:
-                # Option 1 - Direct savgol on raw data (single smoothing): 
-                # curvature = savgol_filter(elevations, smoothing_window, polyorder, deriv=2)
-                # Option 2 - Double smoothing (may over-smooth):
-                # curvature = savgol_filter(elev_smooth, smoothing_window, polyorder, deriv=2)
-
-                # Find convex→concave transitions (keypoints)
-                find_window = max(3, find_window_cells)  # At least 3 pixels, maybe later as input parameter? e.g. Nr. of cells?
-                candidates = TopoDrainCore._find_inflection_candidates(curvature, window=find_window)
-
-                # Sort and select strongest candidates
-                sorted_candidates = sorted(candidates, key=lambda x: x[1], reverse=True)
-
-                # Check for minimum distance between keypoints
+                # Iterative approach to find keypoints with strict distance constraints
                 accepted = []
-                for i, strength in sorted_candidates:
-                    pt = sample_points[i]
-                    if all(pt.distance(p[0]) >= min_distance for p in accepted):
-                        accepted.append((pt, strength, i))
-                    if len(accepted) >= max_keypoints:
+                excluded_indices = set()  # Track indices that are too close to accepted points
+                iteration = 0
+                max_iterations = 10  # Prevent infinite loops
+                
+                while len(accepted) < min_keypoints and iteration < max_iterations:
+                    iteration += 1
+                    
+                    if feedback:
+                        feedback.pushInfo(f"[GetKeypoints] Line {line_id}: Iteration {iteration}, seeking candidate {len(accepted)+1}")
+                    else:
+                        print(f"[GetKeypoints] Line {line_id}: Iteration {iteration}, seeking candidate {len(accepted)+1}")
+                    # Create curvature segments excluding areas around accepted points
+                    valid_segments = []
+                    current_segment_start = 0
+                    
+                    # Sort excluded indices to process them in order
+                    sorted_excluded = sorted(excluded_indices)
+                    
+                    for excluded_idx in sorted_excluded:
+                        # Add segment before this excluded area
+                        if current_segment_start < excluded_idx:
+                            valid_segments.append((current_segment_start, excluded_idx))
+                        current_segment_start = excluded_idx + 1
+                    
+                    # Add final segment after last excluded area
+                    if current_segment_start < len(curvature):
+                        valid_segments.append((current_segment_start, len(curvature)))
+                    
+                    # If no valid segments remain, we can't find more candidates
+                    if not valid_segments:
+                        if feedback:
+                            feedback.pushWarning(f"[GetKeypoints] Line {line_id}: No valid segments remaining after distance constraints")
+                        else:
+                            warnings.warn(f"[GetKeypoints] Line {line_id}: No valid segments remaining after distance constraints")
                         break
+                    
+                    # Find best candidate from all valid segments
+                    all_segment_candidates = []
+                    
+                    for segment_start, segment_end in valid_segments:
+                        if segment_end - segment_start < 3:  # Skip too small segments
+                            continue
+                            
+                        segment_curvature = curvature[segment_start:segment_end]
+                        segment_candidates = TopoDrainCore._find_inflection_candidates(segment_curvature, feedback=None)  # No feedback for segments
+                        
+                        # Adjust indices to global curvature array
+                        for idx, strength, method in segment_candidates:
+                            global_idx = segment_start + idx
+                            all_segment_candidates.append((global_idx, strength, method))
+                    
+                    if not all_segment_candidates:
+                        if feedback:
+                            feedback.pushWarning(f"[GetKeypoints] Line {line_id}: No candidates found in remaining segments")
+                        else:
+                            warnings.warn(f"[GetKeypoints] Line {line_id}: No candidates found in remaining segments")
+                        break
+                    
+                    # Sort all segment candidates by strength and select the best one
+                    all_segment_candidates.sort(key=lambda x: x[1], reverse=True)
+                    best_candidate = all_segment_candidates[0]
+                    
+                    i, strength, method = best_candidate
+                    pt = sample_points[i]
+                    
+                    # Add to accepted list
+                    accepted.append((pt, strength, i, method))
+                    
+                    # Calculate exclusion zone around this accepted point
+                    min_distance_indices = int(min_distance / (length / (num_samples - 1))) if num_samples > 1 else 1
+                    
+                    # Add exclusion zone indices
+                    for exclude_idx in range(max(0, i - min_distance_indices), min(len(curvature), i + min_distance_indices + 1)):
+                        excluded_indices.add(exclude_idx)
+                    
+                    if feedback:
+                        feedback.pushInfo(f"[GetKeypoints] Line {line_id}: Found candidate {len(accepted)} at index {i}, method: {method}, strength: {strength:.3f}")
+                    else:
+                        print(f"[GetKeypoints] Line {line_id}: Found candidate {len(accepted)} at index {i}, method: {method}, strength: {strength:.3f}")
+                
+                # Report if we couldn't find enough candidates due to distance constraints
+                if len(accepted) < min_keypoints:
+                    remaining_needed = min_keypoints - len(accepted)
+                    if feedback:
+                        feedback.pushWarning(f"[GetKeypoints] Line {line_id}: Only found {len(accepted)} keypoints, needed {min_keypoints}. Insufficient space for {remaining_needed} more candidates with min_distance={min_distance:.1f}m constraint.")
+                    else:
+                        print(f"Warning: [GetKeypoints] Line {line_id}: Only found {len(accepted)} keypoints, needed {min_keypoints}. Insufficient space for {remaining_needed} more candidates with min_distance={min_distance:.1f}m constraint.")
 
-                for rank, (pt, _, idx_pt) in enumerate(accepted, start=1):
+                for rank, (pt, _, idx_pt, method) in enumerate(accepted, start=1):
                     results.append({
                         "geometry": Point(pt),
                         "VALLEY_ID": row["LINK_ID"],
-                        "ELEV_INDEX": idx_pt,
                         "RANK": rank,
                         "CURVATURE": curvature[idx_pt]
                     })
@@ -2554,6 +2716,35 @@ class TopoDrainCore:
                         
         finally:
             dtm_ds = None  # Close GDAL dataset
+
+        # Create CSV file with elevation profiles and curvature data only if output path is provided
+        if csv_output_path and csv_data:
+            try:
+                # Find the maximum length among all arrays to pad shorter ones
+                max_length = max(len(arr) for arr in csv_data.values())
+                
+                # Pad all arrays to the same length with NaN
+                for key in csv_data:
+                    arr = csv_data[key]
+                    if len(arr) < max_length:
+                        padded = np.full(max_length, np.nan)
+                        padded[:len(arr)] = arr
+                        csv_data[key] = padded
+                
+                # Create DataFrame and save to CSV
+                df = pd.DataFrame(csv_data)
+                df.to_csv(csv_output_path, index=False)
+                
+                if feedback:
+                    feedback.pushInfo(f"[GetKeypoints] Elevation profiles and curvature data saved to: {csv_output_path}")
+                else:
+                    print(f"[GetKeypoints] Elevation profiles and curvature data saved to: {csv_output_path}")
+                    
+            except Exception as e:
+                if feedback:
+                    feedback.pushWarning(f"[GetKeypoints] Warning: Could not save CSV file: {e}")
+                else:
+                    print(f"[GetKeypoints] Warning: Could not save CSV file: {e}")
 
         gdf = gpd.GeoDataFrame(results, geometry="geometry", crs=self.crs)
 
@@ -4244,7 +4435,7 @@ class TopoDrainCore:
         slope_after: float,
         destination_raster_path: str,
         barrier_raster_path: str,
-        allow_barriers_as_temp_destination: bool = False,
+        allow_barriers_as_temp_destination: bool = True,
         max_iterations_barrier: int = 30,
         slope_deviation_threshold: float = 0.2,
         max_iterations_slope: int = 20,
@@ -4407,7 +4598,7 @@ class TopoDrainCore:
         slope: float = 0.01,
         perimeter: gpd.GeoDataFrame = None,
         barrier_features: list[gpd.GeoDataFrame] = None,
-        allow_barriers_as_temp_destination: bool = False,
+        allow_barriers_as_temp_destination: bool = True,
         max_iterations_barrier: int = 30,
         slope_deviation_threshold: float = 0.2,
         max_iterations_slope: int = 30,
@@ -4431,7 +4622,7 @@ class TopoDrainCore:
             slope (float): Desired slope for the lines (e.g., 0.01 for 1% downhill). Default 0.01.
             perimeter (gpd.GeoDataFrame, optional): Optional perimeter polygon to limit the extent of traced lines. Acts as barriers.
             barrier_features (list[gpd.GeoDataFrame], optional): List of barrier features to avoid during tracing.
-            allow_barriers_as_temp_destination (bool): If True, barriers are included as temporary destinations for iterative tracing. Default False.
+            allow_barriers_as_temp_destination (bool): If True, barriers are included as temporary destinations for iterative tracing. Default True.
             max_iterations_barrier (int): Maximum number of iterations for iterative tracing when allowing barriers as temporary destinations. Default 30.
             max_iterations_slope (int): Maximum number of iterations for line refinement (1-50, higher values allow more complex paths). Default 30.
             slope_deviation_threshold (float): Maximum allowed relative deviation from expected slope (0.0-1.0, e.g., 0.2 for 20% deviation before line cutting). Default 0.2.
@@ -4917,7 +5108,7 @@ class TopoDrainCore:
         destination_features: list[gpd.GeoDataFrame],
         perimeter: gpd.GeoDataFrame = None,
         barrier_features: list[gpd.GeoDataFrame] = None,
-        allow_barriers_as_temp_destination: bool = False,
+        allow_barriers_as_temp_destination: bool = True,
         max_iterations_barrier: int = 30,
         slope_deviation_threshold: float = 0.2,
         max_iterations_slope: int = 20,
