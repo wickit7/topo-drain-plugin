@@ -5298,7 +5298,7 @@ class TopoDrainCore:
             
             # Create GeoDataFrame with all start points and add mapping information
             start_points_gdf = gpd.GeoDataFrame(geometry=all_start_points, crs=self.crs)
-            start_points_gdf['original_line_idx'] = [line_mapping[i] for i in range(len(all_start_points))]
+            start_points_gdf['orig_index'] = [line_mapping[i] for i in range(len(all_start_points))]
             
             try:
                 # Trace all second parts with new slope in a single call
@@ -6101,6 +6101,7 @@ class TopoDrainCore:
                             slope_after=use_slope_after,
                             destination_raster_path=destination_raster_path,
                             barrier_raster_path=barrier_raster_path,
+                            allow_barriers_as_temp_destination=False,
                             slope_deviation_threshold=slope_deviation_threshold,
                             max_iterations_slope=max_iterations_slope,
                             feedback=feedback,
