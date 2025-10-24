@@ -203,9 +203,9 @@ Line layer containing main valley lines with attributes: LINK_ID, TRIB_ID, RANK,
 
         feedback.pushInfo("Reading CRS from valley lines...")
         # Read CRS from the valley lines layer with safe fallback
-        valley_crs = get_crs_from_layer(valley_lines_layer, fallback_crs="EPSG:2056")
+        valley_crs = get_crs_from_layer(valley_lines_layer)
         feedback.pushInfo(f"Valley lines CRS: {valley_crs}")
-        # Update core CRS if needed (valley_crs is supposed to be valid)
+        # Update core CRS if needed
         update_core_crs_if_needed(self.core, valley_crs, feedback)
         
         # Load input data as GeoDataFrame with Windows-safe CRS handling
@@ -213,7 +213,7 @@ Line layer containing main valley lines with attributes: LINK_ID, TRIB_ID, RANK,
         try:
             valley_lines_gdf = load_gdf_from_file(valley_lines_path, feedback)
             valley_lines_gdf.crs = self.core.crs
-            feedback.pushInfo(f"Successfully loaded {len(valley_lines_gdf)} valley line features with safe CRS: {valley_crs}")
+            feedback.pushInfo(f"Successfully loaded {len(valley_lines_gdf)} valley line features with safe CRS: {self.core.crs}")
         except Exception as e:
             feedback.pushInfo(f"Failed to load valley lines with safe CRS handling: {e}")
             raise QgsProcessingException(f"Failed to load valley lines: {e}")

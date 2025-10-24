@@ -223,7 +223,7 @@ class CreateValleysAlgorithm(QgsProcessingAlgorithm):
 
         feedback.pushInfo("Reading CRS from DTM...")
         # Read CRS from the DTM using QGIS layer
-        dtm_crs = get_crs_from_layer(dtm_layer, fallback_crs="EPSG:2056")
+        dtm_crs = get_crs_from_layer(dtm_layer)
         feedback.pushInfo(f"DTM Layer crs: {dtm_crs}")
         # Update core CRS if needed (dtm_crs is supposed to be valid)
         update_core_crs_if_needed(self.core, dtm_crs, feedback)

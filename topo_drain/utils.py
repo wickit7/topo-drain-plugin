@@ -8,28 +8,27 @@
 
 import os
 import re
-from qgis.PyQt.QtGui import QColor
+import warnings
 from qgis.core import (
     QgsProject,
     QgsRasterLayer,
     QgsVectorLayer
 )
 
-def get_crs_from_project(fallback_crs="EPSG:2056"):
+def get_crs_from_project():
     """
     Get the current QGIS project CRS as authid (e.g., 'EPSG:4326')
-    Returns 'EPSG:2056' as fallback if project CRS is invalid or unavailable
     """
     try:
         project_crs = QgsProject.instance().crs().authid()
         if project_crs and project_crs.strip():
             return project_crs
         else:
-            print(f"[TopoDrain Utils] Project CRS is empty, using fallback: {fallback_crs}")
-            return fallback_crs
+            warnings.warn(f"[TopoDrain Utils] Project CRS is empty, returning None")
+            return None
     except Exception as e:
-        print(f"[TopoDrain Utils] Could not get project CRS: {e}, using fallback: {fallback_crs}")
-        return fallback_crs
+        warnings.warn(f"[TopoDrain Utils] Could not get project CRS: {e}, returning None")
+        return None
 
 def parse_epsg_from_wkt_or_description(text):
     """
@@ -74,13 +73,12 @@ def parse_epsg_from_wkt_or_description(text):
     print(f"[TopoDrain Utils] Could not extract EPSG from: {text[:100]}...")
     return None
 
-def get_crs_from_layer(layer_source, fallback_crs="EPSG:2056"):
+def get_crs_from_layer(layer_source):
     """
     Get CRS from a raster or vector layer file or object
     
     Args:
         layer_source: Can be a QgsRasterLayer, QgsVectorLayer, or file path string
-        fallback_crs: CRS to use if layer CRS cannot be determined
     
     Returns:
         str: Valid CRS authid (never None or empty)
@@ -213,8 +211,8 @@ def get_crs_from_layer(layer_source, fallback_crs="EPSG:2056"):
         print(f"[TopoDrain Utils] Could not get CRS from layer {layer_source}: {e}")
     
     # Fallback if no valid CRS could be determined
-    print(f"[TopoDrain Utils] No valid CRS found, using fallback: {fallback_crs}")
-    return fallback_crs
+    print(f"[TopoDrain Utils] No valid CRS found, returning None")
+    return None
 
 def update_core_crs_if_needed(core, input_crs, feedback=None):
     """

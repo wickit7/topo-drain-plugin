@@ -322,10 +322,10 @@ Parameters:
 
         feedback.pushInfo("Reading CRS from DTM...")
         # Read CRS from the DTM using QGIS layer
-        dtm_crs = get_crs_from_layer(dtm_layer, fallback_crs="EPSG:2056")
+        dtm_crs = get_crs_from_layer(dtm_layer)
         feedback.pushInfo(f"DTM Layer crs: {dtm_crs}")
 
-        # Update core CRS if needed (dtm_crs is guaranteed to be valid)
+        # Update core CRS if needed
         update_core_crs_if_needed(self.core, dtm_crs, feedback)
                     
         # Convert QGIS layers to GeoDataFrames
@@ -345,8 +345,8 @@ Parameters:
                     # Load GeoDataFrame using utility function
                     gdf = load_gdf_from_file(layer.source(), feedback)
                     # Manually set the safe CRS
-                    gdf.crs = dtm_crs
-                    feedback.pushInfo(f"Successfully loaded {len(gdf)} destination features with safe CRS: {dtm_crs}")
+                    gdf.crs = self.crs
+                    feedback.pushInfo(f"Successfully loaded {len(gdf)} destination features with safe CRS: {self.crs}")
                 except Exception as e:
                     feedback.pushInfo(f"Failed to load destination layer with safe CRS handling: {e}")
                     raise QgsProcessingException(f"Failed to load destination layer: {e}")
@@ -369,8 +369,8 @@ Parameters:
                         # Load GeoDataFrame using utility function
                         gdf = load_gdf_from_file(layer.source(), feedback)
                         # Manually set the safe CRS
-                        gdf.crs = dtm_crs
-                        feedback.pushInfo(f"Successfully loaded {len(gdf)} barrier features with safe CRS: {dtm_crs}")
+                        gdf.crs = self.crs
+                        feedback.pushInfo(f"Successfully loaded {len(gdf)} barrier features with safe CRS: {self.crs}")
                     except Exception as e:
                         feedback.pushInfo(f"Failed to load barrier layer with safe CRS handling: {e}")
                         raise QgsProcessingException(f"Failed to load barrier layer: {e}")
@@ -389,8 +389,8 @@ Parameters:
                 perimeter_layer_path = perimeter_layer.source()
                 perimeter_gdf = load_gdf_from_file(perimeter_layer_path, feedback)
                 # Manually set the safe CRS
-                perimeter_gdf.crs = dtm_crs
-                feedback.pushInfo(f"Successfully loaded {len(perimeter_gdf)} perimeter features with safe CRS: {dtm_crs}")
+                perimeter_gdf.crs = self.crs
+                feedback.pushInfo(f"Successfully loaded {len(perimeter_gdf)} perimeter features with safe CRS: {self.crs}")
             except Exception as e:
                 feedback.pushInfo(f"Failed to load perimeter: {e}")
                 raise QgsProcessingException(f"Failed to load perimeter: {e}")

@@ -222,9 +222,9 @@ class CreateRidgesAlgorithm(QgsProcessingAlgorithm):
                     feedback.pushWarning(f"Output {output_name} format '{output_raster_ext}' is not in GDAL driver mapping. Supported formats: {supported_raster_formats}. GDAL will attempt to save it automatically.")
 
         feedback.pushInfo("Reading CRS from DTM...")
-        dtm_crs = get_crs_from_layer(dtm_layer, fallback_crs="EPSG:2056")
+        dtm_crs = get_crs_from_layer(dtm_layer)
         feedback.pushInfo(f"DTM Layer crs: {dtm_crs}")
-        # Update core CRS if needed (dtm_crs is supposed to be valid)
+        # Update core CRS if needed
         update_core_crs_if_needed(self.core, dtm_crs, feedback)
 
         feedback.pushInfo("Running extract ridges...")

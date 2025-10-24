@@ -198,7 +198,7 @@ Point layer containing distributed points with attributes:
 
         feedback.pushInfo("Reading CRS from input lines...")
         # Read CRS from the lines layer
-        lines_crs = get_crs_from_layer(lines_source, fallback_crs="EPSG:2056")
+        lines_crs = get_crs_from_layer(lines_source)
         feedback.pushInfo(f"Lines CRS: {lines_crs}")
 
         # Update core CRS if needed

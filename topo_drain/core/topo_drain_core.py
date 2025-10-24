@@ -14,7 +14,7 @@ import uuid
 import numpy as np
 import pandas as pd
 import geopandas as gpd
-from shapely.geometry import LineString, MultiLineString, Point, Polygon, box
+from shapely.geometry import LineString, MultiLineString, Point, box
 from shapely.ops import linemerge, nearest_points, substring
 from scipy.ndimage import gaussian_filter1d
 from osgeo import gdal, ogr

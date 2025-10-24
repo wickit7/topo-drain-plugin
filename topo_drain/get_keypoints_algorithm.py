@@ -238,10 +238,10 @@ The algorithm uses sophisticated mathematical techniques:
 
         feedback.pushInfo("Reading CRS from DTM layer...")
         # Read CRS from the DTM layer with safe fallback (since we can't get CRS from source directly)
-        dtm_crs = get_crs_from_layer(dtm_layer, fallback_crs="EPSG:2056")
+        dtm_crs = get_crs_from_layer(dtm_layer)
         feedback.pushInfo(f"DTM CRS: {dtm_crs}")
 
-        # Update core CRS if needed (dtm_crs is guaranteed to be valid)
+        # Update core CRS if needed
         update_core_crs_if_needed(self.core, dtm_crs, feedback)
 
         # Load input data as GeoDataFrame

@@ -214,10 +214,10 @@ Use Cases:
 
         feedback.pushInfo("Reading CRS from flow direction raster...")
         # Read CRS from the flow direction raster with safe fallback
-        fdir_crs = get_crs_from_layer(fdir_layer, fallback_crs="EPSG:2056")
+        fdir_crs = get_crs_from_layer(fdir_layer)
         feedback.pushInfo(f"Flow Direction CRS: {fdir_crs}")
 
-        # Update core CRS if needed (fdir_crs is guaranteed to be valid)
+        # Update core CRS if needed
         update_core_crs_if_needed(self.core, fdir_crs, feedback)
 
         # Load input data as GeoDataFrame

@@ -291,7 +291,7 @@ another valley line, alternating between the two."""
         
         # Read CRS from the DTM using QGIS layer with safe fallback
         feedback.pushInfo("Reading CRS from DTM...")
-        dtm_crs = get_crs_from_layer(dtm_layer, fallback_crs="EPSG:2056")
+        dtm_crs = get_crs_from_layer(dtm_layer)
         feedback.pushInfo(f"DTM Layer crs: {dtm_crs}")
 
         # Update core CRS if needed (dtm_crs is guaranteed to be valid)
