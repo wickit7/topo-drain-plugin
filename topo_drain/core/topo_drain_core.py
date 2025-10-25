@@ -2896,13 +2896,14 @@ class TopoDrainCore:
                     
                     # Create point with line attributes plus additional metadata
                     point_data = line_row.drop('geometry').to_dict()  # Preserve original line attributes
+                    point_data.pop('id', None)  # Remove 'id' to avoid conflicts with GeoDataFrame index
+                    point_data.pop('fid', None)  # Remove 'fid' to avoid conflicts with GPKG FID
                     point_data.pop('RANK', None)  # Remove RANK attribute if present
                     point_data.pop('DS_LINK_ID', None)  # Remove DS_LINK_ID attribute if present
                     point_data['geometry'] = point_geom
-                    point_data['line_id'] = line_id
-                    point_data['distance_along_line'] = distance_along
-                    point_data['point_index'] = i
-                    point_data['is_reference_point'] = False
+                    point_data['DISTANCE'] = distance_along
+                    point_data['POINT_ID'] = i
+                    point_data['IS_REF_POINT'] = False
                     points.append(point_data)
             return points
         
@@ -2966,21 +2967,22 @@ class TopoDrainCore:
             point_geom = line_geom.interpolate(dist)
             
             # Check if this point is at a reference point location
-            is_reference_point = False
+            is_ref_point = False
             for ref_distance in ref_distances_on_line:
                 if abs(dist - ref_distance) < 0.1:  # Small tolerance for floating point comparison
-                    is_reference_point = True
+                    is_ref_point = True
                     break
             
             # Create point with line attributes plus additional metadata
             point_data = line_row.drop('geometry').to_dict()  # Preserve original line attributes
             point_data.pop('RANK', None)  # Remove RANK attribute if present
             point_data.pop('DS_LINK_ID', None)  # Remove DS_LINK_ID attribute if present
+            point_data.pop('id', None)  # Remove 'id' to avoid conflicts with GeoDataFrame index
+            point_data.pop('fid', None)  # Remove 'fid' to avoid conflicts with GPKG FID
             point_data['geometry'] = point_geom
-            point_data['line_id'] = line_id
-            point_data['distance_along_line'] = dist
-            point_data['point_index'] = i
-            point_data['is_reference_point'] = is_reference_point  # Flag indicating if this was a reference point
+            point_data['DISTANCE'] = dist
+            point_data['POINT_ID'] = i
+            point_data['IS_REF_POINT'] = is_ref_point  # Flag indicating if this was a reference point
             points.append(point_data)
         
         return points
@@ -5022,6 +5024,8 @@ class TopoDrainCore:
                         constant_slope_lines.append(traced_line)
                         # Store attributes from the original start point plus input parameters
                         point_attrs = pt_row.drop('geometry').to_dict()  # Get all attributes except geometry
+                        point_attrs.pop('id', None)  # Remove 'id' to avoid conflicts with GeoDataFrame index
+                        point_attrs.pop('fid', None)  # Remove 'fid' to avoid conflicts with GPKG FID
                         point_attrs['slope'] = slope  # Add input parameter
                         start_point_attributes.append(point_attrs)
                         if feedback:
@@ -5054,6 +5058,8 @@ class TopoDrainCore:
                         constant_slope_lines.append(traced_line)
                         # Store attributes from the original start point plus input parameters
                         point_attrs = pt_row.drop('geometry').to_dict()  # Get all attributes except geometry
+                        point_attrs.pop('id', None)  # Remove 'id' to avoid conflicts with GeoDataFrame index
+                        point_attrs.pop('fid', None)  # Remove 'fid' to avoid conflicts with GPKG FID
                         point_attrs['slope'] = slope  # Add input parameters
                         start_point_attributes.append(point_attrs)
                         if feedback:

@@ -198,7 +198,7 @@ Point layer containing distributed points with attributes:
 
         feedback.pushInfo("Reading CRS from input lines...")
         # Read CRS from the lines layer
-        lines_crs = get_crs_from_layer(lines_source)
+        lines_crs = get_crs_from_layer(lines_source) ### here create separate function in utils to get CRS from QgsFeatureSource
         feedback.pushInfo(f"Lines CRS: {lines_crs}")
 
         # Update core CRS if needed
@@ -240,7 +240,7 @@ Point layer containing distributed points with attributes:
         # Ensure the points GeoDataFrame has the correct CRS
         points_gdf = points_gdf.set_crs(self.core.crs, allow_override=True)
         feedback.pushInfo(f"Points CRS: {points_gdf.crs}")
-
+        
         # Save result with proper format handling
         save_gdf_to_file(points_gdf, points_file_path, self.core, feedback)
 
