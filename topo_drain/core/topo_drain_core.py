@@ -1487,7 +1487,6 @@ class TopoDrainCore:
 
         if feedback:
             feedback.pushInfo("[ExtractValleys] Starting valley extraction process...")
-            feedback.pushInfo("[ExtractValleys] *Detailed WhiteboxTools output can be viewed in the Python Console")
             feedback.setProgress(0)
         else:
             print("[ExtractValleys] Starting valley extraction process...")
@@ -1798,7 +1797,6 @@ class TopoDrainCore:
 
         if feedback:
             feedback.pushInfo("[WatershedDelineation] Starting watershed delineation process...")
-            feedback.pushInfo("[WatershedDelineation] *Detailed WhiteboxTools output can be viewed in the Python Console")
             feedback.setProgress(0)
         else:
             print("[WatershedDelineation] Starting watershed delineation process...")
