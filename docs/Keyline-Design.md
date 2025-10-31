@@ -164,11 +164,15 @@ Before extracting main valleys and ridges, you need to define the boundary (peri
 6. Toggle editing mode (click the pencil icon) and use the **Add Polygon Feature** tool to digitize your perimeter polygon around your study area (e.g., around the agricultural field on the hillslope)
 7. Save edits when finished
 
-**Tip**: Consider valley and ridge lines when drawing your polygon. You may want to include important branches (valleys or ridges) that extend beyond the exact boundary of the agricultural field, as these features can be relevant for the overall Keyline Design. Conversely, you may want to exclude main branches that intersect the perimeter edge but are not relevant for your study area analysis.
+**Tip**: Consider valley and ridge lines when drawing your polygon. You may want to include important branches (valleys or ridges) that extend beyond the exact boundary of the agricultural field, as these features can be relevant for the overall Keyline Design. Conversely, you may want to exclude main branches that intersect the perimeter edge but are not relevant for your study area analysis. You can also iterate between the Extract Main Valleys and Extract Main Ridges tools to refine the alternation of valley, ridge, and perimeter lines — the perimeter will act as a "final" ridge or valley.
 
 **Styling recommendation**: Set the polygon to have a black outline (no fill or transparent fill).
 
 <img src="../resources/EditPerimeter.png" alt="Editing Perimeter Polygon" width="500">
+
+
+> **Note**: If you run a tool multiple times and overwrite an existing layer, you may need to refresh the layer visibility in QGIS. Right-click on the layer → **Change Data Source** → select the data file again to refresh the layer.
+
 
 ---
 
@@ -178,7 +182,7 @@ After creating the complete valley and ridge networks, you need to identify and 
 
 ### Extract Main Valleys
 
-The **Extract Main Valleys** tool identifies the most significant valley lines (flow paths) from the complete valley network by selecting the tributaries with the highest flow accumulation values within your perimeter.
+The **Extract Main Valleys** tool identifies the most significant valley lines (flow paths) from the complete valley network by selecting the tributaries with the highest flow accumulation values within your perimeter. 
 
 <img src="../resources/ExtractMainValleys.png" alt="Extract Main Valleys Dialog" width="500">
 
@@ -246,6 +250,7 @@ Add labels showing the **RANK** attribute to identify the valley order:
 
 <img src="../resources/MainValleysLabel.png" alt="Main Valleys Labels" width="500">
 
+
 ---
 
 ### Extract Main Ridges
@@ -258,6 +263,54 @@ Use the same approach:
 - Configure the same parameters as described in the Extract Main Valleys section
 
 **Styling recommendation**: Use orange/brown thick lines to distinguish from main valleys.
+
+<img src="../resources/ExtractMainRidges.png" alt="Extract Main Ridges Result" width="500">
+
+---
+
+### Adjust Main Valleys and Main Ridges
+
+**Goal**: Create a clean valley-ridge pattern suitable for keyline design. Topography is often complex, resulting in intricate main valley and main ridge patterns. Some creativity is needed here to create a useful pattern that works for your design.
+
+> **Note**: Depending on your terrain, you may even want to create Main Valleys and Main Ridges from scratch by manual digitizing rather than extracting them. However, this example shows how to adjust extracted main valleys and main ridges.
+
+<img src="../resources/AdjustMainValleysMainRidges.png" alt="Areas to Adjust (marked in red)" width="500">
+
+#### Step 1: Smooth the Lines
+
+Before editing the Main Ridges and Main Valleys in QGIS, it's recommended to use the WhiteboxTools processing tool **"SmoothVectors"**:
+
+- This reduces the number of vertices, making editing easier
+- It also improves accuracy for subsequent tools like "Get Points Along Line" (distance calculations are more accurate on smoothed lines than on very wavy lines)
+
+<img src="../resources/SmoothMainValleysMainRidges.png" alt="Smooth Vectors Tool" width="500">
+
+#### Step 2: Edit the Pattern
+
+Edit the Main Valleys and Main Ridges layers to create a clean pattern:
+
+1. Toggle editing mode for the Main Valleys layer
+2. Use vertex editing tools to adjust line geometry
+3. Delete unnecessary segments or features
+4. Repeat for Main Ridges layer
+
+**Pattern recommendation**: While the "Create Keylines" tool can handle valley-to-valley or ridge-to-ridge tracing, it's recommended to create a pattern with **alternating** features:
+
+**Perimeter → Valley → Ridge → Valley → ... → Perimeter**
+
+This alternation creates a more organized and practical keyline pattern.
+
+<img src="../resources/EditMainValley_step1.png" alt="Edit Main Valley - Step 1" width="500">
+
+<img src="../resources/EditMainValley_step2.png" alt="Edit Main Valley - Step 2" width="500">
+
+<img src="../resources/EditMainValley_step3.png" alt="Edit Main Valley - Step 3" width="500">
+
+#### Final Pattern
+
+After editing, you should have a clean, alternating valley-ridge pattern ready for keyline creation:
+
+<img src="../resources/MainValleysMainRidges_processed.png" alt="Final Processed Pattern" width="500">
 
 ---
 
