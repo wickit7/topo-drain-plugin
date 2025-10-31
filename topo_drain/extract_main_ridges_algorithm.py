@@ -200,7 +200,7 @@ Line layer containing main ridge lines with attributes: LINK_ID, TRIB_ID, RANK, 
 
         feedback.pushInfo("Reading CRS from ridge lines...")
         # Read CRS from the ridge lines layer with safe fallback
-        ridge_crs = get_crs_from_layer(ridge_lines_layer, fallback_crs="EPSG:2056")
+        ridge_crs = get_crs_from_layer(ridge_lines_layer)
         feedback.pushInfo(f"Ridge lines CRS: {ridge_crs}")
         # Update core CRS if needed (ridge_crs is guaranteed to be valid)
         update_core_crs_if_needed(self.core, ridge_crs, feedback)
@@ -210,7 +210,7 @@ Line layer containing main ridge lines with attributes: LINK_ID, TRIB_ID, RANK, 
         try:
             ridge_lines_gdf = load_gdf_from_file(ridge_lines_path, feedback)
             ridge_lines_gdf.crs = self.core.crs
-            feedback.pushInfo(f"Successfully loaded {len(ridge_lines_gdf)} ridge line features with safe CRS: {ridge_crs}")
+            feedback.pushInfo(f"Successfully loaded {len(ridge_lines_gdf)} ridge line features with safe CRS: {self.core.crs}")
         except Exception as e:
             feedback.pushInfo(f"Failed to load ridge lines with safe CRS handling: {e}")
             raise QgsProcessingException(f"Failed to load ridge lines: {e}")

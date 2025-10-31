@@ -12,10 +12,10 @@ from qgis.PyQt.QtGui import QIcon
 from qgis.core import (QgsProcessing,
                        QgsProcessingException,
                        QgsProcessingAlgorithm,
-                       QgsProcessingParameterVectorLayer,
                        QgsProcessingParameterFeatureSource,
                        QgsProcessingParameterRasterLayer,
                        QgsProcessingParameterVectorDestination,
+                       QgsProcessingParameterFileDestination,
                        QgsProcessingParameterNumber)
 import geopandas as gpd
 import os
@@ -29,16 +29,16 @@ class GetKeypointsAlgorithm(QgsProcessingAlgorithm):
 
     This algorithm identifies keypoints (points of high convexity) along valley lines by analyzing
     the curvature of elevation profiles extracted from a DTM. The elevation profile is extracted
-    along each valley line and smoothed using a Savitzky-Golay filter. The second derivative
+    along each valley line and fitted with a polynomial. The analytical second derivative
     (curvature) is then computed, and locations with the strongest convex curvature are selected
     as keypoints.
 
     The algorithm:
-    - Extracts elevation profiles along each valley line using the DTM
-    - Applies Savitzky-Golay smoothing to reduce noise
-    - Computes the second derivative (curvature) of the elevation profile
-    - Identifies inflection points where curvature changes from concave to convex
-    - Selects the top N keypoints per valley line based on curvature strength
+    - Extracts elevation profiles along each valley line using the DTM at pixel resolution
+    - Fits a polynomial to the elevation data for smoothing
+    - Computes the analytical second derivative (curvature) of the polynomial
+    - Identifies inflection points using mathematical analysis (zero crossings, local extrema)
+    - Selects all valid keypoints based on curvature strength and distance constraints
     - Ensures minimum distance between selected keypoints
 
     This is useful for identifying significant morphological features along drainage channels,
@@ -49,11 +49,11 @@ class GetKeypointsAlgorithm(QgsProcessingAlgorithm):
     # Constants used to refer to parameters and outputs
     INPUT_VALLEY_LINES = 'INPUT_VALLEY_LINES'
     INPUT_DTM = 'INPUT_DTM'
-    SMOOTHING_WINDOW = 'SMOOTHING_WINDOW'
-    POLYORDER = 'POLYORDER'
+    POLYNOMIAL_DEGREE = 'POLYNOMIAL_DEGREE'
     MIN_DISTANCE = 'MIN_DISTANCE'
-    MAX_KEYPOINTS = 'MAX_KEYPOINTS'
+    MIN_KEYPOINTS = 'MIN_KEYPOINTS'
     OUTPUT_KEYPOINTS = 'OUTPUT_KEYPOINTS'
+    CSV_OUTPUT_PATH = 'CSV_OUTPUT_PATH'
 
     def __init__(self, core=None):
         super().__init__()
@@ -75,13 +75,13 @@ class GetKeypointsAlgorithm(QgsProcessingAlgorithm):
         return 'get_keypoints'
 
     def displayName(self):
-        return self.tr('Get Keypoints (along Main Valley Lines)')
+        return self.tr('Get Keypoints')
 
     def group(self):
-        return self.tr('Basic Watershed Analysis')
+        return self.tr('Point Analysis')
 
     def groupId(self):
-        return 'basic_watershed_analysis'
+        return 'point_analysis'
 
     def shortHelpString(self):
         return self.tr(
@@ -91,25 +91,31 @@ This algorithm identifies keypoints (points of high convexity) along valley line
 
 The algorithm:
 - Extracts elevation profiles along each valley line using the DTM at pixel resolution
-- Applies smoothing to reduce noise depending on the parameters "smoothing window" and "polyorder"
-- Computes the second derivative (curvature) of the elevation profile
-- Identifies inflection points where curvature changes from concave to convex
-- Selects the top N keypoints ("Number of keypoints per valley line") per valley line based on curvature strength
-- Ensures minimum distance between selected keypoints ("Minimum distance between keypoints (m)")
+- Fits a polynomial to the elevation data for smoothing and noise reduction
+- Computes the analytical second derivative (curvature) of the polynomial
+- Identifies inflection points using mathematical analysis (zero crossings, local extrema)
+- Selects all valid keypoints based on curvature strength and distance constraints
+- Ensures minimum distance between selected keypoints
 
 This is useful for identifying significant morphological features along drainage channels, such as knickpoints, channel transitions, or locations suitable for water retention structures in keyline design applications.
 
 Input Requirements:
-- Valley Lines: Must have 'LINK_ID' attribute (from Create Valleys algorithm). LINK_ID is the standard cross-platform identifier.
+- Valley Lines: Should have 'LINK_ID' attribute (from Create Valleys algorithm)
 - DTM: Digital Terrain Model for elevation profile extraction
 
-OUTPUT_KEYPOINTS:
-Point layer containing detected keypoints with attributes: VALLEY_ID, ELEV_INDEX, RANK, CURVATURE
+OUTPUTS:
+- Keypoints: Point layer with attributes: VALLEY_ID, ELEV_INDEX, RANK, CURVATURE, METHOD
+- CSV Output (optional): Elevation profiles and curvature data
 
-Simplified Parameters:
-- Maximum keypoints: Limits output per valley line
-- Minimum distance: Ensures spatial separation between keypoints
-- Smoothing parameters: Control noise reduction in elevation profiles"""
+Parameters:
+- Minimum keypoint candidates: Controls inflection detection sensitivity 
+- Minimum distance: Ensures spatial separation between keypoints  
+- Polynomial degree: Controls smoothing level (higher degree = more flexible fitting)
+
+The algorithm uses sophisticated mathematical techniques:
+- Exact zero crossings in curvature (most precise)
+- Local extrema in curvature (morphological features)
+- Fallback methods ensure keypoints are always found"""
         )
 
     def icon(self):
@@ -123,7 +129,7 @@ Simplified Parameters:
         self.addParameter(
             QgsProcessingParameterFeatureSource(
                 self.INPUT_VALLEY_LINES,
-                self.tr('Input Main Valley Lines (must have LINK_ID attribute)'),
+                self.tr('Input Main Valley Lines'),
                 [QgsProcessing.TypeVectorLine]
             )
         )
@@ -136,13 +142,13 @@ Simplified Parameters:
             )
         )
 
-        # Maximum keypoints per valley line
+        # Minimum keypoint candidates
         self.addParameter(
             QgsProcessingParameterNumber(
-                self.MAX_KEYPOINTS,
-                self.tr('(Max.) Number of keypoints per valley line'),
+                self.MIN_KEYPOINTS,
+                self.tr('Minimum keypoint candidates to find'),
                 type=QgsProcessingParameterNumber.Integer,
-                defaultValue=2,
+                defaultValue=1,
                 minValue=1
            )
         )
@@ -153,32 +159,20 @@ Simplified Parameters:
                 self.MIN_DISTANCE,
                 self.tr('Minimum distance between keypoints (m)'),
                 type=QgsProcessingParameterNumber.Double,
-                defaultValue=10.0,
+                defaultValue=20.0,
                 minValue=1.0
             )
         )
 
-        # Polynomial order
+        # Polynomial degree
         self.addParameter(
             QgsProcessingParameterNumber(
-                self.POLYORDER,
-                self.tr('Advanced: Polynomial order for smoothing'),
+                self.POLYNOMIAL_DEGREE,
+                self.tr('Polynomial degree for elevation profile fitting'),
                 type=QgsProcessingParameterNumber.Integer,
-                defaultValue=2,
+                defaultValue=3,
                 minValue=1,
-                maxValue=5
-            )
-        )
-        
-        # Smoothing window
-        self.addParameter(
-            QgsProcessingParameterNumber(
-                self.SMOOTHING_WINDOW,
-                self.tr('Advanced: Smoothing window size (must be odd and larger than Polynomial order)'),
-                type=QgsProcessingParameterNumber.Integer,
-                defaultValue=9,
-                minValue=3,
-                maxValue=51
+                maxValue=8
             )
         )
 
@@ -190,6 +184,16 @@ Simplified Parameters:
             )
         )
 
+        # CSV output file for elevation profiles and curvature data
+        self.addParameter(
+            QgsProcessingParameterFileDestination(
+                self.CSV_OUTPUT_PATH,
+                self.tr('CSV Output File (Elevation Profiles and Curvature Data)'),
+                fileFilter='CSV files (*.csv)',
+                optional=True
+            )
+        )
+
     def processAlgorithm(self, parameters, context, feedback):
         # Ensure WhiteboxTools is configured before running
         if not ensure_whiteboxtools_configured(self, feedback):
@@ -198,19 +202,20 @@ Simplified Parameters:
         # Validate and read input parameters
         valley_lines_source = self.parameterAsSource(parameters, self.INPUT_VALLEY_LINES, context)
         dtm_layer = self.parameterAsRasterLayer(parameters, self.INPUT_DTM, context)
-        smoothing_window = self.parameterAsInt(parameters, self.SMOOTHING_WINDOW, context)
-        polyorder = self.parameterAsInt(parameters, self.POLYORDER, context)
+        polynomial_degree = self.parameterAsInt(parameters, self.POLYNOMIAL_DEGREE, context)
         min_distance = self.parameterAsDouble(parameters, self.MIN_DISTANCE, context)
-        max_keypoints = self.parameterAsInt(parameters, self.MAX_KEYPOINTS, context)
-
-        # Validate smoothing parameters
-        if smoothing_window <= polyorder:
-            raise QgsProcessingException(f"Smoothing window ({smoothing_window}) must be larger than polynomial order ({polyorder})")
+        min_keypoints = self.parameterAsInt(parameters, self.MIN_KEYPOINTS, context)
         
-        if smoothing_window % 2 == 0:
-            new_window = smoothing_window - 1
-            feedback.reportError(f"Smoothing window ({smoothing_window}) must be odd. Adjusting to {new_window}.")
-            smoothing_window = new_window
+        # Only get CSV output path if user actually provided one
+        csv_output_path = None
+        if self.CSV_OUTPUT_PATH in parameters and parameters[self.CSV_OUTPUT_PATH]:
+            param_value = parameters[self.CSV_OUTPUT_PATH]
+            # Check if it's not a temporary/automatic path generated by QGIS
+            if not (str(param_value).endswith('CSV_OUTPUT_PATH.csv') or str(param_value) == 'TEMPORARY_OUTPUT'):
+                csv_output_path = self.parameterAsFileOutput(parameters, self.CSV_OUTPUT_PATH, context)
+                # Ensure it's not empty or just whitespace
+                if not csv_output_path or not csv_output_path.strip():
+                    csv_output_path = None
 
         # Get DTM path and validate format
         dtm_path = dtm_layer.source()
@@ -233,10 +238,10 @@ Simplified Parameters:
 
         feedback.pushInfo("Reading CRS from DTM layer...")
         # Read CRS from the DTM layer with safe fallback (since we can't get CRS from source directly)
-        dtm_crs = get_crs_from_layer(dtm_layer, fallback_crs="EPSG:2056")
+        dtm_crs = get_crs_from_layer(dtm_layer)
         feedback.pushInfo(f"DTM CRS: {dtm_crs}")
 
-        # Update core CRS if needed (dtm_crs is guaranteed to be valid)
+        # Update core CRS if needed
         update_core_crs_if_needed(self.core, dtm_crs, feedback)
 
         # Load input data as GeoDataFrame
@@ -246,19 +251,21 @@ Simplified Parameters:
         if valley_lines_gdf.empty:
             raise QgsProcessingException("No features found in valley lines input")
 
-        # Check for LINK_ID attribute (required)
+        # Check for LINK_ID attribute (create if missing)
         if 'LINK_ID' not in valley_lines_gdf.columns:
-            raise QgsProcessingException("Valley lines must have a 'LINK_ID' attribute. Please use valley lines generated by the Create Valleys algorithm.")
+            feedback.pushWarning("Valley lines do not have a 'LINK_ID' attribute. Creating LINK_ID field with unique values.")
+            valley_lines_gdf['LINK_ID'] = range(1, len(valley_lines_gdf) + 1)
+            feedback.pushInfo(f"Created LINK_ID field with values from 1 to {len(valley_lines_gdf)}")
 
         # Run keypoint detection
         feedback.pushInfo("Running keypoint detection...")
         keypoints_gdf = self.core.get_keypoints(
             valley_lines=valley_lines_gdf,
             dtm_path=dtm_path,
-            smoothing_window=smoothing_window,
-            polyorder=polyorder,
+            polynomial_degree=polynomial_degree,
             min_distance=min_distance,
-            max_keypoints=max_keypoints,
+            min_keypoints=min_keypoints,
+            csv_output_path=csv_output_path,
             feedback=feedback
         )
 
@@ -279,6 +286,9 @@ Simplified Parameters:
         for output in self.outputDefinitions():
             outputName = output.name()
             if outputName in parameters:
+                # Only include CSV output in results if it was actually created (user provided a real path)
+                if outputName == self.CSV_OUTPUT_PATH and csv_output_path is None:
+                    continue  # Skip CSV output if no real path was provided
                 results[outputName] = parameters[outputName]
 
         return results

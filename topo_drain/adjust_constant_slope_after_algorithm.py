@@ -39,6 +39,7 @@ class AdjustConstantSlopeAfterAlgorithm(QgsProcessingAlgorithm):
     INPUT_LINES = 'INPUT_LINES'
     INPUT_DESTINATION_FEATURES = 'INPUT_DESTINATION_FEATURES'
     INPUT_BARRIER_FEATURES = 'INPUT_BARRIER_FEATURES'
+    INPUT_PERIMETER = 'INPUT_PERIMETER'
     OUTPUT_ADJUSTED_LINES = 'OUTPUT_ADJUSTED_LINES'
     CHANGE_AFTER = 'CHANGE_AFTER'
     SLOPE_AFTER = 'SLOPE_AFTER'
@@ -70,10 +71,10 @@ class AdjustConstantSlopeAfterAlgorithm(QgsProcessingAlgorithm):
         return self.tr('Adjust Constant Slope After Distance')
 
     def group(self):
-        return self.tr('Slope Analysis')
+        return self.tr('Slope Line Analysis')
 
     def groupId(self):
-        return 'slope_analysis'
+        return 'slope_line_analysis'
 
     def shortHelpString(self):
         return self.tr(
@@ -102,6 +103,7 @@ Parameters:
 - New Slope After Change Point: New Slope for the second segment (e.g., 0.005 for 0.5% downhill)
 - Destination Features: Features that the new slope sections should reach (e.g., ridge lines)
 - Barrier Features (optional): Features to avoid during new slope tracing (e.g., valley lines)
+- Perimeter (optional): Polygon features defining area of interest. Acts as both barrier (boundary cannot be crossed) and is used to check if points are inside the perimeter area.
 - Slope Deviation Threshold: Maximum allowed slope deviation before triggering slope refinement iterations (0.0-1.0, e.g., 0.2 = 20%)
 - Max Iterations Slope: Maximum iterations for slope refinement (1-50, default: 20)
 - Max Iterations Barrier: Maximum iterations when using barriers as temporary destinations (1-50, default: 30)
@@ -144,12 +146,21 @@ Parameters:
                 optional=True
             )
         )
+
+        self.addParameter(
+            QgsProcessingParameterVectorLayer(
+                self.INPUT_PERIMETER,
+                self.tr('Perimeter (Area of Interest) - acts as barrier and limits processing to interior points'),
+                types=[QgsProcessing.TypeVectorPolygon],
+                optional=True
+            )
+        )
         
         self.addParameter(
             QgsProcessingParameterBoolean(
                 self.ALLOW_BARRIERS_AS_TEMP_DESTINATION,
                 self.tr('Allow Barriers as Temporary Destination (enables zig-zag tracing between barriers)'),
-                defaultValue=False
+                defaultValue=True
             )
         )
 
@@ -194,9 +205,9 @@ Parameters:
                 self.MAX_ITERATIONS_SLOPE,
                 self.tr('Advanced: Max Iterations Slope (maximum iterations for line refinement, 1-100, default: 20)'),
                 type=QgsProcessingParameterNumber.Integer,
-                defaultValue=20,
+                defaultValue=30,
                 minValue=1,
-                maxValue=100
+                maxValue=500
             )
         )
         
@@ -207,7 +218,7 @@ Parameters:
                 type=QgsProcessingParameterNumber.Integer,
                 defaultValue=30,
                 minValue=1,
-                maxValue=100
+                maxValue=500
             )
         )
         
@@ -230,6 +241,7 @@ Parameters:
         input_lines_source = self.parameterAsSource(parameters, self.INPUT_LINES, context)
         destination_layers = self.parameterAsLayerList(parameters, self.INPUT_DESTINATION_FEATURES, context)
         barrier_layers = self.parameterAsLayerList(parameters, self.INPUT_BARRIER_FEATURES, context)
+        perimeter_layer = self.parameterAsVectorLayer(parameters, self.INPUT_PERIMETER, context)
         
         # Get DTM path and validate format
         dtm_path = dtm_layer.source()
@@ -277,7 +289,7 @@ Parameters:
 
         feedback.pushInfo("Reading CRS from DTM...")
         # Read CRS from the DTM using QGIS layer
-        dtm_crs = get_crs_from_layer(dtm_layer, fallback_crs="EPSG:2056")
+        dtm_crs = get_crs_from_layer(dtm_layer)
         feedback.pushInfo(f"DTM Layer crs: {dtm_crs}")
 
         # Update core CRS if needed (dtm_crs is guaranteed to be valid)
@@ -316,8 +328,8 @@ Parameters:
                     # Load GeoDataFrame using utility function
                     gdf = load_gdf_from_file(layer.source(), feedback)
                     # Manually set the safe CRS
-                    gdf.crs = dtm_crs
-                    feedback.pushInfo(f"Successfully loaded {len(gdf)} destination features with safe CRS: {dtm_crs}")
+                    gdf.crs = self.crs
+                    feedback.pushInfo(f"Successfully loaded {len(gdf)} destination features with safe CRS: {self.crs}")
                 except Exception as e:
                     feedback.pushInfo(f"Failed to load destination layer with safe CRS handling: {e}")
                     raise QgsProcessingException(f"Failed to load destination layer: {e}")
@@ -340,8 +352,8 @@ Parameters:
                         # Load GeoDataFrame using utility function
                         gdf = load_gdf_from_file(layer.source(), feedback)
                         # Manually set the safe CRS
-                        gdf.crs = dtm_crs
-                        feedback.pushInfo(f"Successfully loaded {len(gdf)} barrier features with safe CRS: {dtm_crs}")
+                        gdf.crs = self.crs
+                        feedback.pushInfo(f"Successfully loaded {len(gdf)} barrier features with safe CRS: {self.crs}")
                     except Exception as e:
                         feedback.pushInfo(f"Failed to load barrier layer with safe CRS handling: {e}")
                         raise QgsProcessingException(f"Failed to load barrier layer: {e}")
@@ -351,6 +363,30 @@ Parameters:
                         barrier_gdfs.append(gdf)
                         feedback.pushInfo(f"Barrier layer: {len(gdf)} features")
 
+        # Convert perimeter to GeoDataFrame (optional) with Windows-safe CRS handling
+        perimeter_gdf = None
+        if perimeter_layer and perimeter_layer.source():
+            feedback.pushInfo("Converting perimeter to GeoDataFrame...")
+            try:
+                # Load GeoDataFrame using utility function
+                perimeter_layer_path = perimeter_layer.source()
+                perimeter_gdf = load_gdf_from_file(perimeter_layer_path, feedback)
+                # Manually set the safe CRS
+                perimeter_gdf.crs = self.crs
+                feedback.pushInfo(f"Successfully loaded {len(perimeter_gdf)} perimeter features with safe CRS: {self.crs}")
+            except Exception as e:
+                feedback.pushInfo(f"Failed to load perimeter: {e}")
+                raise QgsProcessingException(f"Failed to load perimeter: {e}")
+                
+            if not perimeter_gdf.empty:
+                perimeter_gdf = perimeter_gdf.to_crs(self.core.crs)
+                feedback.pushInfo(f"Perimeter: {len(perimeter_gdf)} features")
+            else:
+                feedback.pushInfo("Warning: Empty perimeter layer provided")
+                perimeter_gdf = None
+        else:
+            feedback.pushInfo("No perimeter layer provided (optional)")
+
         feedback.pushInfo("Running constant slope line adjustment...")
         adjusted_lines_gdf = self.core.adjust_constant_slope_after(
             dtm_path=dtm_path,
@@ -358,12 +394,12 @@ Parameters:
             change_after=change_after,
             slope_after=slope_after,
             destination_features=destination_gdfs,
+            perimeter=perimeter_gdf,
             barrier_features=barrier_gdfs if barrier_gdfs else None,
             allow_barriers_as_temp_destination=allow_barriers_as_temp_destination,
             max_iterations_barrier=max_iterations_barrier,
             slope_deviation_threshold=slope_deviation_threshold,
             max_iterations_slope=max_iterations_slope,
-            report_progress=True,
             feedback=feedback
         )
 
@@ -373,6 +409,11 @@ Parameters:
         # Ensure the adjusted lines GeoDataFrame has the correct CRS
         adjusted_lines_gdf = adjusted_lines_gdf.set_crs(self.core.crs, allow_override=True)
         feedback.pushInfo(f"Adjusted lines CRS: {adjusted_lines_gdf.crs}")
+
+        # Add slope adjustment attributes to output
+        adjusted_lines_gdf['change_after'] = change_after
+        adjusted_lines_gdf['slope_after'] = slope_after
+        feedback.pushInfo(f"Added attributes: change_after={change_after}, slope_after={slope_after}")
 
         # Save result with proper format handling
         save_gdf_to_file(adjusted_lines_gdf, adjusted_lines_path, self.core, feedback)

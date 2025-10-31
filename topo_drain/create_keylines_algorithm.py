@@ -75,10 +75,10 @@ class CreateKeylinesAlgorithm(QgsProcessingAlgorithm):
         return self.tr('Create Keylines')
 
     def group(self):
-        return self.tr('Slope Analysis')
+        return self.tr('Slope Line Analysis')
 
     def groupId(self):
-        return 'slope_analysis'
+        return 'slope_line_analysis'
 
     def shortHelpString(self):
         return self.tr(
@@ -214,9 +214,9 @@ another valley line, alternating between the two."""
                 self.MAX_ITERATIONS_SLOPE,
                 self.tr('Advanced: Max Iterations Slope (maximum iterations for line refinement, 1-100, default: 20)'),
                 type=QgsProcessingParameterNumber.Integer,
-                defaultValue=20,
+                defaultValue=30,
                 minValue=1,
-                maxValue=100
+                maxValue=500
             )
         )
         
@@ -291,7 +291,7 @@ another valley line, alternating between the two."""
         
         # Read CRS from the DTM using QGIS layer with safe fallback
         feedback.pushInfo("Reading CRS from DTM...")
-        dtm_crs = get_crs_from_layer(dtm_layer, fallback_crs="EPSG:2056")
+        dtm_crs = get_crs_from_layer(dtm_layer)
         feedback.pushInfo(f"DTM Layer crs: {dtm_crs}")
 
         # Update core CRS if needed (dtm_crs is guaranteed to be valid)
