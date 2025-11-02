@@ -15,6 +15,8 @@ A QGIS plugin for planning surface drainage water management. It automates the e
     - [Step 3: Configure the WhiteboxTools Provider](#step-3-configure-the-whiteboxtools-provider)
     - [Verify Installation](#verify-installation)
   - [Installing the TopoDrain Plugin](#installing-the-topodrain-plugin)
+- [Documentation and Tutorials](#documentation-and-tutorials)
+  - [Keyline Design Manual](#keyline-design-manual)
 - [Recommended QGIS Plugins](#recommended-qgis-plugins)
   - [Profile Tool](#profile-tool)
   - [For Users in Switzerland: Swiss Geo Downloader](#for-users-in-switzerland-swiss-geo-downloader)
@@ -128,5 +130,19 @@ The **Swiss Geo Downloader** plugin is extremely useful for downloading Digital 
 6. Download tiles for your study site (TIF files)
 7. Use the GDAL **"Merge"** tool to combine multiple tiles into a single TIF file
 
+## Documentation and Tutorials
 
+### Keyline Design Manual
+A comprehensive step-by-step tutorial for creating a Keyline Design using the TopoDrain plugin tools is available:
+
+📖 **[Keyline Design Manual](docs/Keyline-Design.md)**
+
+This tutorial covers:
+- DTM preprocessing and terrain visualization
+- Creating and extracting valleys and ridges
+- Defining study area perimeters
+- Identifying keypoints and start points
+- Creating keylines with constant slopes
+- Creating parallel lines for agroforestry or traffic patterns
+- Final considerations for real-world implementation
 
