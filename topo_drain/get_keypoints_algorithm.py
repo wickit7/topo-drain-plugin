@@ -104,7 +104,7 @@ Input Requirements:
 - DTM: Digital Terrain Model for elevation profile extraction
 
 OUTPUTS:
-- Keypoints: Point layer with attributes: VALLEY_ID, ELEV_INDEX, RANK, CURVATURE, METHOD
+- Keypoints: Point layer with attributes: VALLEY_ID, RANK, CURVATURE
 - CSV Output (optional): Elevation profiles and curvature data
 
 Parameters:

@@ -2901,7 +2901,7 @@ class TopoDrainCore:
                     point_data['geometry'] = point_geom
                     point_data['DISTANCE'] = distance_along
                     point_data['POINT_ID'] = i
-                    point_data['IS_REF_POINT'] = False
+                    point_data['IS_REF_PNT'] = False
                     points.append(point_data)
             return points
         
@@ -2980,7 +2980,7 @@ class TopoDrainCore:
             point_data['geometry'] = point_geom
             point_data['DISTANCE'] = dist
             point_data['POINT_ID'] = i
-            point_data['IS_REF_POINT'] = is_ref_point  # Flag indicating if this was a reference point
+            point_data['IS_REF_PNT'] = is_ref_point  # Flag indicating if this was a reference point
             points.append(point_data)
         
         return points
@@ -4425,7 +4425,7 @@ class TopoDrainCore:
         slope_after: float,
         destination_raster_path: str,
         barrier_raster_path: str,
-        allow_barriers_as_temp_destination: bool = True,
+        allow_barriers_as_temp_destination: bool = False,
         max_iterations_barrier: int = 30,
         slope_deviation_threshold: float = 0.2,
         max_iterations_slope: int = 20,
@@ -4587,7 +4587,7 @@ class TopoDrainCore:
         slope: float = 0.01,
         perimeter: gpd.GeoDataFrame = None,
         barrier_features: list[gpd.GeoDataFrame] = None,
-        allow_barriers_as_temp_destination: bool = True,
+        allow_barriers_as_temp_destination: bool = False,
         max_iterations_barrier: int = 30,
         slope_deviation_threshold: float = 0.2,
         max_iterations_slope: int = 30,
@@ -5102,7 +5102,7 @@ class TopoDrainCore:
         destination_features: list[gpd.GeoDataFrame],
         perimeter: gpd.GeoDataFrame = None,
         barrier_features: list[gpd.GeoDataFrame] = None,
-        allow_barriers_as_temp_destination: bool = True,
+        allow_barriers_as_temp_destination: bool = False,
         max_iterations_barrier: int = 30,
         slope_deviation_threshold: float = 0.2,
         max_iterations_slope: int = 20,
