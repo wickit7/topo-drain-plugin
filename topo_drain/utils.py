@@ -504,7 +504,7 @@ def _remove_id_columns_and_retry(gdf, file_path, driver, feedback):
     return gdf
 
 
-def save_gdf_to_file(gdf, file_path, core, feedback):
+def save_gdf_to_file(gdf, file_path, core, feedback, all_upper=False):
     """
     Save GeoDataFrame to file with proper format handling using core's OGR driver mapping.
     Automatically cleans QVariant data types before saving to prevent field type errors.
@@ -514,12 +514,27 @@ def save_gdf_to_file(gdf, file_path, core, feedback):
         file_path (str): Output file path
         core: TopoDrainCore instance with ogr_driver_mapping
         feedback: QGIS processing feedback object
+        all_upper (bool): If True, rename all columns to uppercase (except 'geometry' and columns containing 'id')
         
     Raises:
         QgsProcessingException: If saving fails
     """
     
     try:
+        # Rename columns to uppercase if requested
+        if all_upper:
+            column_mapping = {}
+            for col in gdf.columns:
+                # Don't rename geometry column or columns equal to 'id'
+                # Also skip if already uppercase
+                if col != 'geometry' and 'id' != col.lower() and col != col.upper():
+                    column_mapping[col] = col.upper()
+            
+            if column_mapping:
+                gdf = gdf.rename(columns=column_mapping)
+                if feedback:
+                    feedback.pushInfo(f"Renamed columns to uppercase: {list(column_mapping.values())}")
+        
         # Automatically clean QVariant data types before saving
         if feedback:
             feedback.pushInfo("Cleaning data types before saving...")

@@ -72,7 +72,7 @@ While not required for the processing steps, creating contour lines and a hillsh
 2. Run the tool on your DTM
 3. Adjust the symbology of the contour lines layer to display thin grey lines for better visualization
 
-<img src="../resources/Hillshade.png" alt="Hillshade" width="500">
+<img src="../resources/Hillshade.png" alt="Hillshade" width="600">
 
 ---
 
@@ -82,7 +82,7 @@ While not required for the processing steps, creating contour lines and a hillsh
 
 The **Create Valleys (stream network)** tool is the starting point for analyzing drainage patterns in your terrain. This tool processes a Digital Terrain Model (DTM) to generate valley lines representing the natural drainage network.
 
-<img src="../resources/CreateValleys.png" alt="Create Valleys Dialog" width="500">
+<img src="../resources/CreateValleys.png" alt="Create Valleys Dialog" width="600">
 
 The tool uses a series of WhiteboxTools processes:
 1. **D8Pointer** - Calculates flow direction for each cell
@@ -135,7 +135,7 @@ The tool generates several layers:
    - Intermediate output before vectorization
    - Not needed in further Keyline-Design process
 
-<img src="../resources/CreateValleys.png" alt="Create Valleys Result" width="500">
+<img src="../resources/CreateValleys.png" alt="Create Valleys Result" width="600">
 
 ---
 
@@ -171,11 +171,11 @@ Before extracting main valleys and ridges, you need to define the boundary (peri
 6. Toggle editing mode (click the pencil icon) and use the **Add Polygon Feature** tool to digitize your perimeter polygon around your study area (e.g., around the agricultural field on the hillslope)
 7. Save edits when finished
 
-**Tip**: Consider valley and ridge lines when drawing your polygon. You may want to include important branches (valleys or ridges) that extend beyond the exact boundary of the agricultural field, as these features can be relevant for the overall Keyline Design. Conversely, you may want to exclude main branches that intersect the perimeter edge but are not relevant for your study area analysis. You can also iterate between the Extract Main Valleys and Extract Main Ridges tools to refine the alternation of valley, ridge, and perimeter lines — the perimeter will act as a "final" ridge or valley.
+**Tip**: Consider valley and ridge lines when drawing your polygon. You may want to include important tributaries (valleys or ridges branches) that extend beyond the exact boundary of the agricultural field, as these features can be relevant for the overall Keyline Design. Conversely, you may want to exclude main tributaries that intersect the perimeter edge but are not relevant for your study area analysis. You may need to switch back and forth between perimeter editing and the “Extract Main Valleys” and “Extract Main Ridges” tools to refine the transition between valley, ridge, and perimeter lines — the perimeter boundaries act as the “final” ridge or valley.
 
 **Styling recommendation**: Set the polygon to have a black outline (no fill).
 
-<img src="../resources/EditPerimeter.png" alt="Editing Perimeter Polygon" width="500">
+<img src="../resources/EditPerimeter.png" alt="Editing Perimeter Polygon" width="600">
 
 
 > **Note**: If you run a tool multiple times and overwrite an existing layer, you may need to refresh the layer visibility in QGIS. Right-click on the layer → **Change Data Source** → select the data file again to refresh the layer.
@@ -191,7 +191,7 @@ After creating the complete valley and ridge networks, you need to identify and 
 
 The **Extract Main Valleys** tool identifies the most significant valley lines (flow paths) from the complete valley network by selecting the tributaries with the highest flow accumulation values within your perimeter. The tool extracts tributaries (flow paths) with the highest flow accumulation and ranks them by their maximum flow accumulation value within the perimeter area. 
 
-<img src="../resources/ExtractMainValleys.png" alt="Extract Main Valleys Dialog" width="500">
+<img src="../resources/ExtractMainValleys.png" alt="Extract Main Valleys Dialog" width="600">
 
 
 #### Parameters
@@ -200,14 +200,14 @@ The **Extract Main Valleys** tool identifies the most significant valley lines (
   - ⚠️ **Important**: Must have `LINK_ID`, `TRIB_ID`, and `DS_LINK_ID` attributes (automatically created by Create Valleys)
 
 - **Input Flow Accumulation Raster**: Select the **Output Flow Accumulation Raster** from the "Create Valleys" tool
-  - ⚠️ **Important**: Use the same flow accumulation raster that was used to create the valley lines
+  - **Note**: Use the same flow accumulation raster that was used to create the valley lines
 
 - **Input Perimeter Polygon**: Select your perimeter polygon layer
   - Optional: If not provided, uses the full extent of valley lines
 
 - **Number of main valleys to extract**: Specify how many main valleys to extract
   - Default: 2
-  - **Tip**: Try to estimate the number of main branches from the Valleys layer. It's better to choose a higher value - you can always delete unnecessary main valley lines later in edit mode
+  - **Tip**: Try to guess the number of main tributaries (branches) from the Valleys layer. It's better to choose a higher value - you can always delete unnecessary main valley lines later in edit mode
   - **Example**: If you see approximately 4 main valleys, choose 5 for this parameter to ensure you capture all important features
 
 - **Clip output to perimeter**: Whether to clip the output lines to the perimeter boundary
@@ -235,7 +235,7 @@ Style the Main Valleys layer with a **blue line that is thicker** than the Valle
    - **Size**: 2
    - **Rotation**: **90°** (to align with flow direction)
 
-<img src="../resources/MainValleysStyle.png" alt="Main Valleys Styling" width="500">
+<img src="../resources/MainValleysStyle.png" alt="Main Valleys Styling" width="600">
 
 #### Label Recommendation
 
@@ -245,8 +245,10 @@ Add labels showing the **RANK** attribute to identify the valley order:
 2. **Label with**: `RANK`
 3. This displays: 1 = first main valley (highest flow accumulation), 2 = second highest, etc.
 
-<img src="../resources/MainValleysLabel.png" alt="Main Valleys Labels" width="500">
+<img src="../resources/MainValleysLabel.png" alt="Main Valleys Labels" width="600">
 
+
+> **Note**: If you run a tool multiple times and overwrite an existing layer, you may need to refresh the layer visibility in QGIS. Right-click on the layer → **Change Data Source** → select the data file again to refresh the layer.
 
 ---
 
@@ -261,7 +263,7 @@ Use the same approach:
 
 **Styling recommendation**: Use orange/brown thick lines to distinguish from main valleys.
 
-<img src="../resources/ExtractMainRidges.png" alt="Extract Main Ridges Result" width="500">
+<img src="../resources/ExtractMainRidges.png" alt="Extract Main Ridges Result" width="600">
 
 ---
 
@@ -269,16 +271,16 @@ Use the same approach:
 
 **Goal**: Create a clean valley-ridge pattern suitable for keyline design. Topography is often complex, resulting in intricate main valley and main ridge patterns. Some creativity is needed here to create a useful pattern that works for your design.
 
-> **Note**: Depending on your terrain, you may even want to create Main Valleys and Main Ridges from scratch by manual digitizing rather than extracting them. However, this example shows how to adjust extracted main valleys and main ridges.
+> **Note**: Depending on your terrain, you may even want to create Main Valleys and Main Ridges from scratch by manual digitizing rather than extracting them. However, this example shows how to adjust extracted main valleys and main ridges. In the following illustration, the areas to be adjusted are marked with a red sketch line:
 
-<img src="../resources/AdjustMainValleysMainRidges.png" alt="Areas to Adjust (marked in red)" width="500">
+<img src="../resources/AdjustMainValleysMainRidges.png" alt="Areas to Adjust (marked in red)" width="600">
 
 #### Step 1: Smooth the Lines
 
-Before editing the Main Ridges and Main Valleys in QGIS, it's recommended to use the WhiteboxTools processing tool **"SmoothVectors"**:
+⚠️ Before editing the Main Ridges and Main Valleys in QGIS, it's recommended to use the WhiteboxTools processing tool **"SmoothVectors"**:
 
 - This reduces the number of vertices, making editing easier
-- It also improves useability for subsequent tools like "Get Points Along Line" (distance calculations are more accurate on smoothed lines than on very wavy lines)
+- It also improves useability for subsequent tools like "Get Points Along Line" (distance calculations are more appropriate on smoothed lines than on very wavy lines)
 
 <img src="../resources/SmoothMainValleysMainRidges.png" alt="Smooth Vectors Tool" width="500">
 
@@ -287,7 +289,7 @@ Before editing the Main Ridges and Main Valleys in QGIS, it's recommended to use
 Edit the Main Valleys and Main Ridges layers to create a clean pattern:
 
 1. Toggle editing mode for the Main Valleys layer
-2. Use vertex editing tools to adjust line geometry
+2. Use editing tools to adjust line geometry
 3. Delete unnecessary segments or features
 4. Repeat for Main Ridges layer
 
@@ -297,21 +299,21 @@ Edit the Main Valleys and Main Ridges layers to create a clean pattern:
 
 
 Edit example: Step 1. Use “Split Features” to split at the point where you want to delete a part:
-<img src="../resources/EditMainValley_step1.png" alt="Edit Main Valley - Step 1" width="500">
+<img src="../resources/EditMainValley_step1.png" alt="Edit Main Valley - Step 1" width="600">
 
 Edit example: Step 2. Delete the feature you want to remove:
-<img src="../resources/EditMainValley_step2.png" alt="Edit Main Valley - Step 2" width="500">
+<img src="../resources/EditMainValley_step2.png" alt="Edit Main Valley - Step 2" width="600">
 
 Edit example: Step 3. Use the “Vertex Tool” to complete the main valley line "manually":
-<img src="../resources/EditMainValley_step3.png" alt="Edit Main Valley - Step 3" width="500">
+<img src="../resources/EditMainValley_step3.png" alt="Edit Main Valley - Step 3" width="600">
 
 #### Final Pattern
 
 After editing, you should have a clean, alternating valley-ridge pattern ready for keyline creation:
 
-<img src="../resources/MainValleysMainRidges_processed.png" alt="Final Processed Pattern" width="500">
+<img src="../resources/MainValleysMainRidges_processed.png" alt="Final Processed Pattern" width="600">
 
-> **Note on Complex Topography**: As already mentioned, creating the main valley/ridge pattern often requires creativity, especially with complex topography. For instance, if you have a hill without clearly distinguishable valleys and ridges, you may want to manually create a valley or ridge line through the middle of the hill (instead using tool "Extract Main Valleys"). The perimeter boundary will act as ridges or valleys automatically. When creating lines manually, make sure to add a field named `LINK_ID` and assign a unique value to each line.
+> **Note on Complex Topography**: As already mentioned, creating the main valley/ridge pattern often requires creativity, especially with complex topography. For instance, if you have a hill without clearly distinguishable valleys and ridges (so a lot of more or less parallel flow paths), you may want to manually create a valley or ridge line through the middle of the hill (instead using tool "Extract Main Valleys"). The perimeter boundary will act as ridges or valleys automatically (depending on the current alternation state of the keyline generation process). When creating lines manually, make sure to add a field named `LINK_ID` and assign a unique value to each line.
 
 ---
 
@@ -324,12 +326,13 @@ Now that you have prepared the main valleys and ridges, you need to identify sta
 > - Pay attention to regular intervals between management patterns
 > - Start at or near a keypoint (inflection point in the terrain profile)
 > - Consider other characteristics such as soil properties or field observations (water flow paths, water accumulation areas, etc.)
-> 
+> - Start points should be located **exactly on** a main valley line, main ridge line, or perimeter boundary. This ensures keylines can trace in both directions. When adding start points manually in QGIS, **activate snapping** (Settings → Snapping Options) to ensure points snap precisely to the line features.
 > The best approach depends on your specific design goals and site conditions.
+>
 
 ### Example: Using Keypoints from Main Valley Lines
 
-In this example, we'll extract keypoints along main valley lines using the **Get Keypoints** tool. This tool analyzes the elevation profile along each valley line to identify inflection points.
+In this example, we'll first extract keypoints along main valley lines using the **Get Keypoints** tool. This tool analyzes the elevation profile along each valley line to identify inflection points.
 
 #### How the Tool Works
 
@@ -346,7 +349,7 @@ The **Get Keypoints** algorithm identifies keypoints (points of transition from 
   - The minimum number of keypoints requested
 - Ranks candidate points by curvature strength
 
-<img src="../resources/ExtractKeypoints.png" alt="Get Keypoints Dialog" width="500">
+<img src="../resources/ExtractKeypoints.png" alt="Get Keypoints Dialog" width="600">
 
 #### Parameters
 
@@ -358,11 +361,11 @@ The **Get Keypoints** algorithm identifies keypoints (points of transition from 
 - **Minimum keypoint candidates to find**: Controls detection sensitivity
   - Default: 1
   - The algorithm will find at least this many keypoint candidates per line
-  - If fewer inflection points exist, it selects the most likely locations
+  - If fewer inflection points exist, it selects the most likely locations based on curvature
 
 - **Minimum distance between keypoints (m)**: Ensures spatial separation between keypoints
   - Default: 20.0 meters
-  - Prevents very close keypoints from being selected
+  - Prevents that selected keypoints are very close to each other
 
 - **Polynomial degree for elevation profile fitting**: Controls smoothing level
   - Purpose: Controls the smoothing level of the elevation profile.
@@ -387,7 +390,7 @@ After extracting keypoints, it's good practice to verify their locations using t
 3. Use Selection method "Selected polyline"
 4. Select the main valley line to show it's elevation profile
 
-<img src="../resources/ElevationProfileKeypoint.png" alt="Verifying Keypoint with Elevation Profile" width="500">
+<img src="../resources/ElevationProfileKeypoint.png" alt="Verifying Keypoint with Elevation Profile" width="600">
 
 **Tip**: If keypoints are not located where expected, try adjusting the polynomial degree parameter considering the shape of the terrain profile.
 
@@ -405,7 +408,7 @@ The **Get Points Along Lines** tool distributes points along input lines at regu
 - Places points evenly along lines at specified distance intervals
 - Can optionally use reference points (e.g., keypoints) to create regular distances with respect to these point locations
 - When reference points are provided, starts from the reference point and expands bidirectionally
-- If more than one reference point is on a line tries to place points optimally but will may not end up in complet regular distances
+- If more than one reference point is on a line tries to place points optimally but will may not end up in complet regular distances, since the position of the reference points is not modified.
 
 #### Parameters
 
@@ -421,15 +424,15 @@ The **Get Points Along Lines** tool distributes points along input lines at regu
 - All original line attributes
 - `POINT_ID` - Sequential index of the point along the line
 - `DISTANCE` - Distance from line start to the point
-- `IS_REF_PNT` - Boolean flag indicating if this is a reference point (keypoint)
+- `IS_REF_PNT` - Boolean flag indicating if this is a reference point (e.g. keypoint)
 
-<img src="../resources/RegularlyPoints.png" alt="Regularly Spaced Points Along Lines" width="500">
+<img src="../resources/RegularlyPoints.png" alt="Regularly Spaced Points Along Lines" width="600">
 
 ---
 
 ## Create Keylines
 
-The final step is to create the actual keylines - constant slope lines that follow the natural topography and manage water flow across your landscape.
+The next step is to create the actual keylines - constant slope lines (off contour) that follow the natural topography and manage water flow across your landscape.
 
 ### Using the Create Keylines Tool
 
@@ -445,20 +448,20 @@ The algorithm creates keylines by iteratively tracing:
 5. **All keylines are oriented** from valley to ridge direction
 
 **Technical Implementation:**
-The algorithm creates a cost raster based on (Euclidean) distance and the expected slope (Desired Slope) for constant slope line tracing. It uses WhiteboxTools processes like **CostDistance** and **CostPathway** to determine the optimal path. If the length of the traced line exceeds the Euclidean distance such that the expected slope exceeds the **Slope Deviation Threshold**, a new iteration is started from the point where this condition was violated.
+The algorithm creates a cost raster based on (Euclidean) distance and the expected slope (Desired Slope) at a distance for constant slope line tracing. It uses WhiteboxTools processes like **CostDistance** and **CostPathway** to determine the optimal path. If the length of the traced line exceeds the Euclidean distance such that the expected slope exceeds the **Slope Deviation Threshold** condition, a new iteration is started from the point where this condition was violated.
 
 
-<img src="../resources/CreateKeylines.png" alt="Create Keylines Dialog" width="500">
+<img src="../resources/CreateKeylines.png" alt="Create Keylines Dialog" width="600">
 
 #### Parameters
 
 - **Input DTM (Digital Terrain Model)**: Select your DTM raster layer
 
 - **Start Points**: Select your regularly spaced points layer
-  - Choose the specific points where you want keylines to start
+  - Select only the specific points where you want keylines to start from
   - **Recommended**: Start from points on main valley lines
   - **Note**: You can also start from ridge lines or from the perimeter (which automatically acts as ridge or valley), but always define slope parameters from the valley to ridge perspective regardless of start point
-  - **Tip**: If createing Start Points manually use snapping in edit mode
+  - **Tip**: If createing Start Points manually use snapping option in edit mode
   - **Tip**: Start with only 1-2 selected points first, even if you want to create more, to ensure it works as expected. Then select all desired points in a second run. Performance of the tool is not very good with many start points!
 
 - **Main Valley Lines**: Select your processed Main Valleys layer
@@ -471,7 +474,7 @@ The algorithm creates a cost raster based on (Euclidean) distance and the expect
 - **Desired Slope**: Target slope as decimal (always from valley to ridge perspective)
   - Example: `0.01` = 1% downhill from valley toward ridge (direct flow for water movement)
   - Example: `-0.01` = 1% uphill from valley toward ridge (not recommended)
-  - **Note**: The algorithm tends to create slightly smaller slopes than defined because of euclidean distance approach. e.g. if you prefer  1% slope or higher, you may want to define `0.011` (1.1%) instead of 0.01
+  - **Note**: The algorithm tends to create slightly smaller slopes than defined because of euclidean distance approach. e.g. if you prefer at least 1% slope, you may want to define `0.011` (1.1%) instead of 0.01
 
 - **Change Slope At Distance**: Optional - creates two-segment keylines
   - Value between 0.01 and 0.99 representing the fraction of line length where slope changes
@@ -501,7 +504,10 @@ This creates keylines that initially move water (1% slope), then transition to l
 
 #### Output
 
-**Output Keylines**: Line layer containing all traced keylines with attributes describing the tracing process and slope characteristics.
+**Output Keylines**: Line layer containing all traced keylines with attributes describing the slope characteristics.
+- `SLOPE` - Value of input parameter "Desired Slope"
+- `CHANGE_AFTER` - Value of input parameter "Change Slope At Distance"
+- `SLOPE_AFTER` - Value of input parameter "New Slope After Change Point"
 
 > **Note**: All keylines are always oriented from valley to ridge direction, so you can easily visualize the flow direction using marker arrows.
 
@@ -526,22 +532,25 @@ After creating keylines, verify their slope characteristics using the QGIS plugi
 3. Select a keyline to display its elevation profile
 4. Check that the slope matches your expected configuration (e.g., 1% initial slope, then 0% after the change point)
 
-<img src="../resources/KeylineElevationProfile.png" alt="Keyline Elevation Profile Verification" width="500">
+<img src="../resources/KeylineElevationProfile.png" alt="Keyline Elevation Profile Verification" width="600">
 
 **Performance Note**: The algorithm can be slow with many start points. Always test with a few points first before creating the full keyline network.
+
+**Alternative Start Points**: As already mentioned, it is also possible to set start points on main ridge lines or the perimeter boundary. Here is an example:
+<img src="../resources/AlternativeStartPoints.png" alt="Alternative Start Points" width="600">
 
 ---
 
 ## Create Equidistant (Parallel) Lines Between Keylines
 
-After creating your main keylines, you may want to add parallel lines between them to create additional features such as:
+After creating your "main" keylines, you may want to add parallel lines between them to create additional features such as:
 - Agroforestry lines
 - Traffic patterns for tractor routes
-- Management zones where precise line slope control is less critical than for main keylines
+- Management zones where slope of the line is less critical than for the main keylines, and where the pattern of parallel lines is more important
 
 > **Note**: Automatically creating perfect parallel lines is not straightforward in QGIS, so this process requires some manual editing work. The following approach provides a practical workflow - there will be several other ways to do it.
 
-> **Important**: Completely equidistant (parallel) lines are only possible if you start from one single main keyline. If you want parallel lines across multiple keylines, they won't be perfectly equidistant to each other since each main keyline follows a different path. Choose your approach based on your specific purpose and requirements.
+> **Important**: Completely equidistant (parallel) lines are only possible if you start from one single main keyline. If you want parallel lines starting from multiple keylines, they won't be perfectly equidistant to each other since each main keyline follows a different path. Choose your approach based on your specific purpose and requirements.
 
 ### Approach Using "Offset Lines" Tool
 
@@ -557,7 +566,7 @@ The QGIS processing tool **"Offset lines"** creates parallel single-sided buffer
    - This creates a line parallel to the left of the line direction
    - The result is a new layer with the offset line
 
-<img src="../resources/CreateOffsetLines.png" alt="Create Offset Lines Tool" width="500">
+<img src="../resources/CreateOffsetLines.png" alt="Create Offset Lines Tool" width="600">
 
 3. **Second offset - negative direction**:
    - Select the same keylines again
@@ -568,40 +577,43 @@ The QGIS processing tool **"Offset lines"** creates parallel single-sided buffer
 4. **Edit the created offset lines manually**:
    - Toggle editing mode for the offset lines layer(s)
    - Use QGIS editing tools (e.g., **Vertex Tool**) to adjust line geometry as needed
-   - Fix any issues where lines don't follow terrain appropriately respectively are not parallel to keylines
-   - **Important**: Where offset lines end up at distances below the desired distance (e.g., lines converge too closely), remove those line parts to maintain consistent spacing
-   - Merge offset layers if desired using processing tool **"Merge Vector layers"** (or do it later)
+   - Fix any issues at the end of the lines where they don't follow terrain appropriately respectively are not parallel to keylines
+   - **Important**: Where offset lines end up at distances below the desired distance (e.g., lines converge too closely), remove those line parts to maintain minimum spacing
+   - Merge offset layers if desired using processing tool **"Merge Vector layers"** (or do it later for all offset layers at once) 
 
 5. **Create additional parallel lines**:
-   - Select the offset lines you just created
+   - Select the offset lines from which you want to proceed with adding parallel lines
    - Use **"Offset lines"** tool again with appropriate distance
    - Remember: offset is always created to the **left** of the line direction, so select lines accordingly
 
-<img src="../resources/ProceedOffsetLines.png" alt="Proceed Creating Offset Lines" width="500">
+<img src="../resources/ProceedOffsetLines.png" alt="Proceed Creating Offset Lines" width="600">
 
 6. **Continue the iterative process**:
    - Proceed with creating more offset lines, always respecting the line direction
    - Edit lines as needed to maintain proper spacing
    - Remove line segments where spacing becomes too narrow
 
-<img src="../resources/ProceedOffsetLines2.png" alt="Continue Offset Lines Process" width="500">
+<img src="../resources/ProceedOffsetLines2.png" alt="Continue Offset Lines Process" width="600">
 
 7. **Merge all offset lines into a single layer**:
    - Once you have created all parallel lines, you'll have multiple offset line layers
    - Option A (recommended): Use processing tool **"Merge Vector layers"** to merge all offset layers to a new layer e.g. "OffsetKeylines"
    - Option B: Selet all features and paste them directly into your existing Keylines layer
 
-<img src="../resources/MergeOffsetLines.png" alt="Merge Offset Lines" width="500">
+<img src="../resources/MergeOffsetLines.png" alt="Merge Offset Lines" width="600">
 
 #### Result
 
-You'll have a network of main keylines (with precise slope control) supplemented by parallel lines (offset lines) that provide regular spacing for agroforestry, traffic patterns, or other management purposes.
+You'll have a network of main keylines (with desired slope) supplemented by parallel lines (offset lines) that provide regular spacing for agroforestry, traffic patterns, or other management purposes.
 
 #### Final Keyline Design
 
 After completing all steps, you will have achieved a comprehensive first keyline design pattern:
 
 <img src="../resources/FinalKeylineDesign.png" alt="Final Keyline Design" width="600">
+
+
+
 
 ---
 
@@ -639,7 +651,7 @@ Before implementing your keyline design, work closely with **farmers and experie
   - Do you need to **compact or stabilize the soil along keylines** to prevent channel formation?
   - Consider soil texture, organic matter content, and structural stability
   - **Add spillways to prevent keyline overflow** - overflow is the main cause of erosion along keylines
-  - Design controlled overflow points where excess water can safely exit without damaging the keyline
+  - Design controlled overflow points respectively spillway pipes where excess water can safely exit without damaging the keyline
 
 #### 3. Physical Shaping and Cultivation
 
@@ -664,8 +676,6 @@ Before implementing your keyline design, work closely with **farmers and experie
   - Consider overflow management from retention structures into another retention structure or keylines
 
 
- **Use an iterative approach**
-
-Always remember: **The map is not the territory.** Use these tools as a starting point, but let real-world observations and experienced practitioners guide your final design decisions.
+⚠️ Always remember: **The map is not the territory.** Use these tools as a starting point respectively in an **iterative way**, but let real-world observations and experienced practitioners guide your final design decisions.
 
 ---

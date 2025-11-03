@@ -386,8 +386,8 @@ another valley line, alternating between the two."""
         keylines_gdf = keylines_gdf.set_crs(self.core.crs, allow_override=True)
         feedback.pushInfo(f"Keylines CRS: {keylines_gdf.crs}")
 
-        # Save result with proper format handling
-        save_gdf_to_file(keylines_gdf, keylines_path, self.core, feedback)
+        # Save result with proper format handling (all_upper=True to rename columns to uppercase)
+        save_gdf_to_file(keylines_gdf, keylines_path, self.core, feedback, all_upper=True)
 
         results = {}
         # Add output parameters to results
