@@ -345,8 +345,8 @@ Parameters:
                     # Load GeoDataFrame using utility function
                     gdf = load_gdf_from_file(layer.source(), feedback)
                     # Manually set the safe CRS
-                    gdf.crs = self.crs
-                    feedback.pushInfo(f"Successfully loaded {len(gdf)} destination features with safe CRS: {self.crs}")
+                    gdf.crs = self.core.crs
+                    feedback.pushInfo(f"Successfully loaded {len(gdf)} destination features with safe CRS: {self.core.crs}")
                 except Exception as e:
                     feedback.pushInfo(f"Failed to load destination layer with safe CRS handling: {e}")
                     raise QgsProcessingException(f"Failed to load destination layer: {e}")
@@ -369,8 +369,8 @@ Parameters:
                         # Load GeoDataFrame using utility function
                         gdf = load_gdf_from_file(layer.source(), feedback)
                         # Manually set the safe CRS
-                        gdf.crs = self.crs
-                        feedback.pushInfo(f"Successfully loaded {len(gdf)} barrier features with safe CRS: {self.crs}")
+                        gdf.crs = self.core.crs
+                        feedback.pushInfo(f"Successfully loaded {len(gdf)} barrier features with safe CRS: {self.core.crs}")
                     except Exception as e:
                         feedback.pushInfo(f"Failed to load barrier layer with safe CRS handling: {e}")
                         raise QgsProcessingException(f"Failed to load barrier layer: {e}")
@@ -389,8 +389,8 @@ Parameters:
                 perimeter_layer_path = perimeter_layer.source()
                 perimeter_gdf = load_gdf_from_file(perimeter_layer_path, feedback)
                 # Manually set the safe CRS
-                perimeter_gdf.crs = self.crs
-                feedback.pushInfo(f"Successfully loaded {len(perimeter_gdf)} perimeter features with safe CRS: {self.crs}")
+                perimeter_gdf.crs = self.core.crs
+                feedback.pushInfo(f"Successfully loaded {len(perimeter_gdf)} perimeter features with safe CRS: {self.core.crs}")
             except Exception as e:
                 feedback.pushInfo(f"Failed to load perimeter: {e}")
                 raise QgsProcessingException(f"Failed to load perimeter: {e}")
@@ -421,6 +421,8 @@ Parameters:
             max_iterations_slope=max_iterations_slope,
             feedback=feedback
         )
+
+        feedback.pushInfo(f"Constant slope lines tracing complete, {len(slope_lines_gdf)} lines created")
 
         if slope_lines_gdf.empty:
             raise QgsProcessingException("No slope lines were created")
@@ -454,8 +456,8 @@ Parameters:
         slope_lines_gdf = slope_lines_gdf.set_crs(self.core.crs, allow_override=True)
         feedback.pushInfo(f"Slope lines CRS: {slope_lines_gdf.crs}")
 
-        # Save result with proper format handling
-        save_gdf_to_file(slope_lines_gdf, slope_lines_path, self.core, feedback)
+        # Save result with proper format handling (all_upper=True to rename columns to uppercase)
+        save_gdf_to_file(slope_lines_gdf, slope_lines_path, self.core, feedback, all_upper=True)
 
         results = {}
         # Add output parameters to results

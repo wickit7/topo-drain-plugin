@@ -17,6 +17,8 @@ A QGIS plugin for planning surface drainage water management. It automates the e
   - [Installing the TopoDrain Plugin](#installing-the-topodrain-plugin)
 - [Documentation and Tutorials](#documentation-and-tutorials)
   - [Keyline Design Manual](#keyline-design-manual)
+  - [Create Constant Slope Lines Manual](#create-constant-slope-lines-manual)
+  - [Delineate Watersheds Manual](#delineate-watersheds-manual)
 - [Recommended QGIS Plugins](#recommended-qgis-plugins)
   - [Profile Tool](#profile-tool)
   - [For Users in Switzerland: Swiss Geo Downloader](#for-users-in-switzerland-swiss-geo-downloader)
@@ -25,7 +27,7 @@ A QGIS plugin for planning surface drainage water management. It automates the e
 
 ### Installing QGIS
 
-We recommend installing the newest **QGIS LTR (Long Term Release)** version to ensure stability and compatibility with the TopoDrain plugin.
+It's recommended installing the newest **QGIS LTR (Long Term Release)** version to ensure stability and compatibility with the TopoDrain plugin.
 
 #### Windows Installation
 The best way to install QGIS on Windows is using the **OSGeo4W Network Installer**:
@@ -89,7 +91,7 @@ The TopoDrain plugin depends on **WhiteboxTools for QGIS**. You need to install 
    - **Windows:** `C:\WBTools\whitebox_tools.exe`
    - **macOS:** `/Library/WhiteboxTools_darwin_m_series/WBT/whitebox_tools` (without `.exe`)
 
-<img src="resources/WBT_configure_provider.png" alt="WhiteboxTools Provider Configuration" width="500">
+<img src="resources/WBT_configure_provider.png" alt="WhiteboxTools Provider Configuration" width="600">
 
 
 #### Verify Installation
@@ -106,11 +108,11 @@ To verify that WhiteboxTools is properly configured:
    - ⚠️ *Note: This setting is required temporarily. The experimental flag will be removed once the plugin has been successfully tested by a handful of users.*
 3. Go to the **All** tab and search for **"TopoDrain"**
 4. Select the TopoDrain plugin and click **Install Plugin**
-   - ⚠️ **Important:** Make sure to install the newest version (at least version ≥0.1.7)
+   - ⚠️ **Important:** Make sure to install the newest version (at least version ≥0.1.8)
 
 After installation, you will see TopoDrain tools in the **Processing Toolbox** under the TopoDrain section.
 
-<img src="resources/TopoDrain_installed.png" alt="TopoDrain in Processing Toolbox" width="500">
+<img src="resources/TopoDrain_installed.png" alt="TopoDrain in Processing Toolbox" width="600">
 
 ## Recommended QGIS Plugins
 
@@ -146,3 +148,28 @@ This tutorial covers:
 - Creating parallel lines for agroforestry or traffic patterns
 - Final considerations for real-world implementation
 
+### Create Constant Slope Lines Manual
+A tutorial demonstrating how to create **constant slope lines** and **zig-zag patterns** for water management applications:
+
+📖 **[Create Constant Slope Lines Manual](docs/Create-Constant-Slope-Lines.md)**
+
+This tutorial covers:
+- Creating single constant slope lines from start points to destinations
+- Using barriers to guide lines and create zig-zag patterns
+- Handling challenging terrain with intermediate stopover points
+- Verification with elevation profiles
+- **Directing water flow** to specific destinations (ponds, irrigation systems)
+- Designing **paths or routes** with consistent slopes
+
+### Delineate Watersheds Manual
+A tutorial demonstrating how to delineate watersheds (drainage basins) for water resource management:
+
+📖 **[Delineate Watersheds Manual](docs/Delineate-Watersheds.md)**
+
+This tutorial covers:
+- Understanding watersheds and their importance
+- Preparing DTM with stream burning for accurate delineation
+- Creating valley networks from burned terrain models
+- Defining pour points (watershed outlets)
+- Automated watershed boundary delineation
+- Applications in flood risk assessment, land use planning, and water quality management

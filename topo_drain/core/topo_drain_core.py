@@ -2271,6 +2271,10 @@ class TopoDrainCore:
             points_buffered = points.copy()
             points_buffered.geometry = points.geometry.buffer(buffer_distance)
             
+            # Ensure spatial index is built for faster spatial join
+            if not valley_clipped.sindex:
+                valley_clipped.sindex
+            
             points_joined = gpd.sjoin(
                 points_buffered,
                 valley_clipped[join_columns],
@@ -5024,7 +5028,7 @@ class TopoDrainCore:
                         point_attrs = pt_row.drop('geometry').to_dict()  # Get all attributes except geometry
                         point_attrs.pop('id', None)  # Remove 'id' to avoid conflicts with GeoDataFrame index
                         point_attrs.pop('fid', None)  # Remove 'fid' to avoid conflicts with GPKG FID
-                        point_attrs['slope'] = slope  # Add input parameter
+                        point_attrs['SLOPE'] = slope  # Add input parameter
                         start_point_attributes.append(point_attrs)
                         if feedback:
                             feedback.pushInfo(f"[GetConstantSlopeLines] Successfully traced iterative line for point {pt_idx + 1}/{total_points} (total lines: {len(constant_slope_lines)})")
@@ -5058,7 +5062,7 @@ class TopoDrainCore:
                         point_attrs = pt_row.drop('geometry').to_dict()  # Get all attributes except geometry
                         point_attrs.pop('id', None)  # Remove 'id' to avoid conflicts with GeoDataFrame index
                         point_attrs.pop('fid', None)  # Remove 'fid' to avoid conflicts with GPKG FID
-                        point_attrs['slope'] = slope  # Add input parameters
+                        point_attrs['SLOPE'] = slope  # Add input parameters
                         start_point_attributes.append(point_attrs)
                         if feedback:
                             feedback.pushInfo(f"[GetConstantSlopeLines] Successfully traced line for point {pt_idx + 1}/{total_points} (total lines: {len(constant_slope_lines)})")
@@ -6138,7 +6142,7 @@ class TopoDrainCore:
                     'direction_type': direction_type,
                     'pt_idx': pt_idx,
                     'valley_id': valley_id,
-                    'slope': use_slope,
+                    'SLOPE': use_slope,
                     'change_after': use_change_after,
                     'slope_after': use_slope_after,
                     # Add any additional point attributes from the original point
@@ -6252,7 +6256,7 @@ class TopoDrainCore:
                 # Create line attributes dictionary with input parameters
                 line_attributes = {
                     'geometry': corrected_line,
-                    'slope': slope,
+                    'SLOPE': slope,
                 }
                 
                 # Add change_after and slope_after if they were used
