@@ -35,9 +35,10 @@ hasProcessingProvider=yes
 # Uncomment the following line and add your changelog:
 
 changelog=0.1.8 - Documentation release
-    * Added comprehensive Keyline Design manual with step-by-step tutorial
+    * Added comprehensive Keyline Design, Constant Slope lines and Watershed delineation manual with step-by-step tutorial
     * Added installation guide in README with detailed setup instructions
     * Improved plugin documentation and user guidance
+    * Fixed Constant Slope Lines and Adjust Constant Slope Lines algorithms (CRS attribute issue)
     0.1.7 - Stable release candidate - Ready for user testing
     * Improved get keypoints algorithm performance and accuracy
     * Enhanced keyline creation with valley-to-valley and ridge-to-ridge tracing support
