@@ -193,6 +193,7 @@ The **Extract Main Valleys** tool identifies the most significant valley lines (
 
 <img src="../resources/ExtractMainValleys.png" alt="Extract Main Valleys Dialog" width="600">
 
+> **Performance Note**: The **Extract Main Valleys** and **Extract Main Ridges** tools can take considerable time with large areas or dense valley/ridge networks. **Always provide a perimeter** to improve performance. The progress bar may stall around 20% for an extended period during spatial join operations - this is normal for large areas, please be patient.
 
 #### Parameters
 

@@ -2271,6 +2271,10 @@ class TopoDrainCore:
             points_buffered = points.copy()
             points_buffered.geometry = points.geometry.buffer(buffer_distance)
             
+            # Ensure spatial index is built for faster spatial join
+            if not valley_clipped.sindex:
+                valley_clipped.sindex
+            
             points_joined = gpd.sjoin(
                 points_buffered,
                 valley_clipped[join_columns],
