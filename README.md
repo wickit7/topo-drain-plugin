@@ -15,14 +15,13 @@ A QGIS plugin for planning surface drainage water management. It automates the e
     - [Step 3: Configure the WhiteboxTools Provider](#step-3-configure-the-whiteboxtools-provider)
     - [Verify Installation](#verify-installation)
   - [Installing the TopoDrain Plugin](#installing-the-topodrain-plugin)
+- [Recommended QGIS Plugins](#recommended-qgis-plugins)
+  - [Profile Tool](#profile-tool)
+  - [For Users in Switzerland: Swiss Geo Downloader](#for-users-in-switzerland-swiss-geo-downloader)
 - [Documentation and Tutorials](#documentation-and-tutorials)
   - [Keyline Design Manual](#keyline-design-manual)
   - [Create Constant Slope Lines Manual](#create-constant-slope-lines-manual)
   - [Delineate Watersheds Manual](#delineate-watersheds-manual)
-- [Recommended QGIS Plugins](#recommended-qgis-plugins)
-  - [Profile Tool](#profile-tool)
-  - [For Users in Switzerland: Swiss Geo Downloader](#for-users-in-switzerland-swiss-geo-downloader)
-
 ## Installation Guide
 
 ### Installing QGIS
