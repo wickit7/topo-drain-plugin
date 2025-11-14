@@ -41,16 +41,7 @@ For macOS, install QGIS using the **DMG installer**:
 3. Launch QGIS from your Applications
 
 #### Python Dependencies
-Installing QGIS through these official methods ensures that all required Python packages are already available for the TopoDrain plugin. 
-
-**Required Python packages:**
-- `numpy`
-- `pandas`
-- `geopandas`
-- `shapely`
-- `scipy`
-
-These packages are included by default in newer QGIS versions (tested with QGIS 3.40.5-Bratislava and later).
+Installing QGIS through these official methods ensures that all required Python packages are already available for the TopoDrain plugin. Required Python packages: `numpy`, `pandas`, `geopandas`, `shapely`, `scipy`. These packages are included by default in newer QGIS versions (tested with QGIS 3.40.5-Bratislava).
 
 **If still a package is missing in your QGIS installation:**
 - **Windows (OSGeo4W installation):** 
@@ -59,9 +50,6 @@ These packages are included by default in newer QGIS versions (tested with QGIS 
   
 - **macOS (Terminal-based installation):** 
   - Follow the instructions at: https://gis.stackexchange.com/questions/351280/installing-python-modules-for-qgis-3-on-mac
-
-⚠️ **Important:** Ensure you install package versions compatible with your QGIS Python environment.
-
 
 **More Information:** https://qgis.org/resources/installation-guide/
 
@@ -104,10 +92,10 @@ To verify that WhiteboxTools is properly configured:
 #### Install TopoDrain from the QGIS Plugin Repository
 1. In QGIS, go to **Plugins → Manage and Install Plugins**
 2. Go to the **Settings** tab and make sure **"Show also experimental plugins"** is checked
-   - ⚠️ *Note: This setting is required temporarily. The experimental flag will be removed once the plugin has been successfully tested by a handful of users.*
+   - Note: This setting is required temporarily. The experimental flag will be removed once the plugin has been successfully tested by a handful of users.*
 3. Go to the **All** tab and search for **"TopoDrain"**
 4. Select the TopoDrain plugin and click **Install Plugin**
-   - ⚠️ **Important:** Make sure to install the newest version (at least version ≥0.1.8)
+   - Make sure to install the newest version (at least version ≥0.1.8)
 
 After installation, you will see TopoDrain tools in the **Processing Toolbox** under the TopoDrain section.
 
@@ -116,13 +104,12 @@ After installation, you will see TopoDrain tools in the **Processing Toolbox** u
 ## Recommended QGIS Plugins
 
 ### Profile Tool
-The **Profile tool** plugin is highly recommended for verifying results created with TopoDrain tools. It allows you to plot terrain profiles, which is essential for:
-- Checking the slope of created keylines respectively constant slope lines
+The **Profile tool** plugin is highly recommended for verifying results created with TopoDrain tools. It allows you to plot terrain profiles, which is essential for checking the slope of created keylines respectively constant slope lines.
 
 **Installation:** Go to **Plugins → Manage and Install Plugins**, search for "Profile tool", and click **Install Plugin**.
 
 ### For Users in Switzerland: Swiss Geo Downloader
-The **Swiss Geo Downloader** plugin is extremely useful for downloading Digital Terrain Data (swissALTI3D) directly within QGIS:
+The **Swiss Geo Downloader** plugin is useful for downloading Digital Terrain Data (swissALTI3D) and other data directly within QGIS:
 1. Install the plugin from **Plugins → Manage and Install Plugins**
 2. Open the plugin: **Plugins → Swiss Geo Downloader**
 3. Search for dataset **swissALTI3D**
@@ -166,9 +153,7 @@ A tutorial demonstrating how to delineate watersheds (drainage basins) for water
 📖 **[Delineate Watersheds Manual](docs/Delineate-Watersheds.md)**
 
 This tutorial covers:
-- Understanding watersheds and their importance
 - Preparing DTM with stream burning for accurate delineation
 - Creating valley networks from burned terrain models
 - Defining pour points (watershed outlets)
 - Automated watershed boundary delineation
-- Applications in flood risk assessment, land use planning, and water quality management
