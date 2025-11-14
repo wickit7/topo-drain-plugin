@@ -32,25 +32,16 @@ Get a high-resolution Digital Terrain Model (DTM) raster dataset for your study 
 If you have downloaded multiple DTM tiles, you need to merge them into a single file:
 
 1. Use the GDAL processing tool **"Merge"** to combine all tiles into one DTM file (.tif)
-   - *Alternative:* You can also use the **"r.patch"** tool
 
 > **Tip:** If your DTM has a large extent, you may want to clip it to your study area to make subsequent processing faster. Use the GDAL processing tool **"Clip raster by extent"** or **"Clip raster by mask layer"**.
 
 ### Optional: Burning Streams at Roads (for Watershed Delineation)
 
-If you plan to delineate water basins later (e.g., using the TopoDrain tool **"Delineate Watershed"**), you may want to apply preprocessing to ensure meaningful delineation at road crossings.
+If you plan to delineate water basins later (e.g., using the TopoDrain tool **"Delineate Watershed"**), you may want to apply preprocessing to ensure meaningful delineation at road crossings. 
 
 **Use the WhiteboxTools processing tool "BurnStreamsAtRoads":**
 
-This tool burns (lowers) the DTM elevation along streams at roads (bridges), which ensures that watershed delineation respects the actual hydrological connectivity.
-
-**Requirements:**
-- Official river/stream vector layer
-- Road network vector layer
-
-> **Alternative:** If you don't have a road network layer, you can use the WhiteboxTools tool **"FillBurn"** which only requires a stream vector layer.
-
-**More information:** https://www.whiteboxgeo.com/manual/wbt_book/available_tools/hydrological_analysis.html?highlight=BurnStreamsAtRoads#burnstreamsatroads
+More information: **[Delineate Watersheds Manual](./Delineate-Watersheds.md)**
 
 ---
 
@@ -82,7 +73,6 @@ While not required for the processing steps, creating contour lines and a hillsh
 
 The **Create Valleys (stream network)** tool is the starting point for analyzing drainage patterns in your terrain. This tool processes a Digital Terrain Model (DTM) to generate valley lines representing the natural drainage network.
 
-<img src="../resources/CreateValleys.png" alt="Create Valleys Dialog" width="600">
 
 The tool uses a series of WhiteboxTools processes:
 1. **D8Pointer** - Calculates flow direction for each cell
@@ -91,6 +81,8 @@ The tool uses a series of WhiteboxTools processes:
 4. **RasterStreamsToVector** - Converts raster streams to vector polylines
 5. **StreamLinkIdentifier** - Assigns unique IDs to individual stream segments
 6. **VectorStreamNetworkAnalysis** - Analyzes network topology and calculates stream properties
+
+<img src="../resources/CreateValleys.png" alt="Create Valleys Dialog" width="600">
 
 #### Parameters
 
@@ -134,8 +126,6 @@ The tool generates several layers:
 6. **Output Stream Raster** - Rasterized stream network
    - Intermediate output before vectorization
    - Not needed in further Keyline-Design process
-
-<img src="../resources/CreateValleys.png" alt="Create Valleys Result" width="600">
 
 ---
 
@@ -193,12 +183,12 @@ The **Extract Main Valleys** tool identifies the most significant valley lines (
 
 <img src="../resources/ExtractMainValleys.png" alt="Extract Main Valleys Dialog" width="600">
 
-> **Performance Note**: The **Extract Main Valleys** and **Extract Main Ridges** tools can take considerable time with large areas or dense valley/ridge networks. **Always provide a perimeter** to improve performance. The progress bar may stall around 20% for an extended period during spatial join operations - this is normal for large areas, please be patient.
+> **Performance Note**: The **Extract Main Valleys** and **Extract Main Ridges** tools can take considerable time with large areas or dense valley/ridge networks. **Always provide a perimeter** to improve performance. The progress bar may stall around 20% for an extended period during spatial join operations - this is normal for large areas. You can create an issue on the GitHub "Issues" page if it's relevant to you.
 
 #### Parameters
 
 - **Input Valley Lines**: Select the **Output Valley Lines** from the "Create Valleys" tool
-  - ⚠️ **Important**: Must have `LINK_ID`, `TRIB_ID`, and `DS_LINK_ID` attributes (automatically created by Create Valleys)
+  -* *Note**: Must have `LINK_ID`, `TRIB_ID`, and `DS_LINK_ID` attributes (automatically created by Create Valleys)
 
 - **Input Flow Accumulation Raster**: Select the **Output Flow Accumulation Raster** from the "Create Valleys" tool
   - **Note**: Use the same flow accumulation raster that was used to create the valley lines
@@ -314,7 +304,7 @@ After editing, you should have a clean, alternating valley-ridge pattern ready f
 
 <img src="../resources/MainValleysMainRidges_processed.png" alt="Final Processed Pattern" width="600">
 
-> **Note on Complex Topography**: As already mentioned, creating the main valley/ridge pattern often requires creativity, especially with complex topography. For instance, if you have a hill without clearly distinguishable valleys and ridges (so a lot of more or less parallel flow paths), you may want to manually create a valley or ridge line through the middle of the hill (instead using tool "Extract Main Valleys"). The perimeter boundary will act as ridges or valleys automatically (depending on the current alternation state of the keyline generation process). When creating lines manually, make sure to add a field named `LINK_ID` and assign a unique value to each line.
+> **Note on Complex Topography**: As already mentioned, creating the main valley/ridge pattern often requires creativity, especially with complex topography. For instance, if you have a hill without clearly distinguishable valleys and ridges (so a lot of more or less parallel flow paths), you may want to manually create a valley or ridge line through the middle of the hill (instead using tool "Extract Main Valleys") and a ridge resp. valley line at the boundaries. When creating lines manually, make sure to add a field named `LINK_ID` and assign a unique value to each line.
 
 ---
 
@@ -491,7 +481,7 @@ The algorithm creates a cost raster based on (Euclidean) distance and the expect
   - Triggers slope refinement (new iteration) if exceeded
 
 - **Advanced: Max Iterations Slope**: Maximum iterations for slope refinement (default: 30)
-  - Prevents infinite loops
+  - Limits the number of iterations for slope refinement. 
 
 #### Example Configuration
 
@@ -535,9 +525,10 @@ After creating keylines, verify their slope characteristics using the QGIS plugi
 
 <img src="../resources/KeylineElevationProfile.png" alt="Keyline Elevation Profile Verification" width="600">
 
-**Performance Note**: The algorithm can be slow with many start points. Always test with a few points first before creating the full keyline network.
+**Performance Note**: The algorithm can be slow with many start points or for a large and complex site. Always test with a few points first before creating the full keyline network.
 
 **Alternative Start Points**: As already mentioned, it is also possible to set start points on main ridge lines or the perimeter boundary. Here is an example:
+
 <img src="../resources/AlternativeStartPoints.png" alt="Alternative Start Points" width="600">
 
 ---
