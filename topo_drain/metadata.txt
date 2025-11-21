@@ -6,7 +6,7 @@
 name=TopoDrain
 qgisMinimumVersion=3.0
 description=A QGIS plugin for planning surface drainage water management like Keyline-Design.
-version=0.1.8
+version=0.1.9
 author=Timo Wicki
 email=wickitimo@gmail.com
 about=It automates the extraction of main valleys and ridges, creates off-contour line and supports creating Keyline Designs and other water-retention planning measures. The tool can also be used for other tasks, such as planning the location and alignment of paths and roads.
@@ -34,45 +34,21 @@ repository=https://github.com/wickit7/topo-drain-plugin
 hasProcessingProvider=yes
 # Uncomment the following line and add your changelog:
 
-changelog=0.1.8 - Documentation release
+changelog=0.1.9 - Windows compatibility release
+    * Fixed Windows compatibility issues: console window flashing when WhiteboxTools executes
+    * Enhanced GDAL virtual file system path detection (GPKG, HDF5, NETCDF)
+    * Improved sys.stdout/sys.stderr handling for Windows QGIS environment
+    0.1.8 - Documentation release
     * Added comprehensive Keyline Design, Constant Slope lines and Watershed delineation manual with step-by-step tutorial
     * Added installation guide in README with detailed setup instructions
     * Improved plugin documentation and user guidance
     * Fixed Constant Slope Lines and Adjust Constant Slope Lines algorithms (CRS attribute issue)
-    0.1.7 - Stable release candidate - Ready for user testing
+    0.1.7 - Stable release (mac os) candidate - Ready for user testing
     * Improved get keypoints algorithm performance and accuracy
     * Enhanced keyline creation with valley-to-valley and ridge-to-ridge tracing support
     * Code cleanup and refactoring for better maintainability
     * Removed experimental warning message - plugin is now stable and ready for testing
-    0.1.6 - Dependency cleanup and user experience improvements
-    * Removed dependency on Python rasterio package
-    * Enhanced feedback and progress reporting throughout the plugin
-    * Improved cancellation handling for better user control
-    * Fixed barrier path handling in constant slope line algorithms
-    0.1.5 - Create keylines bug fixes and code improvements
-    * Bug fix slope adjustment processing for keyline creation with "new slope after", "change after"
-    * Allow starting keyline from ridge line
-    0.1.4 - Bug fixes and attribute renaming
-    * Handle fid attribute issue windows/mac by renaming it to LINK_ID
-    * Handle crs issue
-    0.1.3 - Critical QGIS crash fixes and plugin stability improvements
-    * CRITICAL FIX: Eliminated QGIS crashes caused by QMessageBox dialogs during algorithm execution
-    * Better Windows compatibility and plugin loading reliability
-    0.1.2 - Bug fixes and robustness improvements
-    * Fixed runtime errors in valley mask processing and GeoDataFrame creation
-    * Enhanced field validation: automatic handling of missing FID, TRIB_ID, and DS_LINK_ID fields
-    * Improved Windows compatibility for WhiteboxTools execution
-    * Added case-insensitive attribute validation with better error messages
-    * Fixed raster data type conflicts (standardized to uint32 for masks)
-    * Enhanced parameter integration: slope_deviation_threshold, max_iterations parameters
-    * UI improvements with "Advanced:" prefixes for complex parameters
-    0.1.1 - Initial public release
-    * Core topographic drainage analysis algorithms
-    * Valley and ridge extraction using WhiteboxTools
-    * Keypoint detection for keyline design
-    * Constant slope line generation
-    * Support for keyline design workflows
-    * Integration with QGIS Processing toolbox
+
 
 # Tags are comma separated with spaces allowed
 tags=keyline-design, permaculture, sponge-scape, schwammland, surface analysis, watershed-analysis, topo-drain, water-management, whiteboxtools
