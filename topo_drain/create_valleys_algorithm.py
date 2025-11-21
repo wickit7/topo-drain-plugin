@@ -174,6 +174,7 @@ class CreateValleysAlgorithm(QgsProcessingAlgorithm):
         # Get DTM path and validate format
         dtm_path = dtm_layer.source()
         dtm_ext = get_raster_ext(dtm_path, feedback)
+        print(f"DTM extension: {dtm_ext}")
         
         # Validate raster format compatibility with GDAL driver mapping
         supported_raster_formats = list(self.core.gdal_driver_mapping.keys())

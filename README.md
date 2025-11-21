@@ -95,7 +95,7 @@ To verify that WhiteboxTools is properly configured:
    - Note: This setting is required temporarily. The experimental flag will be removed once the plugin has been successfully tested by a handful of users.
 3. Go to the **All** tab and search for **"TopoDrain"**
 4. Select the TopoDrain plugin and click **Install Plugin**
-   - Make sure to install the newest version (at least version ≥0.1.8)
+   - Make sure to install the newest version (at least version ≥0.1.9)
 
 After installation, you will see TopoDrain tools in the **Processing Toolbox** under the TopoDrain section.
 

@@ -44,13 +44,26 @@ class TopoDrainCore:
         print(f"[TopoDrainCore] Working directory set to: {self.working_directory if self.working_directory else 'Not set'}")
         
         # Define supported GDAL driver mappings for raster formats (has to be compatible with available raster formats for WhiteboxTools)
+        # self.gdal_driver_mapping = {
+        #     '.tif': 'GTiff',
+        #     '.tiff': 'GTiff',
+        #     '.hdr': 'EHdr',
+        #     '.asc': 'AAIGrid',
+        #     '.bil': 'EHdr',
+        #     '.gpkg': 'GPKG', --> I thought this worked at some point...
+        #     '.sdat': 'SAGA',
+        #     '.sgrd': 'SAGA',
+        #     '.rdc': 'RDxC',
+        #     '.rst': 'RST'
+
+        # }
+
         self.gdal_driver_mapping = {
             '.tif': 'GTiff',
             '.tiff': 'GTiff',
             '.hdr': 'EHdr',
             '.asc': 'AAIGrid',
             '.bil': 'EHdr',
-            '.gpkg': 'GPKG',
             '.sdat': 'SAGA',
             '.sgrd': 'SAGA',
             '.rdc': 'RDxC',
