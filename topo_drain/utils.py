@@ -624,21 +624,33 @@ def get_raster_ext(raster_path, feedback=None, check_existence=True):
         # Handle GDAL virtual file system paths (e.g., GPKG raster layers)
         base_path = raster_path
         if ':' in raster_path:
-            # Check if it's a GDAL virtual file system path
             parts = raster_path.split(':')
-            if len(parts) >= 2:
-                # Format: GPKG:/path/to/file.gpkg:layer_name
+            
+            # Check if it's a Windows drive letter (e.g., C:, D:)
+            # Windows path: single letter + colon (e.g., "D:/path")
+            is_windows_path = (
+                len(parts) >= 2 and
+                len(parts[0]) == 1 and 
+                parts[0].isalpha()
+            )
+            
+            # Only treat as GDAL virtual path if it's NOT a Windows drive letter
+            if not is_windows_path and len(parts) >= 2:
+                # It's a GDAL virtual file system path
+                # Format: GPKG:/path/to/file.gpkg:layer_name or HDF5:/path/file.h5:dataset
                 if parts[0].upper() == 'GPKG':
                     if len(parts) >= 3:
                         # Extract the actual file path (between first and last colon)
+                        # Handles both: GPKG:/unix/path:layer and GPKG:C:/windows/path:layer
                         base_path = ':'.join(parts[1:-1])
                         if feedback:
                             feedback.pushInfo(f"Extracted GPKG raster base path: {base_path}")
                 else:
-                    # For other GDAL virtual paths, try to extract base path
-                    # Format might be like "driver:/path/file.ext"
-                    if len(parts) >= 2:
-                        base_path = parts[1]
+                    # For other GDAL virtual paths (HDF5, NETCDF, etc.)
+                    # Format: driver:/path/file.ext or driver:/path/file.ext:dataset
+                    base_path = ':'.join(parts[1:]) if len(parts) > 2 else parts[1]
+                    if feedback:
+                        feedback.pushInfo(f"Extracted GDAL virtual path base: {base_path}")
         
         # Check if the base path exists (only if requested)
         if check_existence and not os.path.exists(base_path):

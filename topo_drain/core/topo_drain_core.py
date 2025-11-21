@@ -44,13 +44,26 @@ class TopoDrainCore:
         print(f"[TopoDrainCore] Working directory set to: {self.working_directory if self.working_directory else 'Not set'}")
         
         # Define supported GDAL driver mappings for raster formats (has to be compatible with available raster formats for WhiteboxTools)
+        # self.gdal_driver_mapping = {
+        #     '.tif': 'GTiff',
+        #     '.tiff': 'GTiff',
+        #     '.hdr': 'EHdr',
+        #     '.asc': 'AAIGrid',
+        #     '.bil': 'EHdr',
+        #     '.gpkg': 'GPKG', --> I thought this worked at some point...
+        #     '.sdat': 'SAGA',
+        #     '.sgrd': 'SAGA',
+        #     '.rdc': 'RDxC',
+        #     '.rst': 'RST'
+
+        # }
+
         self.gdal_driver_mapping = {
             '.tif': 'GTiff',
             '.tiff': 'GTiff',
             '.hdr': 'EHdr',
             '.asc': 'AAIGrid',
             '.bil': 'EHdr',
-            '.gpkg': 'GPKG',
             '.sdat': 'SAGA',
             '.sgrd': 'SAGA',
             '.rdc': 'RDxC',
@@ -113,6 +126,48 @@ class TopoDrainCore:
             WhiteboxTools = whitebox_tools_mod.WhiteboxTools
             # Step 6: Reference WhiteboxTools as wbt
             wbt = WhiteboxTools()
+            
+            # Configure WhiteboxTools to prevent console window flashing on Windows
+            try:
+                wbt.set_verbose_mode(False)
+            except Exception as e:
+                warnings.warn(f"[TopoDrainCore] Could not set verbose mode: {e}")
+                # Continue anyway - this is not critical
+            
+            # On Windows, globally patch subprocess.Popen to hide console windows
+            if sys.platform == 'win32':
+                try:
+                    import subprocess
+                    
+                    # Check if we haven't already patched
+                    if not hasattr(subprocess.Popen, '_wbt_patched'):
+                        # Store original __init__
+                        original_init = subprocess.Popen.__init__
+                        
+                        # Create wrapper that adds startupinfo to hide console
+                        def patched_init(self, *args, **kwargs):
+                            # Only patch if creationflags or startupinfo aren't already set
+                            if 'startupinfo' not in kwargs:
+                                startupinfo = subprocess.STARTUPINFO()
+                                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                                startupinfo.wShowWindow = subprocess.SW_HIDE
+                                kwargs['startupinfo'] = startupinfo
+                            
+                            # Also add CREATE_NO_WINDOW flag
+                            if 'creationflags' not in kwargs:
+                                kwargs['creationflags'] = 0x08000000  # CREATE_NO_WINDOW
+                            else:
+                                kwargs['creationflags'] |= 0x08000000
+                            
+                            return original_init(self, *args, **kwargs)
+                        
+                        # Apply the patch
+                        subprocess.Popen.__init__ = patched_init
+                        subprocess.Popen._wbt_patched = True
+                        print("[TopoDrainCore] Windows subprocess.Popen patched to hide console windows")
+                except Exception as e:
+                    print(f"[TopoDrainCore] Could not patch subprocess for Windows: {e}")
+            
             if self.working_directory:
                 wbt.set_working_dir(self.working_directory)
             print(f"[TopoDrainCore] Using WhiteboxTools from directory: {whitebox_directory}")
@@ -303,7 +358,27 @@ class TopoDrainCore:
         if tool_method is not None:
             # Use the convenience method if available (cleaner and more reliable)
             try:
-                return tool_method(callback=callback_func, **kwargs)
+                # Fix for Windows QGIS environment where sys.stdout is None
+                original_stdout = sys.stdout
+                original_stderr = sys.stderr
+                
+                # Create a dummy stdout/stderr if they are None (Windows QGIS issue)
+                if sys.stdout is None:
+                    sys.stdout = open(os.devnull, 'w')
+                if sys.stderr is None:
+                    sys.stderr = open(os.devnull, 'w')
+                
+                try:
+                    return tool_method(callback=callback_func, **kwargs)
+                finally:
+                    # Restore original stdout/stderr
+                    if original_stdout is None and sys.stdout is not None:
+                        sys.stdout.close()
+                    if original_stderr is None and sys.stderr is not None:
+                        sys.stderr.close()
+                    sys.stdout = original_stdout
+                    sys.stderr = original_stderr
+                    
             except Exception as e:
                 if feedback:
                     feedback.reportError(f"WhiteboxTools error: {e}")
@@ -317,7 +392,27 @@ class TopoDrainCore:
                     args.append(f"--{param}='{value}'")
             
             try:
-                return self.wbt.run_tool(tool_name, args, callback=callback_func)
+                # Fix for Windows QGIS environment where sys.stdout is None
+                original_stdout = sys.stdout
+                original_stderr = sys.stderr
+                
+                # Create a dummy stdout/stderr if they are None (Windows QGIS issue)
+                if sys.stdout is None:
+                    sys.stdout = open(os.devnull, 'w')
+                if sys.stderr is None:
+                    sys.stderr = open(os.devnull, 'w')
+                
+                try:
+                    return self.wbt.run_tool(tool_name, args, callback=callback_func)
+                finally:
+                    # Restore original stdout/stderr
+                    if original_stdout is None and sys.stdout is not None:
+                        sys.stdout.close()
+                    if original_stderr is None and sys.stderr is not None:
+                        sys.stderr.close()
+                    sys.stdout = original_stdout
+                    sys.stderr = original_stderr
+                    
             except Exception as e:
                 if feedback:
                     feedback.reportError(f"WhiteboxTools error: {e}")
