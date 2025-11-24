@@ -19,7 +19,7 @@ from qgis.core import (QgsProcessing,
                        QgsProcessingParameterNumber)
 import geopandas as gpd
 import os
-from .utils import get_crs_from_layer, update_core_crs_if_needed, ensure_whiteboxtools_configured, save_gdf_to_file, load_gdf_from_qgis_source, get_raster_ext, get_vector_ext
+from .utils import get_crs_from_layer, ensure_whiteboxtools_configured, save_gdf_to_file, save_gdf_to_file_ogr, load_gdf_from_qgis_source, get_raster_ext, get_vector_ext, get_crs_from_project, clear_pyproj_cache
 
 pluginPath = os.path.dirname(__file__)
 
@@ -195,10 +195,13 @@ The algorithm uses sophisticated mathematical techniques:
         )
 
     def processAlgorithm(self, parameters, context, feedback):
+        # CRITICAL: Clear PyProj cache at start to prevent Windows crashes on repeated runs
+        #clear_pyproj_cache(feedback) # seems not to resolve the issue
+        
         # Ensure WhiteboxTools is configured before running
         if not ensure_whiteboxtools_configured(self, feedback):
             return {}
-        
+
         # Validate and read input parameters
         valley_lines_source = self.parameterAsSource(parameters, self.INPUT_VALLEY_LINES, context)
         dtm_layer = self.parameterAsRasterLayer(parameters, self.INPUT_DTM, context)
@@ -236,13 +239,30 @@ The algorithm uses sophisticated mathematical techniques:
         if hasattr(self.core, 'ogr_driver_mapping') and output_ext not in self.core.ogr_driver_mapping:
             feedback.pushWarning(f"Output file format '{output_ext}' is not in OGR driver mapping. Supported formats: {supported_vector_formats}. GeoPandas will attempt to save it automatically.")
 
+        # Adjust core crs with project crs if needed
+        feedback.pushInfo(f"Core CRS: {self.core.crs}")
+        project_crs = get_crs_from_project()
+        feedback.pushInfo(f"Project CRS: {project_crs}")
+        if self.core.crs is None and project_crs is None:
+            feedback.pushWarning("Both core CRS and project CRS are None - CRS may not be properly set")
+        elif project_crs != self.core.crs:
+            if project_crs is None:
+                feedback.pushWarning("Project CRS is None - keeping core CRS") 
+            else:
+                feedback.pushInfo(f"Setting core CRS from project CRS: {project_crs}")
+                self.core.set_crs(project_crs)
+
+        # Check input crs against core crs
         feedback.pushInfo("Reading CRS from DTM layer...")
-        # Read CRS from the DTM layer with safe fallback (since we can't get CRS from source directly)
         dtm_crs = get_crs_from_layer(dtm_layer)
         feedback.pushInfo(f"DTM CRS: {dtm_crs}")
-
-        # Update core CRS if needed
-        update_core_crs_if_needed(self.core, dtm_crs, feedback)
+        # Adjust core crs with input crs but only if it is None
+        if self.core.crs is None:
+            feedback.pushInfo(f"Setting core CRS from DTM CRS: {dtm_crs}")
+            self.core.set_crs(dtm_crs)
+        elif dtm_crs != self.core.crs:
+            # Add warning if input crs not equal to core crs
+            feedback.pushWarning(f"DTM CRS {dtm_crs} differs from core (project) CRS {self.core.crs}!")
 
         # Load input data as GeoDataFrame
         feedback.pushInfo("Loading valley lines...")
@@ -274,12 +294,13 @@ The algorithm uses sophisticated mathematical techniques:
 
         feedback.pushInfo(f"Detected {len(keypoints_gdf)} keypoints")
 
-        # Ensure the keypoints GeoDataFrame has the correct CRS
-        keypoints_gdf = keypoints_gdf.set_crs(self.core.crs, allow_override=True)
-        feedback.pushInfo(f"Keypoints CRS: {keypoints_gdf.crs}")
-
-        # Save result with proper format handling
-        save_gdf_to_file(keypoints_gdf, keypoints_file_path, self.core, feedback)
+        # Save result - use OGR on Windows to avoid PyProj crashes
+        if self.core.disable_crs_operations:
+            feedback.pushInfo("Saving keypoints WITHOUT setting CRS to avoid WINDOWS PyProj issues...")   
+            save_gdf_to_file_ogr(keypoints_gdf, keypoints_file_path, self.core, feedback)
+        else:
+            feedback.pushInfo("Saving keypoints WITH setting CRS pyproj (geopandas)...")
+            save_gdf_to_file(keypoints_gdf, keypoints_file_path, self.core, feedback)
 
         results = {}
         # Add output parameters to results

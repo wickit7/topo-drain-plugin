@@ -13,7 +13,7 @@ from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterRasterLayer
                        QgsProcessingParameterVectorDestination, QgsProcessingParameterNumber,
                        QgsProcessing, QgsProcessingException)
 import os
-from .utils import get_crs_from_layer, update_core_crs_if_needed, ensure_whiteboxtools_configured, save_gdf_to_file, get_raster_ext, get_vector_ext
+from .utils import get_crs_from_layer, ensure_whiteboxtools_configured, save_gdf_to_file, save_gdf_to_file_ogr, get_raster_ext, get_vector_ext, get_crs_from_project, clear_pyproj_cache
 
 pluginPath = os.path.dirname(__file__)
 
@@ -164,10 +164,13 @@ class CreateRidgesAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(streams_inverted_param)
 
     def processAlgorithm(self, parameters, context, feedback):
+        # CRITICAL: Clear PyProj cache at start to prevent Windows crashes on repeated runs
+        #clear_pyproj_cache(feedback) # seems not to resolve the issue
+        
         # Ensure WhiteboxTools is configured before running
         if not ensure_whiteboxtools_configured(self, feedback):
             return {}
-        
+
         # Validate and read input parameters
         dtm_layer = self.parameterAsRasterLayer(parameters, self.INPUT_DTM, context)
        
@@ -221,11 +224,30 @@ class CreateRidgesAlgorithm(QgsProcessingAlgorithm):
                 if hasattr(self.core, 'gdal_driver_mapping') and output_raster_ext not in self.core.gdal_driver_mapping:
                     feedback.pushWarning(f"Output {output_name} format '{output_raster_ext}' is not in GDAL driver mapping. Supported formats: {supported_raster_formats}. GDAL will attempt to save it automatically.")
 
+        # Adjust core crs with project crs if needed
+        feedback.pushInfo(f"Core CRS: {self.core.crs}")
+        project_crs = get_crs_from_project()
+        feedback.pushInfo(f"Project CRS: {project_crs}")
+        if self.core.crs is None and project_crs is None:
+            feedback.pushWarning("Both core CRS and project CRS are None - CRS may not be properly set")
+        elif project_crs != self.core.crs:
+            if project_crs is None:
+                feedback.pushWarning("Project CRS is None - keeping core CRS") 
+            else:
+                feedback.pushInfo(f"Setting core CRS from project CRS: {project_crs}")
+                self.core.set_crs(project_crs)
+
+        # Check input crs against core crs
         feedback.pushInfo("Reading CRS from DTM...")
         dtm_crs = get_crs_from_layer(dtm_layer)
         feedback.pushInfo(f"DTM Layer crs: {dtm_crs}")
-        # Update core CRS if needed
-        update_core_crs_if_needed(self.core, dtm_crs, feedback)
+        # Adjust core crs with input crs but only if it is None
+        if self.core.crs is None:
+            feedback.pushInfo(f"Setting core CRS from DTM CRS: {dtm_crs}")
+            self.core.set_crs(dtm_crs)
+        elif dtm_crs != self.core.crs:
+            # Add warning if input crs not equal to core crs
+            feedback.pushWarning(f"DTM CRS {dtm_crs} differs from core (project) CRS {self.core.crs}!")
 
         feedback.pushInfo("Running extract ridges...")
         ridge_gdf = self.core.extract_ridges(
@@ -243,12 +265,15 @@ class CreateRidgesAlgorithm(QgsProcessingAlgorithm):
         if ridge_gdf.empty:
             raise QgsProcessingException("No ridges were created")
         
-        # Ensure the ridges GeoDataFrame has the correct CRS
-        ridge_gdf = ridge_gdf.set_crs(self.core.crs, allow_override=True)
         feedback.pushInfo(f"Ridge lines CRS: {ridge_gdf.crs}")
 
-        # Save result with proper format handling
-        save_gdf_to_file(ridge_gdf, ridge_file_path, self.core, feedback)
+        # Save result - use OGR on Windows to avoid PyProj crashes
+        if self.core.disable_crs_operations:
+            feedback.pushInfo("Saving ridges WITHOUT setting CRS to avoid WINDOWS PyProj issues...")   
+            save_gdf_to_file_ogr(ridge_gdf, ridge_file_path, self.core, feedback)
+        else:
+            feedback.pushInfo("Saving ridges WITH setting CRS pyproj (geopandas)...")
+            save_gdf_to_file(ridge_gdf, ridge_file_path, self.core, feedback)
 
         results = {}
         # Add output parameters to results

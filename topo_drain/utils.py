@@ -20,6 +20,193 @@ from qgis.core import (
     QgsProcessingException
 )
 
+WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+def clear_pyproj_cache(feedback=None):
+    """
+    Clear PyProj's internal CRS cache to prevent Windows access violations on repeated runs.
+    
+    This function aggressively clears PyProj's cached CRS objects that contain C library
+    pointers. These pointers become stale when a QThread terminates on Windows, causing
+    "access violation" crashes when the next QThread tries to use them.
+    
+    The issue: PyProj uses thread-local storage (_local) that stores CRS objects with
+    C library pointers. When a QThread terminates, Windows immediately releases memory,
+    making these pointers invalid. On the next run in a new QThread, PyProj tries to
+    access these stale pointers → crash.
+    
+    Args:
+        feedback: Optional feedback object for logging
+        
+    Returns:
+        bool: True if cache was cleared or attempted, False if PyProj not available
+    """
+    try:
+        import pyproj
+        import gc
+        import sys
+        
+        if feedback:
+            feedback.pushInfo("[PyProj Cache Clear] Aggressively clearing PyProj CRS cache and stale pointers...")
+        
+        cleared_something = False
+        
+        # Approach 1: Clear any global CRS cache if it exists
+        cache_attrs = ['_CRS_CACHE', '__crs_cache__', '_cache', '__pyproj_crs__']
+        for attr in cache_attrs:
+            if hasattr(pyproj, attr):
+                try:
+                    cache = getattr(pyproj, attr)
+                    if hasattr(cache, 'clear'):
+                        cache.clear()
+                        if feedback:
+                            feedback.pushInfo(f"[PyProj Cache Clear] Cleared pyproj.{attr}")
+                        cleared_something = True
+                    elif isinstance(cache, dict):
+                        cache.clear()
+                        if feedback:
+                            feedback.pushInfo(f"[PyProj Cache Clear] Cleared dict pyproj.{attr}")
+                        cleared_something = True
+                except Exception as e:
+                    if feedback:
+                        feedback.pushInfo(f"[PyProj Cache Clear] Could not clear {attr}: {e}")
+        
+        # Approach 2: Aggressively clear CRS class-level caches and thread-local storage
+        if hasattr(pyproj, 'CRS'):
+            CRS = pyproj.CRS
+            
+            # CRITICAL: Clear thread-local storage (the main culprit on Windows)
+            if hasattr(CRS, '_local'):
+                try:
+                    # Get the current thread-local object
+                    local_obj = CRS._local
+                    
+                    # Clear all attributes from thread-local storage
+                    if hasattr(local_obj, '__dict__'):
+                        local_keys = list(local_obj.__dict__.keys())
+                        if local_keys:
+                            if feedback:
+                                feedback.pushInfo(f"[PyProj Cache Clear] Found thread-local keys: {local_keys}")
+                            # Delete each attribute to release C pointers
+                            for key in local_keys:
+                                try:
+                                    delattr(local_obj, key)
+                                    if feedback:
+                                        feedback.pushInfo(f"[PyProj Cache Clear] Deleted thread-local.{key}")
+                                except Exception as del_e:
+                                    if feedback:
+                                        feedback.pushInfo(f"[PyProj Cache Clear] Could not delete {key}: {del_e}")
+                            cleared_something = True
+                    
+                    # Recreate thread-local storage with fresh object
+                    try:
+                        import threading
+                        old_local = CRS._local
+                        CRS._local = threading.local()
+                        # Delete reference to old thread-local object
+                        del old_local
+                        if feedback:
+                            feedback.pushInfo("[PyProj Cache Clear] ✓ Recreated CRS._local thread-local storage")
+                        cleared_something = True
+                    except Exception as e:
+                        if feedback:
+                            feedback.pushInfo(f"[PyProj Cache Clear] Could not recreate _local: {e}")
+                            
+                except Exception as e:
+                    if feedback:
+                        feedback.pushInfo(f"[PyProj Cache Clear] Could not clear CRS._local: {e}")
+            
+            # Clear other CRS class caches that might hold references
+            crs_cache_attrs = ['_cache', '__cache__', '__dict__']
+            for attr in crs_cache_attrs:
+                if hasattr(CRS, attr):
+                    try:
+                        cache = getattr(CRS, attr)
+                        if hasattr(cache, 'clear') and callable(cache.clear):
+                            cache.clear()
+                            if feedback:
+                                feedback.pushInfo(f"[PyProj Cache Clear] Cleared CRS.{attr}")
+                            cleared_something = True
+                        elif isinstance(cache, dict):
+                            # For __dict__, only clear CRS-related keys to avoid breaking the class
+                            if attr == '__dict__':
+                                cache_keys = [k for k in cache.keys() if 'cache' in k.lower() or 'crs' in k.lower()]
+                                for key in cache_keys:
+                                    try:
+                                        if isinstance(cache[key], dict):
+                                            cache[key].clear()
+                                            if feedback:
+                                                feedback.pushInfo(f"[PyProj Cache Clear] Cleared CRS.__dict__[{key}]")
+                                            cleared_something = True
+                                    except Exception:
+                                        pass
+                            else:
+                                cache.clear()
+                                if feedback:
+                                    feedback.pushInfo(f"[PyProj Cache Clear] Cleared dict CRS.{attr}")
+                                cleared_something = True
+                    except Exception as e:
+                        if feedback:
+                            feedback.pushInfo(f"[PyProj Cache Clear] Could not clear CRS.{attr}: {e}")
+        
+        # Approach 3: Clear any PyProj module-level CRS instances
+        # Look for any CRS objects in pyproj module namespace and delete them
+        try:
+            pyproj_dict = pyproj.__dict__
+            crs_instances = []
+            for key, value in list(pyproj_dict.items()):
+                # Find any CRS instances stored at module level
+                if hasattr(pyproj, 'CRS') and isinstance(value, pyproj.CRS):
+                    crs_instances.append(key)
+            
+            if crs_instances:
+                if feedback:
+                    feedback.pushInfo(f"[PyProj Cache Clear] Found CRS instances in module: {crs_instances}")
+                for key in crs_instances:
+                    try:
+                        del pyproj_dict[key]
+                        if feedback:
+                            feedback.pushInfo(f"[PyProj Cache Clear] Deleted pyproj.{key}")
+                        cleared_something = True
+                    except Exception as e:
+                        if feedback:
+                            feedback.pushInfo(f"[PyProj Cache Clear] Could not delete {key}: {e}")
+        except Exception as e:
+            if feedback:
+                feedback.pushInfo(f"[PyProj Cache Clear] Could not scan module for CRS instances: {e}")
+        
+        # Approach 4: Force aggressive garbage collection with multiple generations
+        if feedback:
+            feedback.pushInfo("[PyProj Cache Clear] Running aggressive garbage collection...")
+        # Collect multiple times to ensure all generations are cleaned
+        collected_total = 0
+        for i in range(3):
+            collected = gc.collect()
+            collected_total += collected
+            if feedback and collected > 0:
+                feedback.pushInfo(f"[PyProj Cache Clear] GC pass {i+1}: collected {collected} objects")
+        
+        if feedback:
+            feedback.pushInfo(f"[PyProj Cache Clear] Total garbage collected: {collected_total} objects")
+        cleared_something = True
+        
+        if cleared_something:
+            if feedback:
+                feedback.pushInfo("[PyProj Cache Clear] ✓ PyProj cache and pointer cleanup completed")
+        else:
+            if feedback:
+                feedback.pushInfo("[PyProj Cache Clear] No known caches found to clear")
+        
+        return True
+        
+    except ImportError:
+        if feedback:
+            feedback.pushInfo("[PyProj Cache Clear] PyProj not available - skipping")
+        return False
+    except Exception as e:
+        if feedback:
+            feedback.pushWarning(f"[PyProj Cache Clear] Error during cache clear: {e}")
+        return False
 
 def ensure_whiteboxtools_configured(processing_instance, feedback=None):
     """
@@ -101,37 +288,6 @@ def ensure_whiteboxtools_configured(processing_instance, feedback=None):
             raise QgsProcessingException(error_msg)
 
 
-def update_core_crs_if_needed(core, input_crs, feedback=None):
-    """
-    Update core CRS if input CRS is different and valid.
-    
-    Args:
-        core: TopoDrainCore instance
-        input_crs: CRS string from input layer
-        feedback: QGIS feedback object for logging
-    
-    Returns:
-        bool: True if CRS was updated, False otherwise
-    """
-    if not core or not hasattr(core, 'crs'):
-        return False
-    
-    if not input_crs or not input_crs.strip():
-        return False
-    
-    current_crs = getattr(core, 'crs', None)
-    
-    if current_crs != input_crs:
-        if feedback:
-            feedback.pushInfo(f"Updating core CRS from '{current_crs}' to '{input_crs}' to match input layer")
-        else:
-            print(f"[TopoDrain Utils] Updating core CRS from '{current_crs}' to '{input_crs}' to match input layer")
-        core.crs = input_crs
-        return True
-    
-    return False
-
-
 def parse_epsg_from_wkt_or_description(text):
     """
     Try to extract EPSG code from WKT string or CRS description
@@ -177,45 +333,53 @@ def parse_epsg_from_wkt_or_description(text):
 
 def get_crs_from_project():
     """
-    Get the current QGIS project CRS as authid (e.g., 'EPSG:4326')
+    Get the current QGIS project CRS as a string authid (e.g., 'EPSG:4326').
+    
+    Returns:
+        str or None: CRS string (EPSG code or WKT), never a CRS object.
+                     Returns None if CRS cannot be determined.
+    
+    Note:
+        Always returns a string to prevent PyProj thread-safety issues.
+        Never returns QgsCoordinateReferenceSystem or pyproj.CRS objects.
     """
     try:
         crs = QgsProject.instance().crs()
         
-        # Get authid once before checking if it's empty
-        crs_authid = crs.authid()
+        # Get authid and ensure it's a string (thread-safe)
+        crs_authid = str(crs.authid()) if crs.authid() else ""
         print(f"[TopoDrain Utils] Project CRS authid: '{crs_authid}'")
         
         # If authid is empty, try alternative methods
         if not crs_authid or crs_authid.strip() == "":
             print("[TopoDrain Utils] Project authid() returned empty, trying alternatives...")
-            description = crs.description()
+            description = str(crs.description()) if crs.description() else ""
             print(f"[TopoDrain Utils] Project CRS description: {description}")
             
             # Try to extract EPSG from description
             epsg_from_desc = parse_epsg_from_wkt_or_description(description)
             if epsg_from_desc:
                 print(f"[TopoDrain Utils] Extracted EPSG from project description: {epsg_from_desc}")
-                return epsg_from_desc
+                return str(epsg_from_desc)  # Ensure string
             
             # Try to get WKT and parse it
-            wkt = crs.toWkt()
+            wkt = str(crs.toWkt()) if crs.toWkt() else ""
             print(f"[TopoDrain Utils] Project CRS WKT: {wkt}")
             epsg_from_wkt = parse_epsg_from_wkt_or_description(wkt)
             if epsg_from_wkt:
                 print(f"[TopoDrain Utils] Extracted EPSG from project WKT: {epsg_from_wkt}")
-                return epsg_from_wkt
+                return str(epsg_from_wkt)  # Ensure string
             
             # If still no EPSG, return the WKT as fallback
             if wkt:
                 print(f"[TopoDrain Utils] Using project WKT as fallback: {wkt[:100]}...")
-                return wkt
+                return str(wkt)  # Ensure string
             
             warnings.warn("[TopoDrain Utils] Project CRS is empty, returning None")
             return None
         else:
             print(f"[TopoDrain Utils] Returning project authid: {crs_authid}")
-            return crs_authid
+            return str(crs_authid)  # Ensure string
             
     except Exception as e:
         warnings.warn(f"[TopoDrain Utils] Could not get project CRS: {e}, returning None")
@@ -223,13 +387,18 @@ def get_crs_from_project():
 
 def get_crs_from_layer(layer_source):
     """
-    Get CRS from a raster or vector layer file or object, or from layer source object
+    Get CRS from a raster or vector layer file or object, or from layer source object.
     
     Args:
         layer_source: Can be a QgsRasterLayer, QgsVectorLayer, QgsFeatureSource, or file path string
     
     Returns:
-        str or None: CRS authid (e.g., 'EPSG:2056'), WKT string, or None if not found
+        str or None: CRS string (EPSG authid or WKT), never a CRS object.
+                     Returns None if CRS cannot be determined.
+    
+    Note:
+        Always returns a string to prevent PyProj thread-safety issues.
+        Never returns QgsCoordinateReferenceSystem or pyproj.CRS objects.
     """    
     crs = None
     print(f"[TopoDrain Utils] Getting CRS from layer source {layer_source}...")
@@ -276,45 +445,45 @@ def get_crs_from_layer(layer_source):
                 print(f"[TopoDrain Utils] layer_source is not a valid type: {type(layer_source)}")
             return None
 
-        # If we have a crs object, try to extract valid CRS information
+        # If we have a crs object, try to extract valid CRS information as string
         if crs is None:
             print("[TopoDrain Utils] No CRS object available")
             return None
         
-        # Get authid once before checking if it's empty
-        crs_authid = crs.authid()
+        # Get authid and ensure it's a string (thread-safe)
+        crs_authid = str(crs.authid()) if crs.authid() else ""
         print(f"[TopoDrain Utils] CRS authid: '{crs_authid}'")
         
         # If authid is empty, try alternative methods
         if not crs_authid or crs_authid.strip() == "":
             print("[TopoDrain Utils] authid() returned empty, trying alternatives...")
-            description = crs.description()
+            description = str(crs.description()) if crs.description() else ""
             print(f"[TopoDrain Utils] CRS description: {description}")
             
             # Try to extract EPSG from description
             epsg_from_desc = parse_epsg_from_wkt_or_description(description)
             if epsg_from_desc:
                 print(f"[TopoDrain Utils] Extracted EPSG from description: {epsg_from_desc}")
-                return epsg_from_desc
+                return str(epsg_from_desc)  # Ensure string
             
             # Try to get WKT and parse it
-            wkt = crs.toWkt()
+            wkt = str(crs.toWkt()) if crs.toWkt() else ""
             print(f"[TopoDrain Utils] CRS WKT: {wkt}")
             epsg_from_wkt = parse_epsg_from_wkt_or_description(wkt)
             if epsg_from_wkt:
                 print(f"[TopoDrain Utils] Extracted EPSG from WKT: {epsg_from_wkt}")
-                return epsg_from_wkt
+                return str(epsg_from_wkt)  # Ensure string
             
             # If still no EPSG, return the WKT as fallback
             if wkt:
                 print(f"[TopoDrain Utils] Using WKT as fallback: {wkt[:100]}...")
-                return wkt
+                return str(wkt)  # Ensure string
             
             print("[TopoDrain Utils] No valid CRS information found")
             return None
         else:
             print(f"[TopoDrain Utils] Returning authid: {crs_authid}")
-            return crs_authid
+            return str(crs_authid)  # Ensure string
 
     except Exception as e:
         print(f"[TopoDrain Utils] Could not get CRS from layer {layer_source}: {e}")
@@ -488,6 +657,125 @@ def load_gdf_from_file(file_path, feedback=None):
         raise Exception(error_msg)
 
 
+def load_gdf_from_file_ogr(file_path, feedback=None):
+    """
+    Load a GeoDataFrame from a file path using OGR directly (bypasses GeoPandas read_file).
+    This avoids PyProj completely by using GDAL/OGR for reading - CRS is NOT loaded.
+    
+    This function handles both regular file paths and QGIS GeoPackage layer paths
+    in the format "/path/file.gpkg|layername=layer_name".
+    
+    Args:
+        file_path (str): Path to the vector file, may include GeoPackage layer syntax
+        feedback (QgsProcessingFeedback, optional): Processing feedback for logging
+    
+    Returns:
+        gpd.GeoDataFrame: Loaded GeoDataFrame with cleaned data types and crs=None
+    
+    Raises:
+        Exception: If file loading fails
+        
+    Note:
+        The returned GeoDataFrame will have crs=None to avoid PyProj issues.
+        CRS information is discarded during loading.
+    """
+    try:
+        from osgeo import ogr
+        from shapely.wkt import loads as wkt_loads
+        
+        # Handle GeoPackage layer paths
+        layer_name = None
+        actual_file_path = file_path
+        
+        if '|' in file_path and 'layername=' in file_path:
+            # Parse GeoPackage path: "/path/file.gpkg|layername=layer_name"
+            actual_file_path = file_path.split('|')[0]
+            layer_part = file_path.split('|')[1]
+            layer_name = layer_part.split('=')[1] if '=' in layer_part else layer_part
+            
+            if feedback:
+                feedback.pushInfo(f"Loading GeoPackage layer with OGR: {actual_file_path}, layer: {layer_name}")
+        else:
+            if feedback:
+                feedback.pushInfo(f"Loading vector file with OGR: {actual_file_path}")
+        
+        # Open data source
+        ds = ogr.Open(actual_file_path)
+        if ds is None:
+            raise Exception(f"Could not open data source: {actual_file_path}")
+        
+        # Get layer
+        if layer_name:
+            layer = ds.GetLayerByName(layer_name)
+        else:
+            layer = ds.GetLayer(0)
+        
+        if layer is None:
+            ds = None
+            raise Exception(f"Could not get layer from: {actual_file_path}")
+        
+        # Get layer definition
+        layer_defn = layer.GetLayerDefn()
+        field_count = layer_defn.GetFieldCount()
+        
+        # Prepare lists for data
+        geometries = []
+        attributes = {layer_defn.GetFieldDefn(i).GetName(): [] for i in range(field_count)}
+        
+        # Read features
+        feature_count = 0
+        for feature in layer:
+            feature_count += 1
+            
+            # Get geometry
+            geom = feature.GetGeometryRef()
+            if geom is not None:
+                # Convert OGR geometry to Shapely using WKT (more reliable than WKB)
+                try:
+                    wkt_data = geom.ExportToWkt()
+                    shapely_geom = wkt_loads(wkt_data)
+                    geometries.append(shapely_geom)
+                except Exception as geom_error:
+                    if feedback:
+                        feedback.pushWarning(f"Could not convert geometry for feature {feature_count}: {geom_error}")
+                    geometries.append(None)
+            else:
+                geometries.append(None)
+            
+            # Get attributes
+            for i in range(field_count):
+                field_name = layer_defn.GetFieldDefn(i).GetName()
+                value = feature.GetField(i)
+                attributes[field_name].append(value)
+        
+        # Close data source
+        ds = None
+        
+        if feature_count == 0:
+            if feedback:
+                feedback.pushInfo("No features found in file")
+            return gpd.GeoDataFrame()
+        
+        # Create GeoDataFrame WITHOUT CRS to avoid PyProj
+        gdf = gpd.GeoDataFrame(attributes, geometry=geometries, crs=None)
+        
+        # Clean QVariant data types
+        if feedback:
+            feedback.pushInfo("Cleaning data types...")
+        gdf = clean_qvariant_data(gdf)
+        
+        if feedback:
+            feedback.pushInfo(f"✓ Successfully loaded {len(gdf)} features using OGR (no CRS)")
+        
+        return gdf
+    
+    except Exception as e:
+        error_msg = f"Failed to load vector file with OGR '{file_path}': {e}"
+        if feedback:
+            feedback.pushInfo(error_msg)
+        raise Exception(error_msg)
+
+
 def _remove_id_columns_and_retry(gdf, file_path, driver, feedback):
     """Helper to remove ID columns and retry save after ID conflict error."""
     columns_to_drop = [col for col in ['id', 'fid', 'ID', 'FID'] if col in gdf.columns]
@@ -496,12 +784,14 @@ def _remove_id_columns_and_retry(gdf, file_path, driver, feedback):
         if feedback:
             feedback.pushInfo(f"Dropped columns: {columns_to_drop}")
     
+    # Write with driver if specified
     if driver:
         gdf.to_file(file_path, driver=driver)
     else:
         gdf.to_file(file_path)
     
     return gdf
+
 
 
 def save_gdf_to_file(gdf, file_path, core, feedback, all_upper=False):
@@ -512,7 +802,7 @@ def save_gdf_to_file(gdf, file_path, core, feedback, all_upper=False):
     Args:
         gdf: GeoDataFrame to save
         file_path (str): Output file path
-        core: TopoDrainCore instance with ogr_driver_mapping
+        core: TopoDrainCore instance with ogr_driver_mapping and crs
         feedback: QGIS processing feedback object
         all_upper (bool): If True, rename all columns to uppercase (except 'geometry' and columns containing 'id')
         
@@ -535,10 +825,23 @@ def save_gdf_to_file(gdf, file_path, core, feedback, all_upper=False):
                 if feedback:
                     feedback.pushInfo(f"Renamed columns to uppercase: {list(column_mapping.values())}")
         
-        # Automatically clean QVariant data types before saving
+        # Clean QVariant data types before saving
         if feedback:
             feedback.pushInfo("Cleaning data types before saving...")
         cleaned_gdf = clean_qvariant_data(gdf)
+        
+        # Check current CRS status
+        if feedback:
+            current_crs = str(cleaned_gdf.crs) if cleaned_gdf.crs else "None"
+            feedback.pushInfo(f"GeoDataFrame CRS: {current_crs}")
+        
+        # Set CRS if needed using GeoPandas set_crs
+        if cleaned_gdf.crs is None:
+            if hasattr(core, 'crs') and core.crs:
+                crs_for_save = core.crs  # This is already a string (e.g., 'EPSG:2056')
+                if feedback:
+                    feedback.pushInfo(f"Setting CRS using GeoPandas: {crs_for_save}")
+                cleaned_gdf = cleaned_gdf.set_crs(crs_for_save, allow_override=True)
         
         # Get file extension
         file_ext = os.path.splitext(file_path)[1].lower()
@@ -550,6 +853,7 @@ def save_gdf_to_file(gdf, file_path, core, feedback, all_upper=False):
             feedback.pushInfo(f"Detected output format: {file_ext} (using driver: {ogr_driver})")
             
             try:
+                # Save GeoDataFrame
                 cleaned_gdf.to_file(file_path, driver=ogr_driver)
                 feedback.pushInfo(f"GeoDataFrame saved to: {file_path}")
             except Exception as driver_error:
@@ -577,6 +881,7 @@ def save_gdf_to_file(gdf, file_path, core, feedback, all_upper=False):
             feedback.pushWarning(f"Format {file_ext} not in available driver mapping, using auto-detection")
             
             try:
+                # Save GeoDataFrame
                 cleaned_gdf.to_file(file_path)
                 feedback.pushInfo(f"GeoDataFrame saved using auto-detection: {file_path}")
             except Exception as auto_error:
@@ -598,6 +903,177 @@ def save_gdf_to_file(gdf, file_path, core, feedback, all_upper=False):
             error_msg += f"Recommended formats: {', '.join(supported_formats[:5])} (and others)"
         else:
             error_msg = f"Failed to save GeoDataFrame output: {e}"
+        raise QgsProcessingException(error_msg)
+
+
+def save_gdf_to_file_ogr(gdf, file_path, core, feedback, all_upper=False):
+    """
+    Save GeoDataFrame to file using OGR directly (bypasses GeoPandas to_file).
+    This avoids PyProj completely by using GDAL/OGR for both geometry writing and CRS setting.
+    
+    Args:
+        gdf: GeoDataFrame to save
+        file_path (str): Output file path
+        core: TopoDrainCore instance with ogr_driver_mapping and crs
+        feedback: QGIS processing feedback object
+        all_upper (bool): If True, rename all columns to uppercase (except 'geometry' and columns containing 'id')
+        
+    Raises:
+        QgsProcessingException: If saving fails
+    """
+    try:
+        from osgeo import ogr, osr
+        
+        # Rename columns to uppercase if requested
+        if all_upper:
+            column_mapping = {}
+            for col in gdf.columns:
+                if col != 'geometry' and 'id' != col.lower() and col != col.upper():
+                    column_mapping[col] = col.upper()
+            
+            if column_mapping:
+                gdf = gdf.rename(columns=column_mapping)
+                if feedback:
+                    feedback.pushInfo(f"Renamed columns to uppercase: {list(column_mapping.values())}")
+        
+        # Clean QVariant data types
+        if feedback:
+            feedback.pushInfo("Cleaning data types before saving...")
+        cleaned_gdf = clean_qvariant_data(gdf)
+        
+        # Get file extension and driver
+        file_ext = os.path.splitext(file_path)[1].lower()
+        
+        # Determine OGR driver using core's mapping
+        driver_name = None
+        if hasattr(core, 'ogr_driver_mapping') and file_ext in core.ogr_driver_mapping:
+            driver_name = core.ogr_driver_mapping[file_ext]
+            if feedback:
+                feedback.pushInfo(f"Using driver from core mapping: {driver_name}")
+        else:
+            # Fallback to common drivers
+            driver_map = {
+                '.gpkg': 'GPKG',
+                '.shp': 'ESRI Shapefile',
+                '.geojson': 'GeoJSON',
+                '.json': 'GeoJSON',
+                '.gml': 'GML'
+            }
+            if file_ext in driver_map:
+                driver_name = driver_map[file_ext]
+                if feedback:
+                    feedback.pushInfo(f"Using fallback driver: {driver_name}")
+            else:
+                raise QgsProcessingException(f"Unsupported format for OGR direct save: {file_ext}")
+        
+        driver = ogr.GetDriverByName(driver_name)
+        if driver is None:
+            raise QgsProcessingException(f"OGR driver not available: {driver_name}")
+        
+        if feedback:
+            feedback.pushInfo(f"Using OGR driver: {driver_name}")
+        
+        # Create spatial reference if CRS is available
+        srs = None
+        if hasattr(core, 'crs') and core.crs:
+            srs = osr.SpatialReference()
+            result = srs.SetFromUserInput(core.crs)
+            if result == 0:
+                if feedback:
+                    feedback.pushInfo(f"Created SRS from: {core.crs}")
+            else:
+                if feedback:
+                    feedback.pushWarning(f"Could not parse CRS: {core.crs}")
+                srs = None
+        
+        # Remove existing file if it exists
+        if os.path.exists(file_path):
+            driver.DeleteDataSource(file_path)
+        
+        # Create data source
+        ds = driver.CreateDataSource(file_path)
+        if ds is None:
+            raise QgsProcessingException(f"Could not create data source: {file_path}")
+        
+        # Determine geometry type from first geometry
+        geom_type = ogr.wkbUnknown
+        if len(cleaned_gdf) > 0:
+            first_geom = cleaned_gdf.iloc[0].geometry
+            if first_geom is not None:
+                from shapely.geometry import Point, LineString, Polygon, MultiPoint, MultiLineString, MultiPolygon
+                if isinstance(first_geom, Point):
+                    geom_type = ogr.wkbPoint
+                elif isinstance(first_geom, LineString):
+                    geom_type = ogr.wkbLineString
+                elif isinstance(first_geom, Polygon):
+                    geom_type = ogr.wkbPolygon
+                elif isinstance(first_geom, MultiPoint):
+                    geom_type = ogr.wkbMultiPoint
+                elif isinstance(first_geom, MultiLineString):
+                    geom_type = ogr.wkbMultiLineString
+                elif isinstance(first_geom, MultiPolygon):
+                    geom_type = ogr.wkbMultiPolygon
+        
+        # Create layer
+        layer_name = os.path.splitext(os.path.basename(file_path))[0]
+        layer = ds.CreateLayer(layer_name, srs=srs, geom_type=geom_type)
+        if layer is None:
+            ds = None
+            raise QgsProcessingException("Could not create layer")
+        
+        # Create fields (excluding geometry column)
+        for column in cleaned_gdf.columns:
+            if column == 'geometry':
+                continue
+            
+            # Determine OGR field type
+            dtype = cleaned_gdf[column].dtype
+            if pd.api.types.is_integer_dtype(dtype):
+                field_type = ogr.OFTInteger64
+            elif pd.api.types.is_float_dtype(dtype):
+                field_type = ogr.OFTReal
+            else:
+                field_type = ogr.OFTString
+            
+            field_defn = ogr.FieldDefn(column, field_type)
+            layer.CreateField(field_defn)
+        
+        # Add features
+        for idx, row in cleaned_gdf.iterrows():
+            # Create feature
+            feature = ogr.Feature(layer.GetLayerDefn())
+            
+            # Set geometry
+            if row.geometry is not None:
+                geom = ogr.CreateGeometryFromWkb(row.geometry.wkb)
+                feature.SetGeometry(geom)
+            
+            # Set attributes
+            for column in cleaned_gdf.columns:
+                if column == 'geometry':
+                    continue
+                value = row[column]
+                if pd.isna(value):
+                    continue
+                feature.SetField(column, value)
+            
+            # Add feature to layer
+            layer.CreateFeature(feature)
+            feature = None
+        
+        # Close dataset
+        ds = None
+        
+        if feedback:
+            feedback.pushInfo(f"✓ GeoDataFrame saved using OGR: {file_path}")
+            feedback.pushInfo(f"  Features written: {len(cleaned_gdf)}")
+            if srs:
+                feedback.pushInfo(f"  CRS: {core.crs}")
+        
+    except Exception as e:
+        error_msg = f"Failed to save GeoDataFrame using OGR: {e}"
+        if feedback:
+            feedback.pushWarning(error_msg)
         raise QgsProcessingException(error_msg)
 
 
@@ -624,18 +1100,13 @@ def get_raster_ext(raster_path, feedback=None, check_existence=True):
         # Handle GDAL virtual file system paths (e.g., GPKG raster layers)
         base_path = raster_path
         if ':' in raster_path:
-            parts = raster_path.split(':')
-            
-            # Check if it's a Windows drive letter (e.g., C:, D:)
-            # Windows path: single letter + colon (e.g., "D:/path")
-            is_windows_path = (
-                len(parts) >= 2 and
-                len(parts[0]) == 1 and 
-                parts[0].isalpha()
-            )
+            # Check if it's a Windows drive letter path (e.g., C:/, D:\)
+            # Use the regex pattern defined at module level
+            is_windows_path = WINDOWS_DRIVE_RE.match(raster_path) is not None
             
             # Only treat as GDAL virtual path if it's NOT a Windows drive letter
-            if not is_windows_path and len(parts) >= 2:
+            if not is_windows_path:
+                parts = raster_path.split(':')
                 # It's a GDAL virtual file system path
                 # Format: GPKG:/path/to/file.gpkg:layer_name or HDF5:/path/file.h5:dataset
                 if parts[0].upper() == 'GPKG':

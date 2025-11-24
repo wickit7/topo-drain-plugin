@@ -17,7 +17,7 @@ from qgis.core import (QgsProcessing,
                        QgsProcessingParameterNumber)
 import geopandas as gpd
 import os
-from .utils import get_crs_from_layer, update_core_crs_if_needed, ensure_whiteboxtools_configured, save_gdf_to_file, load_gdf_from_qgis_source, load_gdf_from_file, get_raster_ext, get_vector_ext
+from .utils import get_crs_from_layer, get_crs_from_project, ensure_whiteboxtools_configured, save_gdf_to_file, save_gdf_to_file_ogr, load_gdf_from_qgis_source, load_gdf_from_file, load_gdf_from_file_ogr, get_raster_ext, get_vector_ext, clear_pyproj_cache
 
 pluginPath = os.path.dirname(__file__)
 
@@ -171,6 +171,9 @@ Use Cases:
         )
 
     def processAlgorithm(self, parameters, context, feedback):
+        # CRITICAL: Clear PyProj cache at start to prevent Windows crashes on repeated runs
+        #clear_pyproj_cache(feedback) # seems not to resolve the issue
+        
         # Ensure WhiteboxTools is configured before running
         if not ensure_whiteboxtools_configured(self, feedback):
             return {}
@@ -213,12 +216,31 @@ Use Cases:
             feedback.pushWarning(f"Output file format '{output_ext}' is not in OGR driver mapping. Supported formats: {supported_vector_formats}. GeoPandas will attempt to save it automatically.")
 
         feedback.pushInfo("Reading CRS from flow direction raster...")
+        
+        # Step 1: Adjust core crs with project crs if needed
+        feedback.pushInfo(f"Core CRS: {self.core.crs}")
+        project_crs = get_crs_from_project()
+        feedback.pushInfo(f"Project CRS: {project_crs}")
+        if self.core.crs is None and project_crs is None:
+            feedback.pushWarning("Both core CRS and project CRS are None - CRS may not be properly set")
+        elif project_crs != self.core.crs:
+            if project_crs is None:
+                feedback.pushWarning("Project CRS is None - keeping core CRS")
+            else:
+                feedback.pushInfo(f"Setting core CRS from project CRS: {project_crs}")
+                self.core.set_crs(project_crs)
+        
+        # Step 2-4: Check flow direction CRS, adjust core if None, warn if mismatch
         # Read CRS from the flow direction raster with safe fallback
         fdir_crs = get_crs_from_layer(fdir_layer)
         feedback.pushInfo(f"Flow Direction CRS: {fdir_crs}")
+        
+        if self.core.crs is None:
+            feedback.pushInfo(f"Setting core CRS from flow direction CRS: {fdir_crs}")
+            self.core.set_crs(fdir_crs)
+        elif fdir_crs != self.core.crs:
+            feedback.pushWarning(f"Flow direction CRS {fdir_crs} differs from core (project) CRS {self.core.crs}!")
 
-        # Update core CRS if needed
-        update_core_crs_if_needed(self.core, fdir_crs, feedback)
 
         # Load input data as GeoDataFrame
         feedback.pushInfo("Loading outlet points...")
@@ -227,14 +249,13 @@ Use Cases:
         if outlet_points_gdf.empty:
             raise QgsProcessingException("No features found in outlet points input")
 
-        # Ensure outlet points are in the correct CRS
-        # Check if CRS is set, if not set it to the same as flow direction raster
+        # Note: Avoid calling .set_crs() or .to_crs() to prevent PyProj crashes on Windows
+        # User should ensure outlet points are in the same CRS as flow direction raster
         if outlet_points_gdf.crs is None:
-            feedback.pushInfo(f"Setting outlet points CRS to flow direction CRS: {self.core.crs}")
-            outlet_points_gdf = outlet_points_gdf.set_crs(self.core.crs)
-        elif outlet_points_gdf.crs != self.core.crs:
-            feedback.pushInfo(f"Transforming outlet points from {outlet_points_gdf.crs} to {self.core.crs}")
-            outlet_points_gdf = outlet_points_gdf.to_crs(self.core.crs)
+            feedback.pushWarning(f"Outlet points have no CRS! This may cause issues. Please ensure CRS is set correctly.")
+        elif str(outlet_points_gdf.crs) != str(self.core.crs):
+            feedback.pushWarning(f"Outlet points CRS ({outlet_points_gdf.crs}) differs from flow direction CRS ({self.core.crs}). Results may be incorrect!")
+            feedback.pushWarning(f"Please transform outlet points to match the flow direction raster CRS before running this algorithm.")
         
         feedback.pushInfo(f"Outlet Points: {len(outlet_points_gdf)} features")
 
@@ -259,12 +280,13 @@ Use Cases:
 
         feedback.pushInfo(f"Delineated {len(watersheds_gdf)} watersheds")
 
-        # Ensure the watersheds GeoDataFrame has the correct CRS
-        watersheds_gdf = watersheds_gdf.set_crs(self.core.crs, allow_override=True)
-        feedback.pushInfo(f"Watersheds CRS: {watersheds_gdf.crs}")
-
-        # Save result with proper format handling
-        save_gdf_to_file(watersheds_gdf, watersheds_file_path, self.core, feedback)
+        # Save result - use OGR on Windows to avoid PyProj crashes
+        if self.core.disable_crs_operations:
+            feedback.pushInfo("Saving watersheds WITHOUT setting CRS to avoid WINDOWS PyProj issues...")   
+            save_gdf_to_file_ogr(watersheds_gdf, watersheds_file_path, self.core, feedback)
+        else:
+            feedback.pushInfo("Saving watersheds WITH setting CRS pyproj (geopandas)...")
+            save_gdf_to_file(watersheds_gdf, watersheds_file_path, self.core, feedback)
 
         results = {}
         # Add output parameters to results

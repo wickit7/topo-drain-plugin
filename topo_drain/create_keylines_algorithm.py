@@ -15,7 +15,7 @@ from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterRasterLayer
                        QgsProcessingParameterFeatureSource)
 import os
 import geopandas as gpd
-from .utils import get_crs_from_layer, update_core_crs_if_needed, ensure_whiteboxtools_configured, save_gdf_to_file, load_gdf_from_file, load_gdf_from_qgis_source, get_raster_ext, get_vector_ext
+from .utils import get_crs_from_layer, ensure_whiteboxtools_configured, save_gdf_to_file, save_gdf_to_file_ogr, load_gdf_from_file, load_gdf_from_file_ogr, load_gdf_from_qgis_source, get_raster_ext, get_vector_ext, get_crs_from_project, clear_pyproj_cache
 
 pluginPath = os.path.dirname(__file__)
 
@@ -230,6 +230,9 @@ another valley line, alternating between the two."""
         self.addParameter(keylines_param)
 
     def processAlgorithm(self, parameters, context, feedback):
+        # CRITICAL: Clear PyProj cache at start to prevent Windows crashes on repeated runs
+        #clear_pyproj_cache(feedback) # seems not to resolve the issue
+        
         # Ensure WhiteboxTools is configured before running
         if not ensure_whiteboxtools_configured(self, feedback):
             return {}
@@ -288,14 +291,30 @@ another valley line, alternating between the two."""
         if (change_after is not None) != (slope_after is not None):
             raise QgsProcessingException("Both 'Change After' and 'Slope After' parameters must be provided together or both left empty.")
 
-        
-        # Read CRS from the DTM using QGIS layer with safe fallback
+        # Adjust core crs with project crs if needed
+        feedback.pushInfo(f"Core CRS: {self.core.crs}")
+        project_crs = get_crs_from_project()
+        feedback.pushInfo(f"Project CRS: {project_crs}")
+        if self.core.crs is None and project_crs is None:
+            feedback.pushWarning("Both core CRS and project CRS are None - CRS may not be properly set")
+        elif project_crs != self.core.crs:
+            if project_crs is None:
+                feedback.pushWarning("Project CRS is None - keeping core CRS") 
+            else:
+                feedback.pushInfo(f"Setting core CRS from project CRS: {project_crs}")
+                self.core.set_crs(project_crs)
+
+        # Check input crs against core crs
         feedback.pushInfo("Reading CRS from DTM...")
         dtm_crs = get_crs_from_layer(dtm_layer)
         feedback.pushInfo(f"DTM Layer crs: {dtm_crs}")
-
-        # Update core CRS if needed (dtm_crs is guaranteed to be valid)
-        update_core_crs_if_needed(self.core, dtm_crs, feedback)
+        # Adjust core crs with input crs but only if it is None
+        if self.core.crs is None:
+            feedback.pushInfo(f"Setting core CRS from DTM CRS: {dtm_crs}")
+            self.core.set_crs(dtm_crs)
+        elif dtm_crs != self.core.crs:
+            # Add warning if input crs not equal to core crs
+            feedback.pushWarning(f"DTM CRS {dtm_crs} differs from core (project) CRS {self.core.crs}!")
 
         # Convert QGIS layers to GeoDataFrames
         feedback.pushInfo("Converting start points to GeoDataFrame...")
@@ -305,11 +324,14 @@ another valley line, alternating between the two."""
         
         feedback.pushInfo(f"Start points: {len(start_points_gdf)} features")
 
-        # Convert valley lines to GeoDataFrame with Windows-safe CRS handling
+        # Convert valley lines to GeoDataFrame - use OGR on Windows to avoid PyProj
         feedback.pushInfo("Converting valley lines to GeoDataFrame...")
         try:
-            # Load GeoDataFrame using utility function
-            valley_lines_gdf = load_gdf_from_file(valley_lines_path, feedback)
+            if self.core.disable_crs_operations:
+                feedback.pushInfo("Loading valley lines WITHOUT CRS to avoid PyProj issues...")
+                valley_lines_gdf = load_gdf_from_file_ogr(valley_lines_path, feedback)
+            else:
+                valley_lines_gdf = load_gdf_from_file(valley_lines_path, feedback)
             feedback.pushInfo(f"Successfully loaded {len(valley_lines_gdf)} valley line features")
         except Exception as e:
             feedback.pushInfo(f"Failed to load valley lines: {e}")
@@ -318,14 +340,16 @@ another valley line, alternating between the two."""
         if valley_lines_gdf.empty:
             raise QgsProcessingException("No valley lines found in input layer")
         
-        valley_lines_gdf = valley_lines_gdf.to_crs(self.core.crs)
         feedback.pushInfo(f"Valley lines: {len(valley_lines_gdf)} features")
 
-        # Convert ridge lines to GeoDataFrame with Windows-safe CRS handling
+        # Convert ridge lines to GeoDataFrame - use OGR on Windows to avoid PyProj
         feedback.pushInfo("Converting ridge lines to GeoDataFrame...")
         try:
-            # Load GeoDataFrame using utility function
-            ridge_lines_gdf = load_gdf_from_file(ridge_lines_path, feedback)
+            if self.core.disable_crs_operations:
+                feedback.pushInfo("Loading ridge lines WITHOUT CRS to avoid PyProj issues...")
+                ridge_lines_gdf = load_gdf_from_file_ogr(ridge_lines_path, feedback)
+            else:
+                ridge_lines_gdf = load_gdf_from_file(ridge_lines_path, feedback)
             feedback.pushInfo(f"Successfully loaded {len(ridge_lines_gdf)} ridge line features")
         except Exception as e:
             feedback.pushInfo(f"Failed to load ridge lines: {e}")
@@ -334,23 +358,24 @@ another valley line, alternating between the two."""
         if ridge_lines_gdf.empty:
             raise QgsProcessingException("No ridge lines found in input layer")
         
-        ridge_lines_gdf = ridge_lines_gdf.to_crs(self.core.crs)
         feedback.pushInfo(f"Ridge lines: {len(ridge_lines_gdf)} features")
 
-        # Convert perimeter to GeoDataFrame (optional) with Windows-safe CRS handling
+        # Convert perimeter to GeoDataFrame (optional) - use OGR on Windows to avoid PyProj
         perimeter_gdf = None
         if perimeter_layer:
             feedback.pushInfo("Converting perimeter to GeoDataFrame...")
             try:
-                # Load GeoDataFrame using utility function
-                perimeter_gdf = load_gdf_from_file(perimeter_layer_path, feedback)
+                if self.core.disable_crs_operations:
+                    feedback.pushInfo("Loading perimeter WITHOUT CRS to avoid PyProj issues...")
+                    perimeter_gdf = load_gdf_from_file_ogr(perimeter_layer_path, feedback)
+                else:
+                    perimeter_gdf = load_gdf_from_file(perimeter_layer_path, feedback)
                 feedback.pushInfo(f"Successfully loaded {len(perimeter_gdf)} perimeter")
             except Exception as e:
                 feedback.pushInfo(f"Failed to load perimeter: {e}")
                 raise QgsProcessingException(f"Failed to load perimeter: {e}")
                 
             if not perimeter_gdf.empty:
-                perimeter_gdf = perimeter_gdf.to_crs(self.core.crs)
                 feedback.pushInfo(f"Perimeter: {len(perimeter_gdf)} features")
             else:
                 feedback.pushInfo("Warning: Empty perimeter layer provided")
@@ -382,12 +407,16 @@ another valley line, alternating between the two."""
         if keylines_gdf.empty:
             raise QgsProcessingException("No keylines were created")
 
-        # Ensure the keylines GeoDataFrame has the correct CRS
-        keylines_gdf = keylines_gdf.set_crs(self.core.crs, allow_override=True)
         feedback.pushInfo(f"Keylines CRS: {keylines_gdf.crs}")
 
-        # Save result with proper format handling (all_upper=True to rename columns to uppercase)
-        save_gdf_to_file(keylines_gdf, keylines_path, self.core, feedback, all_upper=True)
+        # Save result - use OGR on Windows to avoid PyProj crashes
+        # all_upper=True to rename columns to uppercase
+        if self.core.disable_crs_operations:
+            feedback.pushInfo("Saving keylines WITHOUT setting CRS to avoid WINDOWS PyProj issues...")   
+            save_gdf_to_file_ogr(keylines_gdf, keylines_path, self.core, feedback, all_upper=True)
+        else:
+            feedback.pushInfo("Saving keylines WITH setting CRS pyproj (geopandas)...")
+            save_gdf_to_file(keylines_gdf, keylines_path, self.core, feedback, all_upper=True)
 
         results = {}
         # Add output parameters to results

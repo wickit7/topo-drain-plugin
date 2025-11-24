@@ -12,7 +12,7 @@ from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterVectorLayer
                        QgsProcessingParameterNumber, QgsProcessingParameterBoolean,
                        QgsProcessing, QgsProcessingParameterFeatureSource, QgsProcessingException)
 import os
-from .utils import get_crs_from_layer, update_core_crs_if_needed, ensure_whiteboxtools_configured, save_gdf_to_file, load_gdf_from_file, load_gdf_from_qgis_source, get_raster_ext, get_vector_ext
+from .utils import get_crs_from_layer, ensure_whiteboxtools_configured, save_gdf_to_file, save_gdf_to_file_ogr, load_gdf_from_file, load_gdf_from_file_ogr, load_gdf_from_qgis_source, get_raster_ext, get_vector_ext, get_crs_from_project, clear_pyproj_cache
 
 pluginPath = os.path.dirname(__file__)
 
@@ -154,6 +154,9 @@ Line layer containing main ridge lines with attributes: LINK_ID, TRIB_ID, RANK, 
         self.addParameter(main_ridges_param)
 
     def processAlgorithm(self, parameters, context, feedback):
+        # CRITICAL: Clear PyProj cache at start to prevent Windows crashes on repeated runs
+        #clear_pyproj_cache(feedback) # seems not to resolve the issue
+        
         # Ensure WhiteboxTools is configured before running
         if not ensure_whiteboxtools_configured(self, feedback):
             return {}
@@ -198,21 +201,42 @@ Line layer containing main ridge lines with attributes: LINK_ID, TRIB_ID, RANK, 
         if hasattr(self.core, 'ogr_driver_mapping') and output_ext not in self.core.ogr_driver_mapping:
             feedback.pushWarning(f"Output file format '{output_ext}' is not in OGR driver mapping. Supported formats: {supported_vector_formats}. GeoPandas will attempt to save it automatically.")
 
+        # Adjust core crs with project crs if needed
+        feedback.pushInfo(f"Core CRS: {self.core.crs}")
+        project_crs = get_crs_from_project()
+        feedback.pushInfo(f"Project CRS: {project_crs}")
+        if self.core.crs is None and project_crs is None:
+            feedback.pushWarning("Both core CRS and project CRS are None - CRS may not be properly set")
+        elif project_crs != self.core.crs:
+            if project_crs is None:
+                feedback.pushWarning("Project CRS is None - keeping core CRS") 
+            else:
+                feedback.pushInfo(f"Setting core CRS from project CRS: {project_crs}")
+                self.core.set_crs(project_crs)
+
+        # Check input crs against core crs
         feedback.pushInfo("Reading CRS from ridge lines...")
-        # Read CRS from the ridge lines layer with safe fallback
         ridge_crs = get_crs_from_layer(ridge_lines_layer)
         feedback.pushInfo(f"Ridge lines CRS: {ridge_crs}")
-        # Update core CRS if needed (ridge_crs is guaranteed to be valid)
-        update_core_crs_if_needed(self.core, ridge_crs, feedback)
+        # Adjust core crs with input crs but only if it is None
+        if self.core.crs is None:
+            feedback.pushInfo(f"Setting core CRS from ridge lines CRS: {ridge_crs}")
+            self.core.set_crs(ridge_crs)
+        elif ridge_crs != self.core.crs:
+            # Add warning if input crs not equal to core crs
+            feedback.pushWarning(f"Ridge lines CRS {ridge_crs} differs from core (project) CRS {self.core.crs}!")
 
-        # Load input data as GeoDataFrame with Windows-safe CRS handling
+        # Load input data as GeoDataFrame - use OGR on Windows to avoid PyProj
         feedback.pushInfo("Loading ridge lines...")
         try:
-            ridge_lines_gdf = load_gdf_from_file(ridge_lines_path, feedback)
-            ridge_lines_gdf.crs = self.core.crs
-            feedback.pushInfo(f"Successfully loaded {len(ridge_lines_gdf)} ridge line features with safe CRS: {self.core.crs}")
+            if self.core.disable_crs_operations:
+                feedback.pushInfo("Loading ridge lines WITHOUT CRS to avoid PyProj issues...")
+                ridge_lines_gdf = load_gdf_from_file_ogr(ridge_lines_path, feedback)
+            else:
+                ridge_lines_gdf = load_gdf_from_file(ridge_lines_path, feedback)
+            feedback.pushInfo(f"Successfully loaded {len(ridge_lines_gdf)} ridge line features")
         except Exception as e:
-            feedback.pushInfo(f"Failed to load ridge lines with safe CRS handling: {e}")
+            feedback.pushInfo(f"Failed to load ridge lines: {e}")
             raise QgsProcessingException(f"Failed to load ridge lines: {e}")
 
         if ridge_lines_gdf.empty:
@@ -226,10 +250,9 @@ Line layer containing main ridge lines with attributes: LINK_ID, TRIB_ID, RANK, 
                 # Load perimeter features with automatic data cleaning
                 perimeter_gdf = load_gdf_from_qgis_source(perimeter_layer, feedback)
                 if not perimeter_gdf.empty:
-                    perimeter_gdf.crs = self.core.crs
-                    feedback.pushInfo(f"Successfully loaded {len(perimeter_gdf)} perimeter features with safe CRS")
+                    feedback.pushInfo(f"Successfully loaded {len(perimeter_gdf)} perimeter features")
             except Exception as e:
-                feedback.pushInfo(f"Failed to load perimeter with safe CRS handling: {e}")
+                feedback.pushInfo(f"Failed to load perimeter: {e}")
                 raise QgsProcessingException(f"Failed to load perimeter: {e}")
         else:
             feedback.pushInfo("No perimeter provided, will use ridge lines extent")
@@ -263,12 +286,13 @@ Line layer containing main ridge lines with attributes: LINK_ID, TRIB_ID, RANK, 
 
         feedback.pushInfo(f"Created {len(main_ridges_gdf)} main ridges")
 
-        # Ensure the main ridges GeoDataFrame has the correct CRS
-        main_ridges_gdf = main_ridges_gdf.set_crs(self.core.crs, allow_override=True)
-        feedback.pushInfo(f"Main ridge lines CRS: {main_ridges_gdf.crs}")
-
-        # Save result with proper format handling
-        save_gdf_to_file(main_ridges_gdf, main_ridges_file_path, self.core, feedback)
+        # Save result - use OGR on Windows to avoid PyProj crashes
+        if self.core.disable_crs_operations:
+            feedback.pushInfo("Saving main ridges WITHOUT setting CRS to avoid WINDOWS PyProj issues...")   
+            save_gdf_to_file_ogr(main_ridges_gdf, main_ridges_file_path, self.core, feedback)
+        else:
+            feedback.pushInfo("Saving main ridges WITH setting CRS pyproj (geopandas)...")
+            save_gdf_to_file(main_ridges_gdf, main_ridges_file_path, self.core, feedback)
         
         results = {}
         # Add output parameters to results

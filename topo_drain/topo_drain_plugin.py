@@ -124,7 +124,15 @@ class TopoDrainPlugin(object):
         
         project_crs = get_crs_from_project()
         # Create the TopoDrainCore instance - it will handle None whitebox_directory gracefully
-        self.core = TopoDrainCore(whitebox_directory=whitebox_dir, crs=project_crs, temp_directory=temp_dir, working_directory=working_dir)
+        # Disable CRS operations on Windows to prevent PyProj crashes
+        # On other platforms, CRS operations are safe
+        disable_crs = (sys.platform == 'win32')
+        if disable_crs:
+            print("[TopoDrain Plugin] Running on Windows - disabling CRS operations to prevent PyProj crashes")
+        else:
+            print(f"[TopoDrain Plugin] Running on {sys.platform} - CRS operations enabled")
+        
+        self.core = TopoDrainCore(whitebox_directory=whitebox_dir, crs=project_crs, temp_directory=temp_dir, working_directory=working_dir, disable_crs_operations=disable_crs)
         
         # Only check dependencies after core is created
         self.check_python_dependencies()
