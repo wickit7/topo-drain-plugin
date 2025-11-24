@@ -6,7 +6,7 @@
 name=TopoDrain
 qgisMinimumVersion=3.0
 description=A QGIS plugin for planning surface drainage water management like Keyline-Design.
-version=0.1.9
+version=0.1.10
 author=Timo Wicki
 email=wickitimo@gmail.com
 about=It automates the extraction of main valleys and ridges, creates off-contour line and supports creating Keyline Designs and other water-retention planning measures. The tool can also be used for other tasks, such as planning the location and alignment of paths and roads.
@@ -34,7 +34,9 @@ repository=https://github.com/wickit7/topo-drain-plugin
 hasProcessingProvider=yes
 # Uncomment the following line and add your changelog:
 
-changelog=0.1.9 - Windows compatibility release
+changelog=0.1.10 - Imporved crs handling
+    * Improved CRS handling documentation for Windows compatibility
+    0.1.9 - Windows compatibility release
     * Fixed Windows compatibility issues: console window flashing when WhiteboxTools executes
     * Enhanced GDAL virtual file system path detection (GPKG, HDF5, NETCDF)
     * Improved sys.stdout/sys.stderr handling for Windows QGIS environment
@@ -66,7 +68,7 @@ deprecated=False
 # (or upgraded) can be specified.
 # Check the documentation for more information.
 # The plugin name should match the exact folder name in QGIS plugins directory
-plugin_dependencies=plugin:wbt_for_qgis;python:numpy;python:pandas;python:geopandas;python:shapely;python:scipy
+#plugin_dependencies=plugin:wbt_for_qgis;python:numpy;python:pandas;python:geopandas;python:shapely;python:scipy
 
 # If the plugin can run on QGIS Server.
 server=False

@@ -13,7 +13,7 @@ from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterRasterLayer
                        QgsProcessingParameterVectorDestination, QgsProcessingParameterNumber,
                        QgsProcessing, QgsProcessingException)
 import os
-from .utils import get_crs_from_layer, update_core_crs_if_needed, ensure_whiteboxtools_configured, save_gdf_to_file, get_raster_ext, get_vector_ext
+from .utils import get_crs_from_layer, ensure_whiteboxtools_configured, save_gdf_to_file, get_raster_ext, get_vector_ext, get_crs_from_project, clear_pyproj_cache
 
 pluginPath = os.path.dirname(__file__)
 
@@ -164,10 +164,31 @@ class CreateValleysAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(streams_param)
 
     def processAlgorithm(self, parameters, context, feedback):
+        # CRITICAL: Clear PyProj cache at start to prevent Windows crashes on repeated runs
+        # This removes stale CRS object pointers from previous QThread runs
+        clear_pyproj_cache(feedback)
+        
         # Ensure WhiteboxTools is configured before running
         if not ensure_whiteboxtools_configured(self, feedback):
             return {}
         
+        # Reset core CRS to None to prevent PyProj crashes on Windows
+        # This ensures out_crs=None is passed to save functions, avoiding .set_crs() calls
+        self.core.reset_crs()
+        
+        # Adjust core crs with project crs if needed
+        feedback.pushInfo(f"Core CRS: {self.core.crs}")
+        project_crs = get_crs_from_project()
+        feedback.pushInfo(f"Project CRS: {project_crs}")
+        if self.core.crs is None and project_crs is None:
+            feedback.pushWarning("Both core CRS and project CRS are None - CRS may not be properly set")
+        elif project_crs != self.core.crs:
+            if project_crs is None:
+                feedback.pushWarning("Project CRS is None - keeping core CRS") 
+            else:
+                feedback.pushInfo(f"Setting core CRS from project CRS: {project_crs}")
+                self.core.set_crs(project_crs)
+
         # Validate and read input parameters
         dtm_layer = self.parameterAsRasterLayer(parameters, self.INPUT_DTM, context)
 
@@ -222,12 +243,17 @@ class CreateValleysAlgorithm(QgsProcessingAlgorithm):
                 if hasattr(self.core, 'gdal_driver_mapping') and output_raster_ext not in self.core.gdal_driver_mapping:
                     feedback.pushWarning(f"Output {output_name} format '{output_raster_ext}' is not in GDAL driver mapping. Supported formats: {supported_raster_formats}. GDAL will attempt to save it automatically.")
 
+        # Check input crs against core crs
         feedback.pushInfo("Reading CRS from DTM...")
-        # Read CRS from the DTM using QGIS layer
         dtm_crs = get_crs_from_layer(dtm_layer)
         feedback.pushInfo(f"DTM Layer crs: {dtm_crs}")
-        # Update core CRS if needed (dtm_crs is supposed to be valid)
-        update_core_crs_if_needed(self.core, dtm_crs, feedback)
+        # Adjust core crs with input crs but only if it is None
+        if self.core.crs is None:
+            feedback.pushInfo(f"Setting core CRS from DTM CRS: {dtm_crs}")
+            self.core.set_crs(dtm_crs)
+        elif dtm_crs != self.core.crs:
+            # Add warning if input crs not equal to core crs
+            feedback.pushWarning(f"DTM CRS {dtm_crs} differs from core (project) CRS {self.core.crs}!")
 
         feedback.pushInfo("Running extract valleys...")
         valleys_gdf = self.core.extract_valleys(
@@ -244,12 +270,17 @@ class CreateValleysAlgorithm(QgsProcessingAlgorithm):
 
         if valleys_gdf.empty:
             raise QgsProcessingException("No valleys were created")
+        
+        # CRITICAL: Do NOT call .set_crs() - it triggers PyProj and causes Windows crashes!
+        # WhiteboxTools should preserve CRS from input DTM.
+        # If CRS is None, user must set it manually in QGIS after loading.
+        if valleys_gdf.crs is None:
+            feedback.pushWarning("WARNING: Output has no CRS!")
+            feedback.pushWarning("You will need to manually set the CRS in QGIS after loading the layer.")
+        
+        feedback.pushInfo(f"Valley lines CRS from WhiteboxTools: {valleys_gdf.crs}")
 
-        # Ensure the valleys GeoDataFrame has the correct CRS
-        valleys_gdf = valleys_gdf.set_crs(self.core.crs, allow_override=True)
-        feedback.pushInfo(f"Valley lines CRS: {valleys_gdf.crs}")
-
-        # Save result with proper format handling
+        # Save result WITHOUT setting CRS (avoids PyProj crashes on Windows)
         save_gdf_to_file(valleys_gdf, valley_file_path, self.core, feedback)
 
         results = {}

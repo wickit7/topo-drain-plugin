@@ -17,7 +17,7 @@ from qgis.core import (QgsProcessing,
                        QgsProcessingParameterNumber)
 import geopandas as gpd
 import os
-from .utils import get_crs_from_layer, update_core_crs_if_needed, ensure_whiteboxtools_configured, save_gdf_to_file, load_gdf_from_qgis_source, get_vector_ext
+from .utils import get_crs_from_layer, get_crs_from_project, ensure_whiteboxtools_configured, save_gdf_to_file, load_gdf_from_qgis_source, get_vector_ext, clear_pyproj_cache
 
 pluginPath = os.path.dirname(__file__)
 
@@ -173,9 +173,15 @@ Point layer containing distributed points with attributes:
         )
 
     def processAlgorithm(self, parameters, context, feedback):
+        # CRITICAL: Clear PyProj cache at start to prevent Windows crashes on repeated runs
+        clear_pyproj_cache(feedback)
+        
         # Ensure WhiteboxTools is configured before running (inherited pattern from other algorithms)
         if not ensure_whiteboxtools_configured(self, feedback):
             return {}
+        
+        # Reset core CRS to None to prevent PyProj crashes on Windows
+        self.core.reset_crs()
         
         # Validate and read input parameters
         lines_source = self.parameterAsSource(parameters, self.INPUT_LINES, context)
@@ -197,12 +203,31 @@ Point layer containing distributed points with attributes:
             feedback.pushWarning(f"Output file format '{output_ext}' is not in OGR driver mapping. Supported formats: {supported_vector_formats}. GeoPandas will attempt to save it automatically.")
 
         feedback.pushInfo("Reading CRS from input lines...")
+        
+        # Step 1: Adjust core crs with project crs if needed
+        feedback.pushInfo(f"Core CRS: {self.core.crs}")
+        project_crs = get_crs_from_project()
+        feedback.pushInfo(f"Project CRS: {project_crs}")
+        if self.core.crs is None and project_crs is None:
+            feedback.pushWarning("Both core CRS and project CRS are None - CRS may not be properly set")
+        elif project_crs != self.core.crs:
+            if project_crs is None:
+                feedback.pushWarning("Project CRS is None - keeping core CRS")
+            else:
+                feedback.pushInfo(f"Setting core CRS from project CRS: {project_crs}")
+                self.core.set_crs(project_crs)
+        
+        # Step 2-4: Check input lines CRS, adjust core if None, warn if mismatch
         # Read CRS from the lines layer
         lines_crs = get_crs_from_layer(lines_source) ### here create separate function in utils to get CRS from QgsFeatureSource
         feedback.pushInfo(f"Lines CRS: {lines_crs}")
+        
+        if self.core.crs is None:
+            feedback.pushInfo(f"Setting core CRS from lines CRS: {lines_crs}")
+            self.core.set_crs(lines_crs)
+        elif lines_crs != self.core.crs:
+            feedback.pushWarning(f"Lines CRS {lines_crs} differs from core (project) CRS {self.core.crs}!")
 
-        # Update core CRS if needed
-        update_core_crs_if_needed(self.core, lines_crs, feedback)
 
         # Load input data as GeoDataFrames
         feedback.pushInfo("Loading input lines...")
@@ -237,8 +262,8 @@ Point layer containing distributed points with attributes:
 
         feedback.pushInfo(f"Generated {len(points_gdf)} points along {len(lines_gdf)} lines")
 
-        # Ensure the points GeoDataFrame has the correct CRS
-        points_gdf = points_gdf.set_crs(self.core.crs, allow_override=True)
+        # Note: CRS is already set by core.get_points_along_lines() - no need to call .set_crs() here
+        # Calling .set_crs() triggers PyProj CRS object creation which causes crashes on Windows
         feedback.pushInfo(f"Points CRS: {points_gdf.crs}")
         
         # Save result with proper format handling

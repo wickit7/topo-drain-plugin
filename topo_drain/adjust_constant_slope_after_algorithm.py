@@ -15,7 +15,7 @@ from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterRasterLayer
                        QgsProcessingParameterFeatureSource)
 import os
 import geopandas as gpd
-from .utils import get_crs_from_layer, update_core_crs_if_needed, ensure_whiteboxtools_configured, save_gdf_to_file, load_gdf_from_file, load_gdf_from_qgis_source, get_raster_ext, get_vector_ext
+from .utils import get_crs_from_layer, get_crs_from_project, ensure_whiteboxtools_configured, save_gdf_to_file, load_gdf_from_file, load_gdf_from_qgis_source, get_raster_ext, get_vector_ext, clear_pyproj_cache
 
 pluginPath = os.path.dirname(__file__)
 
@@ -232,9 +232,15 @@ Parameters:
         self.addParameter(adjusted_lines_param)
 
     def processAlgorithm(self, parameters, context, feedback):
+        # CRITICAL: Clear PyProj cache at start to prevent Windows crashes on repeated runs
+        clear_pyproj_cache(feedback)
+        
         # Ensure WhiteboxTools is configured before running
         if not ensure_whiteboxtools_configured(self, feedback):
             return {}
+        
+        # Reset core CRS to None to prevent PyProj crashes on Windows
+        self.core.reset_crs()
         
         # Validate and read input parameters
         dtm_layer = self.parameterAsRasterLayer(parameters, self.INPUT_DTM, context)
@@ -288,12 +294,31 @@ Parameters:
             feedback.pushWarning(f"Output file format '{output_ext}' is not in OGR driver mapping. Supported formats: {supported_vector_formats}. GeoPandas will attempt to save it automatically.")
 
         feedback.pushInfo("Reading CRS from DTM...")
+        
+        # Step 1: Adjust core crs with project crs if needed
+        feedback.pushInfo(f"Core CRS: {self.core.crs}")
+        project_crs = get_crs_from_project()
+        feedback.pushInfo(f"Project CRS: {project_crs}")
+        if self.core.crs is None and project_crs is None:
+            feedback.pushWarning("Both core CRS and project CRS are None - CRS may not be properly set")
+        elif project_crs != self.core.crs:
+            if project_crs is None:
+                feedback.pushWarning("Project CRS is None - keeping core CRS")
+            else:
+                feedback.pushInfo(f"Setting core CRS from project CRS: {project_crs}")
+                self.core.set_crs(project_crs)
+        
+        # Step 2-4: Check DTM CRS, adjust core if None, warn if mismatch
         # Read CRS from the DTM using QGIS layer
         dtm_crs = get_crs_from_layer(dtm_layer)
-        feedback.pushInfo(f"DTM Layer crs: {dtm_crs}")
+        feedback.pushInfo(f"DTM Layer CRS: {dtm_crs}")
+        
+        if self.core.crs is None:
+            feedback.pushInfo(f"Setting core CRS from DTM CRS: {dtm_crs}")
+            self.core.set_crs(dtm_crs)
+        elif dtm_crs != self.core.crs:
+            feedback.pushWarning(f"DTM CRS {dtm_crs} differs from core (project) CRS {self.core.crs}!")
 
-        # Update core CRS if needed (dtm_crs is guaranteed to be valid)
-        update_core_crs_if_needed(self.core, dtm_crs, feedback)
 
         feedback.pushInfo("Processing constant slope line adjustment via TopoDrainCore...")
         
@@ -303,18 +328,14 @@ Parameters:
         if input_lines_gdf.empty:
             raise QgsProcessingException("No input lines found in input layer")
 
-        # Set CRS from the source layer if GeoDataFrame doesn't have one
+        # Note: Avoid calling .set_crs() or .to_crs() to prevent PyProj crashes on Windows
+        # User should ensure input lines are in the same CRS as DTM raster
         if input_lines_gdf.crs is None:
-            source_crs = input_lines_source.sourceCrs()
-            if source_crs.isValid():
-                input_lines_gdf = input_lines_gdf.set_crs(source_crs.authid())
-                feedback.pushInfo(f"Set input lines CRS to: {source_crs.authid()}")
-            else:
-                feedback.pushInfo("Warning: Input lines layer has no valid CRS")
+            feedback.pushWarning(f"Input lines have no CRS! This may cause issues. Please ensure CRS is set correctly.")
+        elif str(input_lines_gdf.crs) != str(self.core.crs):
+            feedback.pushWarning(f"Input lines CRS ({input_lines_gdf.crs}) differs from DTM CRS ({self.core.crs}). Results may be incorrect!")
+            feedback.pushWarning(f"Please transform input lines to match the DTM raster CRS before running this algorithm.")
         
-        # Ensure input lines have correct CRS
-        if input_lines_gdf.crs != self.core.crs:
-            input_lines_gdf = input_lines_gdf.to_crs(self.core.crs)
             feedback.pushInfo(f"Transformed input lines from {input_lines_gdf.crs} to {self.core.crs}")
         
         feedback.pushInfo(f"Input lines: {len(input_lines_gdf)} features")
@@ -406,8 +427,8 @@ Parameters:
         if adjusted_lines_gdf.empty:
             raise QgsProcessingException("No adjusted lines were created")
 
-        # Ensure the adjusted lines GeoDataFrame has the correct CRS
-        adjusted_lines_gdf = adjusted_lines_gdf.set_crs(self.core.crs, allow_override=True)
+        # Note: CRS is already set by core.adjust_constant_slope_after() - no need to call .set_crs() here
+        # Calling .set_crs() triggers PyProj CRS object creation which causes crashes on Windows
         feedback.pushInfo(f"Adjusted lines CRS: {adjusted_lines_gdf.crs}")
 
         # Add slope adjustment attributes to output
