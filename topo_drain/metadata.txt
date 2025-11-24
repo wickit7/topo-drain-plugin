@@ -36,6 +36,7 @@ hasProcessingProvider=yes
 
 changelog=0.1.10 - Imporved crs handling
     * Improved CRS handling documentation for Windows compatibility
+    * Bug fix crs windows: Implemented alternative for saving and loading geodataframe to file with crs because of PyProj access violation issue on windwos 
     0.1.9 - Windows compatibility release
     * Fixed Windows compatibility issues: console window flashing when WhiteboxTools executes
     * Enhanced GDAL virtual file system path detection (GPKG, HDF5, NETCDF)

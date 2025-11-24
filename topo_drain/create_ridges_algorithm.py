@@ -13,7 +13,7 @@ from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterRasterLayer
                        QgsProcessingParameterVectorDestination, QgsProcessingParameterNumber,
                        QgsProcessing, QgsProcessingException)
 import os
-from .utils import get_crs_from_layer, ensure_whiteboxtools_configured, save_gdf_to_file, get_raster_ext, get_vector_ext, get_crs_from_project, clear_pyproj_cache
+from .utils import get_crs_from_layer, ensure_whiteboxtools_configured, save_gdf_to_file, save_gdf_to_file_ogr, get_raster_ext, get_vector_ext, get_crs_from_project, clear_pyproj_cache
 
 pluginPath = os.path.dirname(__file__)
 
@@ -165,15 +165,12 @@ class CreateRidgesAlgorithm(QgsProcessingAlgorithm):
 
     def processAlgorithm(self, parameters, context, feedback):
         # CRITICAL: Clear PyProj cache at start to prevent Windows crashes on repeated runs
-        clear_pyproj_cache(feedback)
+        #clear_pyproj_cache(feedback) # seems not to resolve the issue
         
         # Ensure WhiteboxTools is configured before running
         if not ensure_whiteboxtools_configured(self, feedback):
             return {}
-        
-        # Reset core CRS to None to prevent PyProj crashes on Windows
-        self.core.reset_crs()
-        
+
         # Validate and read input parameters
         dtm_layer = self.parameterAsRasterLayer(parameters, self.INPUT_DTM, context)
        
@@ -268,12 +265,15 @@ class CreateRidgesAlgorithm(QgsProcessingAlgorithm):
         if ridge_gdf.empty:
             raise QgsProcessingException("No ridges were created")
         
-        # Note: CRS is already set by core.create_ridges() - no need to call .set_crs() here
-        # Calling .set_crs() triggers PyProj CRS object creation which causes crashes on Windows
         feedback.pushInfo(f"Ridge lines CRS: {ridge_gdf.crs}")
 
-        # Save result with proper format handling
-        save_gdf_to_file(ridge_gdf, ridge_file_path, self.core, feedback)
+        # Save result - use OGR on Windows to avoid PyProj crashes
+        if self.core.disable_crs_operations:
+            feedback.pushInfo("Saving ridges WITHOUT setting CRS to avoid WINDOWS PyProj issues...")   
+            save_gdf_to_file_ogr(ridge_gdf, ridge_file_path, self.core, feedback)
+        else:
+            feedback.pushInfo("Saving ridges WITH setting CRS pyproj (geopandas)...")
+            save_gdf_to_file(ridge_gdf, ridge_file_path, self.core, feedback)
 
         results = {}
         # Add output parameters to results

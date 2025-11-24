@@ -17,7 +17,7 @@ from qgis.core import (QgsProcessing,
                        QgsProcessingParameterNumber)
 import geopandas as gpd
 import os
-from .utils import get_crs_from_layer, get_crs_from_project, ensure_whiteboxtools_configured, save_gdf_to_file, load_gdf_from_qgis_source, get_vector_ext, clear_pyproj_cache
+from .utils import get_crs_from_layer, get_crs_from_project, ensure_whiteboxtools_configured, save_gdf_to_file, save_gdf_to_file_ogr, load_gdf_from_qgis_source, get_vector_ext, clear_pyproj_cache
 
 pluginPath = os.path.dirname(__file__)
 
@@ -174,14 +174,11 @@ Point layer containing distributed points with attributes:
 
     def processAlgorithm(self, parameters, context, feedback):
         # CRITICAL: Clear PyProj cache at start to prevent Windows crashes on repeated runs
-        clear_pyproj_cache(feedback)
+        #clear_pyproj_cache(feedback) # seems not to resolve the issue
         
         # Ensure WhiteboxTools is configured before running (inherited pattern from other algorithms)
         if not ensure_whiteboxtools_configured(self, feedback):
             return {}
-        
-        # Reset core CRS to None to prevent PyProj crashes on Windows
-        self.core.reset_crs()
         
         # Validate and read input parameters
         lines_source = self.parameterAsSource(parameters, self.INPUT_LINES, context)
@@ -262,12 +259,13 @@ Point layer containing distributed points with attributes:
 
         feedback.pushInfo(f"Generated {len(points_gdf)} points along {len(lines_gdf)} lines")
 
-        # Note: CRS is already set by core.get_points_along_lines() - no need to call .set_crs() here
-        # Calling .set_crs() triggers PyProj CRS object creation which causes crashes on Windows
-        feedback.pushInfo(f"Points CRS: {points_gdf.crs}")
-        
-        # Save result with proper format handling
-        save_gdf_to_file(points_gdf, points_file_path, self.core, feedback)
+        # Save result - use OGR on Windows to avoid PyProj crashes
+        if self.core.disable_crs_operations:
+            feedback.pushInfo("Saving points WITHOUT setting CRS to avoid WINDOWS PyProj issues...")   
+            save_gdf_to_file_ogr(points_gdf, points_file_path, self.core, feedback)
+        else:
+            feedback.pushInfo("Saving points WITH setting CRS pyproj (geopandas)...")
+            save_gdf_to_file(points_gdf, points_file_path, self.core, feedback)
 
         results = {}
         # Add output parameters to results

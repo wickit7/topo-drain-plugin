@@ -19,7 +19,7 @@ from qgis.core import (QgsProcessing,
                        QgsProcessingParameterNumber)
 import geopandas as gpd
 import os
-from .utils import get_crs_from_layer, ensure_whiteboxtools_configured, save_gdf_to_file, load_gdf_from_qgis_source, get_raster_ext, get_vector_ext, get_crs_from_project, clear_pyproj_cache
+from .utils import get_crs_from_layer, ensure_whiteboxtools_configured, save_gdf_to_file, save_gdf_to_file_ogr, load_gdf_from_qgis_source, get_raster_ext, get_vector_ext, get_crs_from_project, clear_pyproj_cache
 
 pluginPath = os.path.dirname(__file__)
 
@@ -196,15 +196,12 @@ The algorithm uses sophisticated mathematical techniques:
 
     def processAlgorithm(self, parameters, context, feedback):
         # CRITICAL: Clear PyProj cache at start to prevent Windows crashes on repeated runs
-        clear_pyproj_cache(feedback)
+        #clear_pyproj_cache(feedback) # seems not to resolve the issue
         
         # Ensure WhiteboxTools is configured before running
         if not ensure_whiteboxtools_configured(self, feedback):
             return {}
-        
-        # Reset core CRS to None to prevent PyProj crashes on Windows
-        self.core.reset_crs()
-        
+
         # Validate and read input parameters
         valley_lines_source = self.parameterAsSource(parameters, self.INPUT_VALLEY_LINES, context)
         dtm_layer = self.parameterAsRasterLayer(parameters, self.INPUT_DTM, context)
@@ -297,12 +294,13 @@ The algorithm uses sophisticated mathematical techniques:
 
         feedback.pushInfo(f"Detected {len(keypoints_gdf)} keypoints")
 
-        # Note: CRS is already set by core.get_keypoints() - no need to call .set_crs() here
-        # Calling .set_crs() triggers PyProj CRS object creation which causes crashes on Windows
-        feedback.pushInfo(f"Keypoints CRS: {keypoints_gdf.crs}")
-
-        # Save result with proper format handling
-        save_gdf_to_file(keypoints_gdf, keypoints_file_path, self.core, feedback)
+        # Save result - use OGR on Windows to avoid PyProj crashes
+        if self.core.disable_crs_operations:
+            feedback.pushInfo("Saving keypoints WITHOUT setting CRS to avoid WINDOWS PyProj issues...")   
+            save_gdf_to_file_ogr(keypoints_gdf, keypoints_file_path, self.core, feedback)
+        else:
+            feedback.pushInfo("Saving keypoints WITH setting CRS pyproj (geopandas)...")
+            save_gdf_to_file(keypoints_gdf, keypoints_file_path, self.core, feedback)
 
         results = {}
         # Add output parameters to results

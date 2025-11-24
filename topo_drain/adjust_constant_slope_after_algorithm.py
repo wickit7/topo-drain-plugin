@@ -15,7 +15,7 @@ from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterRasterLayer
                        QgsProcessingParameterFeatureSource)
 import os
 import geopandas as gpd
-from .utils import get_crs_from_layer, get_crs_from_project, ensure_whiteboxtools_configured, save_gdf_to_file, load_gdf_from_file, load_gdf_from_qgis_source, get_raster_ext, get_vector_ext, clear_pyproj_cache
+from .utils import get_crs_from_layer, get_crs_from_project, ensure_whiteboxtools_configured, save_gdf_to_file, save_gdf_to_file_ogr, load_gdf_from_file, load_gdf_from_file_ogr, load_gdf_from_qgis_source, get_raster_ext, get_vector_ext, clear_pyproj_cache
 
 pluginPath = os.path.dirname(__file__)
 
@@ -233,14 +233,11 @@ Parameters:
 
     def processAlgorithm(self, parameters, context, feedback):
         # CRITICAL: Clear PyProj cache at start to prevent Windows crashes on repeated runs
-        clear_pyproj_cache(feedback)
+        #clear_pyproj_cache(feedback) # seems not to resolve the issue
         
         # Ensure WhiteboxTools is configured before running
         if not ensure_whiteboxtools_configured(self, feedback):
             return {}
-        
-        # Reset core CRS to None to prevent PyProj crashes on Windows
-        self.core.reset_crs()
         
         # Validate and read input parameters
         dtm_layer = self.parameterAsRasterLayer(parameters, self.INPUT_DTM, context)
@@ -340,67 +337,67 @@ Parameters:
         
         feedback.pushInfo(f"Input lines: {len(input_lines_gdf)} features")
 
-        # Convert destination layers to GeoDataFrames with Windows-safe CRS handling
+        # Convert destination layers to GeoDataFrames - use OGR on Windows to avoid PyProj
         feedback.pushInfo("Converting destination features to GeoDataFrames...")
         destination_gdfs = []
         for layer in destination_layers:
             if layer:
                 try:
-                    # Load GeoDataFrame using utility function
-                    gdf = load_gdf_from_file(layer.source(), feedback)
-                    # Manually set the safe CRS
-                    gdf.crs = self.core.crs
-                    feedback.pushInfo(f"Successfully loaded {len(gdf)} destination features with safe CRS: {self.core.crs}")
+                    if self.core.disable_crs_operations:
+                        feedback.pushInfo("Loading destination layer WITHOUT CRS to avoid PyProj issues...")
+                        gdf = load_gdf_from_file_ogr(layer.source(), feedback)
+                    else:
+                        gdf = load_gdf_from_file(layer.source(), feedback)
+                    feedback.pushInfo(f"Successfully loaded {len(gdf)} destination features")
                 except Exception as e:
-                    feedback.pushInfo(f"Failed to load destination layer with safe CRS handling: {e}")
+                    feedback.pushInfo(f"Failed to load destination layer: {e}")
                     raise QgsProcessingException(f"Failed to load destination layer: {e}")
                     
                 if not gdf.empty:
-                    gdf = gdf.to_crs(self.core.crs)
                     destination_gdfs.append(gdf)
                     feedback.pushInfo(f"Destination layer: {len(gdf)} features")
         
         if not destination_gdfs:
             raise QgsProcessingException("No valid destination features found")
 
-        # Convert barrier layers to GeoDataFrames (optional) with Windows-safe CRS handling
+        # Convert barrier layers to GeoDataFrames (optional) - use OGR on Windows to avoid PyProj
         barrier_gdfs = []
         if barrier_layers:
             feedback.pushInfo("Converting barrier features to GeoDataFrames...")
             for layer in barrier_layers:
                 if layer:
                     try:
-                        # Load GeoDataFrame using utility function
-                        gdf = load_gdf_from_file(layer.source(), feedback)
-                        # Manually set the safe CRS
-                        gdf.crs = self.core.crs
-                        feedback.pushInfo(f"Successfully loaded {len(gdf)} barrier features with safe CRS: {self.core.crs}")
+                        if self.core.disable_crs_operations:
+                            feedback.pushInfo("Loading barrier layer WITHOUT CRS to avoid PyProj issues...")
+                            gdf = load_gdf_from_file_ogr(layer.source(), feedback)
+                        else:
+                            gdf = load_gdf_from_file(layer.source(), feedback)
+                        feedback.pushInfo(f"Successfully loaded {len(gdf)} barrier features")
                     except Exception as e:
-                        feedback.pushInfo(f"Failed to load barrier layer with safe CRS handling: {e}")
+                        feedback.pushInfo(f"Failed to load barrier layer: {e}")
                         raise QgsProcessingException(f"Failed to load barrier layer: {e}")
                         
                     if not gdf.empty:
-                        gdf = gdf.to_crs(self.core.crs)
                         barrier_gdfs.append(gdf)
                         feedback.pushInfo(f"Barrier layer: {len(gdf)} features")
 
-        # Convert perimeter to GeoDataFrame (optional) with Windows-safe CRS handling
+        # Convert perimeter to GeoDataFrame (optional) - use OGR on Windows to avoid PyProj
         perimeter_gdf = None
         if perimeter_layer and perimeter_layer.source():
             feedback.pushInfo("Converting perimeter to GeoDataFrame...")
             try:
-                # Load GeoDataFrame using utility function
                 perimeter_layer_path = perimeter_layer.source()
-                perimeter_gdf = load_gdf_from_file(perimeter_layer_path, feedback)
-                # Manually set the safe CRS
-                perimeter_gdf.crs = self.core.crs
-                feedback.pushInfo(f"Successfully loaded {len(perimeter_gdf)} perimeter features with safe CRS: {self.core.crs}")
+                if self.core.disable_crs_operations:
+                    feedback.pushInfo("Loading perimeter WITHOUT CRS to avoid PyProj issues...")
+                    perimeter_gdf = load_gdf_from_file_ogr(perimeter_layer_path, feedback)
+                else:
+                    perimeter_gdf = load_gdf_from_file(perimeter_layer_path, feedback)
+                feedback.pushInfo(f"Successfully loaded {len(perimeter_gdf)} perimeter features")
             except Exception as e:
                 feedback.pushInfo(f"Failed to load perimeter: {e}")
                 raise QgsProcessingException(f"Failed to load perimeter: {e}")
                 
             if not perimeter_gdf.empty:
-                perimeter_gdf = perimeter_gdf.to_crs(self.core.crs)
                 feedback.pushInfo(f"Perimeter: {len(perimeter_gdf)} features")
             else:
                 feedback.pushInfo("Warning: Empty perimeter layer provided")
@@ -427,8 +424,6 @@ Parameters:
         if adjusted_lines_gdf.empty:
             raise QgsProcessingException("No adjusted lines were created")
 
-        # Note: CRS is already set by core.adjust_constant_slope_after() - no need to call .set_crs() here
-        # Calling .set_crs() triggers PyProj CRS object creation which causes crashes on Windows
         feedback.pushInfo(f"Adjusted lines CRS: {adjusted_lines_gdf.crs}")
 
         # Add slope adjustment attributes to output
@@ -436,8 +431,14 @@ Parameters:
         adjusted_lines_gdf['slope_after'] = slope_after
         feedback.pushInfo(f"Added attributes: change_after={change_after}, slope_after={slope_after}")
 
-        # Save result with proper format handling (all_upper=True to rename columns to uppercase)
-        save_gdf_to_file(adjusted_lines_gdf, adjusted_lines_path, self.core, feedback, all_upper=True)
+        # Save result - use OGR on Windows to avoid PyProj crashes
+        # all_upper=True to rename columns to uppercase
+        if self.core.disable_crs_operations:
+            feedback.pushInfo("Saving adjusted lines WITHOUT setting CRS to avoid WINDOWS PyProj issues...")   
+            save_gdf_to_file_ogr(adjusted_lines_gdf, adjusted_lines_path, self.core, feedback, all_upper=True)
+        else:
+            feedback.pushInfo("Saving adjusted lines WITH setting CRS pyproj (geopandas)...")
+            save_gdf_to_file(adjusted_lines_gdf, adjusted_lines_path, self.core, feedback, all_upper=True)
 
         results = {}
         # Add output parameters to results

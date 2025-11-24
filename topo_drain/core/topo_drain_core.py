@@ -19,9 +19,16 @@ from shapely.ops import linemerge, nearest_points, substring
 from scipy.ndimage import gaussian_filter1d
 from osgeo import gdal, ogr
 
+# Import OGR-based loading function from parent utils module
+try:
+    from ..utils import load_gdf_from_file_ogr
+except ImportError:
+    # Fallback if import fails (shouldn't happen in normal operation)
+    load_gdf_from_file_ogr = None
+
 # ---  Class TopoDrainCore ---
 class TopoDrainCore:
-    def __init__(self, whitebox_directory=None, nodata=None, crs=None, temp_directory=None, working_directory=None):
+    def __init__(self, whitebox_directory=None, nodata=None, crs=None, temp_directory=None, working_directory=None, disable_crs_operations=None):
         print("[TopoDrainCore] Initializing TopoDrainCore...")
         self._thisdir = os.path.dirname(__file__)
         print(f"[TopoDrainCore] Module directory: {self._thisdir}")
@@ -38,13 +45,28 @@ class TopoDrainCore:
         print(f"[TopoDrainCore] NoData value set to: {self.nodata}")
         
         # Store CRS as string for compatibility (None is acceptable)
-        # Note: We avoid converting to CRS object to prevent PyProj Windows crashes
+        # Note: We avoid converting to CRS object to prevent PyProj crashes
         # CRS will be handled safely when creating/modifying GeoDataFrames
         self.crs = crs  # Can be None, "EPSG:4326", WKT string, etc.
         if self.crs is None:
             print("[TopoDrainCore] CRS not set - GeoDataFrames will be created without CRS")
         else:
             print(f"[TopoDrainCore] CRS value set to: {self.crs}")
+        
+        # Configure CRS operations behavior
+        # Default: CRS operations enabled (False)
+        # For QGIS plugin use: should be set to True to prevent PyProj crashes
+        # User can override by passing disable_crs_operations parameter
+        if disable_crs_operations is not None:
+            self.disable_crs_operations = disable_crs_operations
+        else:
+            self.disable_crs_operations = False
+        
+        if self.disable_crs_operations:
+            print("[TopoDrainCore] CRS operations DISABLED (to prevent potential PyProj crashes)")
+            print("[TopoDrainCore] Output layers will need CRS set manually or via post-processing")
+        else:
+            print("[TopoDrainCore] CRS operations ENABLED (will attempt to set CRS automatically)")
         
         self.temp_directory = temp_directory if temp_directory is not None else None
         print(f"[TopoDrainCore] Temp directory set to: {self.temp_directory if self.temp_directory else 'Not set'}")
@@ -385,23 +407,27 @@ class TopoDrainCore:
                 # Fix for Windows QGIS environment where sys.stdout is None
                 original_stdout = sys.stdout
                 original_stderr = sys.stderr
+                devnull_stdout = None
+                devnull_stderr = None
                 
                 # Create a dummy stdout/stderr if they are None (Windows QGIS issue)
                 if sys.stdout is None:
-                    sys.stdout = open(os.devnull, 'w')
+                    devnull_stdout = open(os.devnull, 'w')
+                    sys.stdout = devnull_stdout
                 if sys.stderr is None:
-                    sys.stderr = open(os.devnull, 'w')
+                    devnull_stderr = open(os.devnull, 'w')
+                    sys.stderr = devnull_stderr
                 
                 try:
                     return tool_method(callback=callback_func, **kwargs)
                 finally:
-                    # Restore original stdout/stderr
-                    if original_stdout is None and sys.stdout is not None:
-                        sys.stdout.close()
-                    if original_stderr is None and sys.stderr is not None:
-                        sys.stderr.close()
+                    # Restore original stdout/stderr and close devnull files
                     sys.stdout = original_stdout
                     sys.stderr = original_stderr
+                    if devnull_stdout is not None:
+                        devnull_stdout.close()
+                    if devnull_stderr is not None:
+                        devnull_stderr.close()
                     
             except Exception as e:
                 if feedback:
@@ -419,23 +445,32 @@ class TopoDrainCore:
                 # Fix for Windows QGIS environment where sys.stdout is None
                 original_stdout = sys.stdout
                 original_stderr = sys.stderr
+                devnull_stdout = None
+                devnull_stderr = None
                 
                 # Create a dummy stdout/stderr if they are None (Windows QGIS issue)
                 if sys.stdout is None:
-                    sys.stdout = open(os.devnull, 'w')
+                    devnull_stdout = open(os.devnull, 'w')
+                    sys.stdout = devnull_stdout
                 if sys.stderr is None:
-                    sys.stderr = open(os.devnull, 'w')
+                    devnull_stderr = open(os.devnull, 'w')
+                    sys.stderr = devnull_stderr
                 
                 try:
-                    return self.wbt.run_tool(tool_name, args, callback=callback_func)
+                    # Suppress ResourceWarning from WhiteboxTools subprocess
+                    # The warning occurs because WhiteboxTools' run_tool doesn't properly close subprocess pipes
+                    # This is a WhiteboxTools library issue, not our code
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings("ignore", category=ResourceWarning)
+                        return self.wbt.run_tool(tool_name, args, callback=callback_func)
                 finally:
-                    # Restore original stdout/stderr
-                    if original_stdout is None and sys.stdout is not None:
-                        sys.stdout.close()
-                    if original_stderr is None and sys.stderr is not None:
-                        sys.stderr.close()
+                    # Restore original stdout/stderr and close devnull files
                     sys.stdout = original_stdout
                     sys.stderr = original_stderr
+                    if devnull_stdout is not None:
+                        devnull_stdout.close()
+                    if devnull_stderr is not None:
+                        devnull_stderr.close()
                     
             except Exception as e:
                 if feedback:
@@ -1391,7 +1426,11 @@ class TopoDrainCore:
                 raise RuntimeError('Process cancelled by user.')
             raise RuntimeError(f"Raster to vector lines failed: {e}")
 
-        gdf = gpd.read_file(output_vector_path)
+        # Load vector file - use OGR on Windows to avoid PyProj crashes
+        if self.disable_crs_operations and load_gdf_from_file_ogr:
+            gdf = load_gdf_from_file_ogr(output_vector_path, feedback)
+        else:
+            gdf = gpd.read_file(output_vector_path)
         
         if gdf.empty:
             warnings.warn(f"Warning: No vector features found in {output_vector_path}.")
@@ -1865,36 +1904,22 @@ class TopoDrainCore:
             # Check if the file exists and is non-empty before reading
             if not os.path.exists(stream_network_output_path):
                 raise RuntimeError(f"[ExtractValleys] Network output file not found: {stream_network_output_path}")
-            gdf = gpd.read_file(stream_network_output_path)
+            
+            # Load vector file - use OGR on Windows to avoid PyProj crashes
+            if self.disable_crs_operations and load_gdf_from_file_ogr:
+                gdf = load_gdf_from_file_ogr(stream_network_output_path, feedback)
+            else:
+                gdf = gpd.read_file(stream_network_output_path)
+            
             if gdf.empty:
                 raise RuntimeError(f"[ExtractValleys] Network output file is empty: {stream_network_output_path}")
 
-            # Set CRS if missing and self.crs is available
-            # CRITICAL: We create a NEW GeoDataFrame with crs= parameter, NOT call .set_crs()
-            # Calling .set_crs() triggers PyProj and causes Windows crashes
-            if gdf.crs is None and self.crs is not None:
-                if feedback:
-                    feedback.pushInfo(f"[ExtractValleys] WhiteboxTools output has no CRS, creating GeoDataFrame with CRS: {self.crs}")
-                else:
-                    print(f"[ExtractValleys] WhiteboxTools output has no CRS, creating GeoDataFrame with CRS: {self.crs}")
-                
-                # Create fresh GeoDataFrame with CRS - this is safer than .set_crs()
-                # BUT: This still triggers PyProj on Windows!
-                try:
-                    gdf = gpd.GeoDataFrame(gdf, geometry=gdf.geometry, crs=self.crs)
-                except Exception as crs_error:
-                    # If this fails (Windows PyProj crash), just warn and continue without CRS
-                    msg = f"[ExtractValleys] Could not set CRS (PyProj issue on Windows): {crs_error}"
-                    if feedback:
-                        feedback.pushWarning(msg)
-                    else:
-                        warnings.warn(msg)
-            
+            # CRS will be set during save in utils.save_gdf_to_file()
             if feedback:
                 if gdf.crs is not None:
                     feedback.pushInfo(f"[ExtractValleys] Output CRS: {gdf.crs}")
                 else:
-                    feedback.pushWarning("[ExtractValleys] WARNING: Output has no CRS! You will need to set it manually in QGIS.")
+                    feedback.pushInfo("[ExtractValleys] Output has no CRS - will be set during save")
 
             # Always create a reliable LINK_ID field as primary identifier
             # This addresses Windows case-sensitivity and temporary layer issues
@@ -1907,7 +1932,7 @@ class TopoDrainCore:
             if feedback:
                 feedback.pushInfo("[ExtractValleys] Created reliable 'LINK_ID' field for cross-platform compatibility")
                 feedback.pushInfo(f"[ExtractValleys] Completed: {len(gdf)} valley features extracted successfully!")
-                feedback.setProgress(100)
+                feedback.setProgress(99)
             else:
                 print("[ExtractValleys] Created reliable 'LINK_ID' field for cross-platform compatibility")
                 print(f"[ExtractValleys] Completed: {len(gdf)} valley features extracted successfully!")
@@ -2084,18 +2109,22 @@ class TopoDrainCore:
             if not os.path.exists(watershed_vector_path):
                 raise RuntimeError(f"[WatershedDelineation] Watershed vector output file not found: {watershed_vector_path}")
             
-            gdf = gpd.read_file(watershed_vector_path)
+            # Load vector file - use OGR on Windows to avoid PyProj crashes
+            if self.disable_crs_operations and load_gdf_from_file_ogr:
+                gdf = load_gdf_from_file_ogr(watershed_vector_path, feedback)
+            else:
+                gdf = gpd.read_file(watershed_vector_path)
+            
             if gdf.empty:
                 raise RuntimeError(f"[WatershedDelineation] Watershed vector output file is empty: {watershed_vector_path}")
 
-            # Note: CRS handling removed to avoid PyProj crashes on Windows
-            # WhiteboxTools should preserve CRS from input raster
-            # If needed, CRS will be set in algorithm layer using QGIS methods
+            # CRS will be set during save in utils.save_gdf_to_file()
+            
             if feedback:
                 if gdf.crs is not None:
                     feedback.pushInfo(f"[WatershedDelineation] Output CRS: {gdf.crs}")
                 else:
-                    feedback.pushWarning("[WatershedDelineation] Output has no CRS - will need to be set in algorithm layer")
+                    feedback.pushInfo("[WatershedDelineation] Output has no CRS - will be set during save")
 
             # Always create a reliable BASIN_ID field as primary identifier
             # This addresses Windows case-sensitivity and temporary layer issues
@@ -2111,7 +2140,7 @@ class TopoDrainCore:
             if feedback:
                 feedback.pushInfo("[WatershedDelineation] Created reliable 'BASIN_ID' field for cross-platform compatibility")
                 feedback.pushInfo(f"[WatershedDelineation] Completed: {len(gdf)} watershed polygons delineated successfully!")
-                feedback.setProgress(100)
+                feedback.setProgress(99)
                 if feedback.isCanceled():
                     feedback.reportError('Process cancelled by user at completion.')
                     raise RuntimeError('Process cancelled by user.')
@@ -2332,11 +2361,7 @@ class TopoDrainCore:
             # Create single polygon GeoDataFrame with thread-safe CRS handling
             perimeter_crs_str = str(perimeter.crs) if perimeter.crs is not None else None
             single_polygon = gpd.GeoDataFrame([poly_row])
-            if perimeter_crs_str:
-                try:
-                    single_polygon = single_polygon.set_crs(perimeter_crs_str)
-                except Exception as e:
-                    print(f"[ExtractMainValleys] Warning: Could not set CRS for polygon: {e}")
+            # CRS will be set during save in utils.save_gdf_to_file()
             
             # Calculate progress based on polygon processing (20-80% range)
             polygon_progress = 20 + int((poly_idx / len(perimeter)) * 60)
@@ -2414,11 +2439,7 @@ class TopoDrainCore:
             # Convert row,col indices to world coordinates using GDAL geotransform
             coords = self._pixel_indices_to_coords(rows, cols, geotransform)
             points = gpd.GeoDataFrame(geometry=gpd.points_from_xy(*zip(*coords)))
-            if self.crs:
-                try:
-                    points = points.set_crs(self.crs)
-                except Exception as e:
-                    print(f"[ExtractMainValleys] Warning: Could not set CRS: {e}")
+            # CRS will be set during save in utils.save_gdf_to_file()
             points["facc"] = facc[rows, cols]
 
             if feedback:
@@ -2559,9 +2580,17 @@ class TopoDrainCore:
                 print("[ExtractMainValleys] Clipping final valley lines to perimeter...")
             gdf = gpd.overlay(gdf, perimeter, how="intersection")
 
+        # CRS will be set during save in utils.save_gdf_to_file()
+        
+        if feedback:
+            if gdf.crs is not None:
+                feedback.pushInfo(f"[ExtractMainValleys] Output CRS: {gdf.crs}")
+            else:
+                feedback.pushInfo("[ExtractMainValleys] Output has no CRS - will be set during save")
+
         if feedback:
             feedback.pushInfo(f"[ExtractMainValleys] Main valley extraction complete. {len(gdf)} valleys extracted from {len(perimeter)} polygons.")
-            feedback.setProgress(100)
+            feedback.setProgress(99)
             if feedback.isCanceled():
                 feedback.reportError('Process cancelled by user at completion.')
                 raise RuntimeError('Process cancelled by user.')
@@ -2909,20 +2938,15 @@ class TopoDrainCore:
                     print(f"[GetKeypoints] Warning: Could not save CSV file: {e}")
 
         # Create GeoDataFrame without CRS first to avoid PyProj crashes on Windows
-        # Then try to set CRS separately with error handling
         gdf = gpd.GeoDataFrame(results, geometry="geometry")
         
-        # Try to set CRS if available, but handle Windows PyProj crashes gracefully
-        if self.crs is not None:
-            try:
-                gdf = gdf.set_crs(self.crs)
-            except Exception as e:
-                # Windows PyProj crash or other CRS-related error - continue without CRS
-                if feedback:
-                    feedback.pushWarning(f"[GetKeypoints] Warning: Could not set CRS {self.crs}: {e}. Continuing without CRS.")
-                else:
-                    warnings.warn(f"[GetKeypoints] Warning: Could not set CRS {self.crs}: {e}. Continuing without CRS.")
-
+        # CRS will be set during save in utils.save_gdf_to_file()
+        
+        if feedback:
+            if gdf.crs is not None:
+                feedback.pushInfo(f"[GetKeypoints] Output CRS: {gdf.crs}")
+            else:
+                feedback.pushInfo("[GetKeypoints] Output has no CRS - will be set during save")
 
         if feedback:
             feedback.pushInfo(f"[GetKeypoints] Keypoint detection complete:")
@@ -2930,7 +2954,7 @@ class TopoDrainCore:
             feedback.pushInfo(f"[GetKeypoints] - Processed lines: {processed_lines}")
             feedback.pushInfo(f"[GetKeypoints] - Skipped lines: {skipped_lines}")
             feedback.pushInfo(f"[GetKeypoints] - Total keypoints found: {len(gdf)}")
-            feedback.setProgress(100)
+            feedback.setProgress(99)
             if feedback.isCanceled():
                 feedback.reportError('Process cancelled by user at completion.')
                 raise RuntimeError('Process cancelled by user.')
@@ -2973,11 +2997,7 @@ class TopoDrainCore:
             else:
                 warnings.warn("[GetPointsAlongLines] Warning: No input lines provided")
             result = gpd.GeoDataFrame()
-            if self.crs:
-                try:
-                    result = result.set_crs(self.crs)
-                except Exception as e:
-                    print(f"[GetPointsAlongLines] Warning: Could not set CRS: {e}")
+            # CRS will be set during save in utils.save_gdf_to_file()
             return result
 
         # Validate distance parameter
@@ -3026,14 +3046,16 @@ class TopoDrainCore:
         else:
             result_gdf = gpd.GeoDataFrame()
         
-        if self.crs:
-            try:
-                result_gdf = result_gdf.set_crs(self.crs)
-            except Exception as e:
-                print(f"[GetPointsAlongLines] Warning: Could not set CRS: {e}")
+        # CRS will be set during save in utils.save_gdf_to_file()
+        
+        if feedback:
+            if result_gdf.crs is not None:
+                feedback.pushInfo(f"[GetPointsAlongLines] Output CRS: {result_gdf.crs}")
+            else:
+                feedback.pushInfo("[GetPointsAlongLines] Output has no CRS - will be set during save")
 
         if feedback:
-            feedback.setProgress(100)
+            feedback.setProgress(99)
             feedback.pushInfo(f"[GetPointsAlongLines] Point distribution complete: {len(result_gdf)} points created from {total_lines} lines")
         else:
             print(f"[GetPointsAlongLines] Point distribution complete: {len(result_gdf)} points created from {total_lines} lines")
@@ -5075,11 +5097,7 @@ class TopoDrainCore:
             raise RuntimeError("No valid start points found after classification")
 
         updated_start_points_gdf = gpd.GeoDataFrame(updated_start_points)
-        if self.crs:
-            try:
-                updated_start_points_gdf = updated_start_points_gdf.set_crs(self.crs)
-            except Exception as e:
-                print(f"[GetConstantSlopeLines] Warning: Could not set CRS: {e}")
+        # CRS will be set during save in utils.save_gdf_to_file()
 
         # Report classification results
         barrier_count = len([pt for pt in updated_start_points if pt.get('barrier_id_key', -1) > 0])
@@ -5285,14 +5303,10 @@ class TopoDrainCore:
         else:
             result_gdf = gpd.GeoDataFrame()
         
-        if self.crs:
-            try:
-                result_gdf = result_gdf.set_crs(self.crs)
-            except Exception as e:
-                print(f"[GetConstantSlopeLines] Warning: Could not set CRS: {e}")
+        # CRS will be set during save in utils.save_gdf_to_file()
         
         if feedback:
-            feedback.setProgress(100)
+            feedback.setProgress(99)
             if feedback.isCanceled():
                 feedback.reportError("[GetConstantSlopeLines] Constant slope line creation was cancelled by user")
                 raise RuntimeError("Operation cancelled by user")
@@ -5508,23 +5522,11 @@ class TopoDrainCore:
             else:
                 print(f"[AdjustConstantSlopeAfter] Phase 2: Tracing {len(all_start_points)} second parts..")
 
-            # Set CRS after creation when we have geometry column
-            # Use try-except to handle PyProj crashes on Windows
-            try:
-                second_part_lines = second_part_lines.set_crs(self.crs)
-            except Exception as crs_error:
-                if feedback:
-                    feedback.pushWarning(f"[AdjustConstantSlopeAfter] Could not set CRS: {crs_error}")
-                else:
-                    print(f"[AdjustConstantSlopeAfter] Warning: Could not set CRS: {crs_error}")
+            # CRS will be set during save in utils.save_gdf_to_file()
             
             # Create GeoDataFrame with all start points and add mapping information
             start_points_gdf = gpd.GeoDataFrame(geometry=all_start_points)
-            if self.crs:
-                try:
-                    start_points_gdf = start_points_gdf.set_crs(self.crs)
-                except Exception as e:
-                    print(f"Warning: Could not set CRS: {e}")
+            # CRS will be set during save in utils.save_gdf_to_file()
             start_points_gdf['orig_index'] = [line_mapping[i] for i in range(len(all_start_points))]
             
             try:
@@ -5651,11 +5653,13 @@ class TopoDrainCore:
         else:
             result_gdf = gpd.GeoDataFrame()
         
-        if self.crs:
-            try:
-                result_gdf = result_gdf.set_crs(self.crs)
-            except Exception as e:
-                print(f"Warning: Could not set CRS: {e}")
+        # CRS will be set during save in utils.save_gdf_to_file()
+        
+        if feedback:
+            if result_gdf.crs is not None:
+                feedback.pushInfo(f"[AdjustConstantSlopeAfter] Output CRS: {result_gdf.crs}")
+            else:
+                feedback.pushInfo("[AdjustConstantSlopeAfter] Output has no CRS - will be set during save")
         
         result_gdf = result_gdf.reset_index(drop=True)
 
@@ -5667,7 +5671,7 @@ class TopoDrainCore:
 
         if feedback:
             feedback.pushInfo(f"[AdjustConstantSlopeAfter] Adjustment complete: {len(result_gdf)} adjusted lines")
-            feedback.setProgress(100)
+            feedback.setProgress(99)
         else:
             print(f"[AdjustConstantSlopeAfter] Adjustment complete: {len(result_gdf)} adjusted lines")
 
@@ -6076,11 +6080,7 @@ class TopoDrainCore:
             raise RuntimeError("No valid start points found after classification")
 
         updated_start_points_gdf = gpd.GeoDataFrame(updated_start_points)
-        if self.crs:
-            try:
-                updated_start_points_gdf = updated_start_points_gdf.set_crs(self.crs)
-            except Exception as e:
-                print(f"Warning: Could not set CRS: {e}")
+        # CRS will be set during save in utils.save_gdf_to_file()
 
         # Report classification results
         valley_count = len([pt for pt in updated_start_points if pt.get('valley_id_key', -1) > 0])
@@ -6521,11 +6521,7 @@ class TopoDrainCore:
             
             # Create GeoDataFrame from new start points for next iteration
             current_start_points = gpd.GeoDataFrame(new_start_points)
-            if self.crs:
-                try:
-                    current_start_points = current_start_points.set_crs(self.crs)
-                except Exception as e:
-                    print(f"Warning: Could not set CRS: {e}")
+            # CRS will be set during save in utils.save_gdf_to_file()
             
             if feedback:
                 feedback.pushInfo(f"[CreateKeylines] Iteration {iteration}: Generated {len(new_start_points)} new start points for next iteration")
@@ -6559,14 +6555,16 @@ class TopoDrainCore:
         else:
             result_gdf = gpd.GeoDataFrame()
         
-        if self.crs:
-            try:
-                result_gdf = result_gdf.set_crs(self.crs)
-            except Exception as e:
-                print(f"Warning: Could not set CRS: {e}")
+        # CRS will be set during save in utils.save_gdf_to_file()
         
         if feedback:
-            feedback.setProgress(100)
+            if result_gdf.crs is not None:
+                feedback.pushInfo(f"[CreateKeylines] Output CRS: {result_gdf.crs}")
+            else:
+                feedback.pushInfo("[CreateKeylines] Output has no CRS - will be set during save")
+        
+        if feedback:
+            feedback.setProgress(99)
             if feedback.isCanceled():
                 feedback.reportError("Keyline creation was cancelled by user")
                 raise RuntimeError("Operation cancelled by user")
