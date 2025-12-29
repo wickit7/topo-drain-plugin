@@ -116,7 +116,6 @@ The TopoDrain plugin depends on **WhiteboxTools for QGIS**. You need to install 
 
 <img src="resources/WBT_configure_provider.png" alt="WhiteboxTools Provider Configuration" width="600">
 
-
 #### Verify Installation
 To verify that WhiteboxTools is properly configured:
 1. Open the **Processing Toolbox** (Processing → Toolbox)
