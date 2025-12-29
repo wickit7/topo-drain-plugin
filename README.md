@@ -41,15 +41,51 @@ For macOS, install QGIS using the **DMG installer**:
 3. Launch QGIS from your Applications
 
 #### Python Dependencies
-Installing QGIS through these official methods ensures that all required Python packages are already available for the TopoDrain plugin. Required Python packages: `numpy`, `pandas`, `geopandas`, `shapely`, `scipy`. These packages are included by default in newer QGIS versions (tested with QGIS 3.40.5-Bratislava).
+The TopoDrain plugin requires several Python packages: `numpy`, `pandas`, `geopandas`, `shapely`, `scipy`. These packages are widely used in geospatial data processing, but not all are included in default QGIS installations (particularly `pandas`, `geopandas`, and `scipy`). 
 
-**If still a package is missing in your QGIS installation:**
-- **Windows (OSGeo4W installation):** 
-  - Use the OSGeo4W Setup installer (`osgeo4w-setup.exe`) to install missing packages
-  - Alternatively, follow the instructions at: https://landscapearchaeology.org/2018/installing-python-packages-in-qgis-3-for-windows/
-  
-- **macOS (Terminal-based installation):** 
-  - Follow the instructions at: https://gis.stackexchange.com/questions/351280/installing-python-modules-for-qgis-3-on-mac
+**If a package is missing in your QGIS installation:**
+
+##### Windows (OSGeo4W installation)
+
+**Method 1: Using OSGeo4W Shell (Recommended)**
+1. Open the **OSGeo4W Shell** as Administrator (search for "OSGeo4W Shell" in Start menu, right-click → Run as administrator)
+2. Install the missing packages using pip:
+   ```bash
+   python -m pip install pandas
+   python -m pip install geopandas
+   python -m pip install scipy
+   ```
+3. Restart QGIS after installation
+
+**Note:** If you encounter issues with `python`, try using `python3` instead:
+```bash
+python3 -m pip install pandas geopandas scipy
+```
+
+**Method 2: Using OSGeo4W Setup Installer**
+- Run the OSGeo4W Setup installer (`osgeo4w-setup.exe`)
+- Search for and select the missing Python packages
+- Complete the installation wizard
+
+**Additional Resources:**
+- Detailed guide: https://landscapearchaeology.org/2018/installing-python-packages-in-qgis-3-for-windows/
+
+##### macOS (Terminal-based installation)
+
+1. Open Terminal
+2. Find your QGIS Python path (most likely `/Applications/QGIS-LTR.app/Contents/MacOS/bin/python3` or `/Applications/QGIS.app/Contents/MacOS/bin/python3`)
+3. Use pip to install missing packages:
+   ```bash
+   /Applications/QGIS-LTR.app/Contents/MacOS/bin/python3 -m pip install pandas geopandas scipy
+   ```
+   Or for the regular QGIS version:
+   ```bash
+   /Applications/QGIS.app/Contents/MacOS/bin/python3 -m pip install pandas geopandas scipy
+   ```
+4. Restart QGIS after installation
+
+**Additional Resources:**
+- Detailed guide: https://gis.stackexchange.com/questions/351280/installing-python-modules-for-qgis-3-on-mac
 
 **More Information:** https://qgis.org/resources/installation-guide/
 

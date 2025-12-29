@@ -6,23 +6,23 @@
 name=TopoDrain
 qgisMinimumVersion=3.0
 description=A QGIS plugin for planning surface drainage water management like Keyline-Design.
-version=0.1.10
+version=1.0.0
 author=Timo Wicki
 email=wickitimo@gmail.com
 about=It automates the extraction of main valleys and ridges, creates off-contour line and supports creating Keyline Designs and other water-retention planning measures. The tool can also be used for other tasks, such as planning the location and alignment of paths and roads.
     DISCLAIMER: Influencing surface runoff on land is complex and requires significant expertise. This tool is intended as an aid for users with experience in land surface water management.
     
-    DOCUMENTATION: Installation manual and tutorial guides are available on the project homepage: https://github.com/wickit7/topo-drain-plugin
+    DOCUMENTATION: Detailed INSTALLATION MANUAL and TUTORIAL GUIDES are available on the project homepage: https://github.com/wickit7/topo-drain-plugin
     
     Core algorithms leverage WhiteboxTools (Lindsay, 2017–2020; see https://github.com/jblindsay/whitebox-tools).
     So make shure you have installed and configured the plugin "WhiteboxTools for QGIS"!
     - Installation video: https://www.youtube.com/watch?v=xJXDBsNbcTg
     
     This plugin requires several Python packages (numpy, shapely, pandas, geopandas, scipy).
-    These packages are typically included in common newer QGIS distributions, but may be missing in some installations (especially custom builds). If a package is missing, follow the installation instructions below:
+    These packages are widely used in geospatial data processing, but may not all are included in default QGIS installations (pandas, geopandas, and scipy). If a package is missing, follow the installation instructions below:
     - Windows, QGIS installed with OSGeo4W: https://landscapearchaeology.org/2018/installing-python-packages-in-qgis-3-for-windows/
     - macOS (terminal): https://gis.stackexchange.com/questions/351280/installing-python-modules-for-qgis-3-on-mac
-    Take care to install compatible package versions.
+    See on github site for more informations! -> https://github.com/wickit7/topo-drain-plugin
 
 
 tracker=https://github.com/wickit7/topo-drain-plugin/issues
@@ -34,7 +34,10 @@ repository=https://github.com/wickit7/topo-drain-plugin
 hasProcessingProvider=yes
 # Uncomment the following line and add your changelog:
 
-changelog=0.1.10 - Imporved crs handling
+changelog=1.0.0 - Stable release
+    * Removed experimental flag - plugin is now stable and production-ready
+    * Enhanced Python dependency documentation with detailed installation instructions
+    0.1.10 - Imporved crs handling
     * Improved CRS handling documentation for Windows compatibility
     * Bug fix crs windows: Implemented alternative for saving and loading geodataframe to file with crs because of PyProj access violation issue on windwos 
     0.1.9 - Windows compatibility release
@@ -59,8 +62,8 @@ tags=keyline-design, permaculture, sponge-scape, schwammland, surface analysis, 
 homepage=https://github.com/wickit7/topo-drain-plugin
 category=Analysis
 icon=icons/topo_drain.svg
-# experimental flag (keep True for initial public release)
-experimental=True
+# experimental flag
+experimental=False
 
 # deprecated flag (applies to the whole plugin, not just a single version)
 deprecated=False
