@@ -41,7 +41,7 @@ For macOS, install QGIS using the **DMG installer**:
 3. Launch QGIS from your Applications
 
 #### Python Dependencies
-The TopoDrain plugin requires several Python packages: `numpy`, `pandas`, `geopandas`, `shapely`, `scipy`. These packages are widely used in geospatial data processing, but not all are included in default QGIS installations (particularly `pandas`, `geopandas`, and `scipy`). 
+The TopoDrain plugin requires several Python packages: `numpy`, `pandas`, `geopandas`, `shapely`, `scipy`. While these packages are widely used in geospatial data processing, not all of them are included in the default QGIS installation (particularly `pandas`, `geopandas`, and `scipy` could be missing). 
 
 **If a package is missing in your QGIS installation:**
 
@@ -127,10 +127,8 @@ To verify that WhiteboxTools is properly configured:
 
 #### Install TopoDrain from the QGIS Plugin Repository
 1. In QGIS, go to **Plugins → Manage and Install Plugins**
-2. Go to the **Settings** tab and make sure **"Show also experimental plugins"** is checked
-   - Note: This setting is required temporarily. The experimental flag will be removed once the plugin has been successfully tested by a handful of users.
-3. Go to the **All** tab and search for **"TopoDrain"**
-4. Select the TopoDrain plugin and click **Install Plugin**
+2. In the **All** tab and search for **"TopoDrain"**
+3. Select the TopoDrain plugin and click **Install Plugin**
    - Make sure to install the newest version (at least version ≥0.1.10)
 
 After installation, you will see TopoDrain tools in the **Processing Toolbox** under the TopoDrain section.
