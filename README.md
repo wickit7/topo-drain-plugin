@@ -8,7 +8,7 @@ A QGIS plugin for planning surface drainage water management. It automates the e
   - [Installing QGIS](#installing-qgis)
     - [Windows Installation](#windows-installation)
     - [macOS Installation](#macos-installation)
-    - [Python Dependencies](#python-dependencies)
+  - [Python Dependencies](#python-dependencies)
   - [Installing and Configuring WhiteboxTools for QGIS](#installing-and-configuring-whiteboxtools-for-qgis)
     - [Step 1: Download WhiteboxTools](#step-1-download-whiteboxtools)
     - [Step 2: Install the WhiteboxTools QGIS Plugin](#step-2-install-the-whiteboxtools-qgis-plugin)
@@ -40,12 +40,12 @@ For macOS, install QGIS using the **DMG installer**:
 2. Open the DMG file and drag QGIS to your Applications folder
 3. Launch QGIS from your Applications
 
-#### Python Dependencies
+### Python Dependencies
 The TopoDrain plugin requires several Python packages: `numpy`, `pandas`, `geopandas`, `shapely`, `scipy`. While these packages are widely used in geospatial data processing, not all of them are included in the default QGIS installation (particularly `pandas`, `geopandas`, and `scipy` could be missing). 
 
 **If a package is missing in your QGIS installation:**
 
-##### Windows (OSGeo4W installation)
+#### Windows (OSGeo4W installation)
 
 **Method 1: Using OSGeo4W Shell (Recommended)**
 1. Open the **OSGeo4W Shell** as Administrator (search for "OSGeo4W Shell" in Start menu, right-click → Run as administrator)
@@ -70,7 +70,7 @@ python3 -m pip install pandas geopandas scipy
 **Additional Resources:**
 - Detailed guide: https://landscapearchaeology.org/2018/installing-python-packages-in-qgis-3-for-windows/
 
-##### macOS (Terminal-based installation)
+#### macOS (Terminal-based installation)
 
 1. Open Terminal
 2. Find your QGIS Python path (most likely `/Applications/QGIS-LTR.app/Contents/MacOS/bin/python3` or `/Applications/QGIS.app/Contents/MacOS/bin/python3`)
@@ -86,8 +86,6 @@ python3 -m pip install pandas geopandas scipy
 
 **Additional Resources:**
 - Detailed guide: https://gis.stackexchange.com/questions/351280/installing-python-modules-for-qgis-3-on-mac
-
-**More Information:** https://qgis.org/resources/installation-guide/
 
 ### Installing and Configuring WhiteboxTools for QGIS
 
@@ -115,7 +113,6 @@ The TopoDrain plugin depends on **WhiteboxTools for QGIS**. You need to install 
    - **macOS:** `/Library/WhiteboxTools_darwin_m_series/WBT/whitebox_tools` (without `.exe`)
 
 <img src="resources/WBT_configure_provider.png" alt="WhiteboxTools Provider Configuration" width="600">
-
 
 #### Verify Installation
 To verify that WhiteboxTools is properly configured:
