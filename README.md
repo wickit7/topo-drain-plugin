@@ -87,8 +87,6 @@ python3 -m pip install pandas geopandas scipy
 **Additional Resources:**
 - Detailed guide: https://gis.stackexchange.com/questions/351280/installing-python-modules-for-qgis-3-on-mac
 
-**More Information:** https://qgis.org/resources/installation-guide/
-
 ### Installing and Configuring WhiteboxTools for QGIS
 
 The TopoDrain plugin depends on **WhiteboxTools for QGIS**. You need to install both the WhiteboxTools executable and the QGIS plugin, then configure the connection.
