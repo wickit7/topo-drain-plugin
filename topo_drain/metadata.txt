@@ -6,7 +6,7 @@
 name=TopoDrain
 qgisMinimumVersion=3.0
 description=A QGIS plugin for planning surface drainage water management like Keyline-Design.
-version=1.0.0
+version=1.0.1
 author=Timo Wicki
 email=wickitimo@gmail.com
 about=It automates the extraction of main valleys and ridges, creates off-contour line and supports creating Keyline Designs and other water-retention planning measures. The tool can also be used for other tasks, such as planning the location and alignment of paths and roads.
@@ -34,7 +34,11 @@ repository=https://github.com/wickit7/topo-drain-plugin
 hasProcessingProvider=yes
 # Uncomment the following line and add your changelog:
 
-changelog=1.0.0 - Stable release
+changelog=1.0.1 - CRS handling improvements
+    * Centralized CRS type handling in TopoDrainCore.set_crs() to ensure string format
+    * Fixed CRS compatibility issues with different PyProj versions on macOS
+    * Improved CRS handling for GeoPandas to avoid type conversion errors
+    1.0.0 - Stable release
     * Removed experimental flag - plugin is now stable and production-ready
     * Enhanced Python dependency documentation with detailed installation instructions
     0.1.10 - Imporved crs handling

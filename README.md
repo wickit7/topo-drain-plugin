@@ -49,43 +49,86 @@ The TopoDrain plugin requires several Python packages: `numpy`, `pandas`, `geopa
 
 **Method 1: Using OSGeo4W Shell (Recommended)**
 1. Open the **OSGeo4W Shell** as Administrator (search for "OSGeo4W Shell" in Start menu, right-click → Run as administrator)
-2. Install the missing packages using pip:
+2. (Optional) Check currently installed packages:
+   ```bash
+   python -m pip list
+   ```
+3. Install the missing packages using pip:
    ```bash
    python -m pip install pandas
    python -m pip install geopandas
    python -m pip install scipy
    ```
-3. Restart QGIS after installation
+4. Restart QGIS after installation
+
+For more informations: https://landscapearchaeology.org/2018/installing-python-packages-in-qgis-3-for-windows/
 
 **Note:** If you encounter issues with `python`, try using `python3` instead:
 ```bash
 python3 -m pip install pandas geopandas scipy
 ```
 
+
+
 **Method 2: Using OSGeo4W Setup Installer**
 - Run the OSGeo4W Setup installer (`osgeo4w-setup.exe`)
 - Search for and select the missing Python packages
 - Complete the installation wizard
 
-**Additional Resources:**
-- Detailed guide: https://landscapearchaeology.org/2018/installing-python-packages-in-qgis-3-for-windows/
 
-#### macOS (Terminal-based installation)
+##### macOS Installation Methods
+
+The installation method depends on your QGIS version:
+
+**Method 1: For older QGIS versions (< 3.44) - Terminal-based installation**
+
+Older versions provide a standalone Python executable. Common locations:
+- **QGIS LTR:** `/Applications/QGIS-LTR.app/Contents/MacOS/bin/python3`
+- **QGIS regular:** `/Applications/QGIS.app/Contents/MacOS/bin/python3`
+- **Alternative location:** `/Applications/QGIS.app/Contents/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python` or at user location if python in not bundled within QGIS.app `/usr/local/bin/python3.12`(Instead of 3.12, it could be a different version of Python)
+If you don't succeed, see at https://gis.stackexchange.com/questions/351280/installing-python-modules-for-qgis-3-on-mac for more informations on how to find python executable path or use Method 2 to install missing python packages)
+
+**Installation steps:**
 
 1. Open Terminal
-2. Find your QGIS Python path (most likely `/Applications/QGIS-LTR.app/Contents/MacOS/bin/python3` or `/Applications/QGIS.app/Contents/MacOS/bin/python3`)
-3. Use pip to install missing packages:
+2. Locate your QGIS Python executable:
+   ```bash
+   # For QGIS LTR
+   ls /Applications/QGIS-LTR.app/Contents/MacOS/bin/python3
+   
+   # For regular QGIS
+   ls /Applications/QGIS.app/Contents/MacOS/bin/python3
+   ```
+3. If found, use the full path to install packages:
    ```bash
    /Applications/QGIS-LTR.app/Contents/MacOS/bin/python3 -m pip install pandas geopandas scipy
    ```
-   Or for the regular QGIS version:
-   ```bash
-   /Applications/QGIS.app/Contents/MacOS/bin/python3 -m pip install pandas geopandas scipy
-   ```
-4. Restart QGIS after installation
+4. Restart QGIS after installation!
 
-**Additional Resources:**
-- Detailed guide: https://gis.stackexchange.com/questions/351280/installing-python-modules-for-qgis-3-on-mac
+**If you cannot find a Python executable, use Method 2 (QGIS Python Console) instead.**
+
+---
+
+**Method 2: Use QGIS Python Console**
+
+Newer QGIS versions seem to embed Python directly inside the application without a standalone Python executable. Packages must be installed from within QGIS:
+
+1. Open QGIS and go to **Plugins → Python Console**
+2. Install the missing packages (run one command line after one another):
+   ```python
+   from pip._internal.cli.main import main
+   main(["install", "pandas"])
+   main(["install", "geopandas"])
+   main(["install", "scipy"])
+   ```
+   
+3. Restart QGIS completely!
+4. Verify installation in the Python Console:
+   ```python
+   import pandas as pd
+   import geopandas as gpd
+   import scipy
+   ```
 
 ### Installing and Configuring WhiteboxTools for QGIS
 
@@ -98,6 +141,16 @@ The TopoDrain plugin depends on **WhiteboxTools for QGIS**. You need to install 
 2. Extract the files to an appropriate location on your machine - for example:
    - **Windows:** `C:\WBTools\`
    - **macOS:** `/Library/WhiteboxTools_darwin_m_series/WBT/`
+3. Verify the executable can be opened:
+   - **Windows:** Try opening `whitebox_tools.exe`
+   - **macOS:** Try opening `whitebox_tools` in the WBT folder
+   
+   **Important for macOS users:** macOS may block the program from opening because it's from an unidentified developer. If this happens:
+   - Go to **System Settings → Privacy & Security**
+   - Scroll down to the **Security** section
+   - You should see a message about `whitebox_tools` being blocked
+   - Click **"Open Anyway"** or **"Allow"** next to the message
+   - Try opening the executable again and confirm when prompted
 
 #### Step 2: Install the WhiteboxTools QGIS Plugin
 1. Open QGIS

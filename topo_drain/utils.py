@@ -838,10 +838,21 @@ def save_gdf_to_file(gdf, file_path, core, feedback, all_upper=False):
         # Set CRS if needed using GeoPandas set_crs
         if cleaned_gdf.crs is None:
             if hasattr(core, 'crs') and core.crs:
-                crs_for_save = core.crs  # This is already a string (e.g., 'EPSG:2056')
+                crs_for_save = core.crs  # Already guaranteed to be a string by set_crs()
+                
                 if feedback:
-                    feedback.pushInfo(f"Setting CRS using GeoPandas: {crs_for_save}")
-                cleaned_gdf = cleaned_gdf.set_crs(crs_for_save, allow_override=True)
+                    feedback.pushInfo(f"Setting CRS: {crs_for_save}")
+                
+                try:
+                    # Set CRS - core.crs is already a proper string
+                    cleaned_gdf = cleaned_gdf.set_crs(crs_for_save, allow_override=True)
+                    if feedback:
+                        feedback.pushInfo(f"✓ CRS successfully set")
+                except Exception as crs_error:
+                    if feedback:
+                        feedback.pushWarning(f"Could not set CRS: {crs_error}")
+                        feedback.pushInfo(f"Continuing without explicit CRS - file will still save correctly...")
+
         
         # Get file extension
         file_ext = os.path.splitext(file_path)[1].lower()

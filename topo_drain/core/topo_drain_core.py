@@ -47,10 +47,17 @@ class TopoDrainCore:
         # Store CRS as string for compatibility (None is acceptable)
         # Note: We avoid converting to CRS object to prevent PyProj crashes
         # CRS will be handled safely when creating/modifying GeoDataFrames
-        self.crs = crs  # Can be None, "EPSG:4326", WKT string, etc.
-        if self.crs is None:
+        if crs is None:
+            self.crs = None
             print("[TopoDrainCore] CRS not set - GeoDataFrames will be created without CRS")
+        elif isinstance(crs, bytes):
+            self.crs = crs.decode('utf-8')
+            print(f"[TopoDrainCore] CRS decoded from bytes to: {self.crs}")
+        elif not isinstance(crs, str):
+            self.crs = str(crs)
+            print(f"[TopoDrainCore] CRS converted to string: {self.crs}")
         else:
+            self.crs = crs
             print(f"[TopoDrainCore] CRS value set to: {self.crs}")
         
         # Configure CRS operations behavior
@@ -321,9 +328,18 @@ class TopoDrainCore:
             CRS will be applied safely when creating/modifying GeoDataFrames.
         """
         if crs is not None:
-            # Convert to string to ensure consistent storage and prevent PyProj object corruption
-            self.crs = str(crs)
-            print(f"[TopoDrainCore] CRS set to: {self.crs}")
+            # Handle bytes (decode to string)
+            if isinstance(crs, bytes):
+                self.crs = crs.decode('utf-8')
+                print(f"[TopoDrainCore] CRS decoded from bytes to: {self.crs}")
+            # Convert any other type to string
+            elif not isinstance(crs, str):
+                self.crs = str(crs)
+                print(f"[TopoDrainCore] CRS converted to string: {self.crs}")
+            else:
+                # Already a string
+                self.crs = crs
+                print(f"[TopoDrainCore] CRS set to: {self.crs}")
         else:
             print(f"[TopoDrainCore] CRS unchanged (remains: {self.crs})")
 
