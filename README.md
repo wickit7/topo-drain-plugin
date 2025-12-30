@@ -9,6 +9,8 @@ A QGIS plugin for planning surface drainage water management. It automates the e
     - [Windows Installation](#windows-installation)
     - [macOS Installation](#macos-installation)
   - [Python Dependencies](#python-dependencies)
+    - [Windows (OSGeo4W installation)](#windows-osgeo4w-installation)
+    - [macOS Installation](#macos-installation-1)
   - [Installing and Configuring WhiteboxTools for QGIS](#installing-and-configuring-whiteboxtools-for-qgis)
     - [Step 1: Download WhiteboxTools](#step-1-download-whiteboxtools)
     - [Step 2: Install the WhiteboxTools QGIS Plugin](#step-2-install-the-whiteboxtools-qgis-plugin)
@@ -68,19 +70,17 @@ For more informations: https://landscapearchaeology.org/2018/installing-python-p
 python3 -m pip install pandas geopandas scipy
 ```
 
-
-
 **Method 2: Using OSGeo4W Setup Installer**
 - Run the OSGeo4W Setup installer (`osgeo4w-setup.exe`)
 - Search for and select the missing Python packages
 - Complete the installation wizard
 
 
-##### macOS Installation Methods
+#### macOS Installation
 
 The installation method depends on your QGIS version:
 
-**Method 1: For older QGIS versions (< 3.44) - Terminal-based installation**
+**Method 1: Terminal-based installation**
 
 Older versions provide a standalone Python executable. Common locations:
 - **QGIS LTR:** `/Applications/QGIS-LTR.app/Contents/MacOS/bin/python3`
@@ -106,8 +106,6 @@ If you don't succeed, see at https://gis.stackexchange.com/questions/351280/inst
 4. Restart QGIS after installation!
 
 **If you cannot find a Python executable, use Method 2 (QGIS Python Console) instead.**
-
----
 
 **Method 2: Use QGIS Python Console**
 
