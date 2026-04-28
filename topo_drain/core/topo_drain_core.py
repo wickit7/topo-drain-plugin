@@ -7,6 +7,7 @@
 # -----------------------------------------------------------------------------
 import os
 import sys
+import tempfile
 import importlib.util
 from typing import Union
 import warnings
@@ -19,11 +20,12 @@ from shapely.ops import linemerge, nearest_points, substring
 from scipy.ndimage import gaussian_filter1d
 from osgeo import gdal, ogr
 
-# Import OGR-based loading function from parent utils module
+# Import loading functions from parent utils module
 try:
-    from ..utils import load_gdf_from_file_ogr
+    from ..utils import load_gdf_from_file, load_gdf_from_file_ogr
 except ImportError:
     # Fallback if import fails (shouldn't happen in normal operation)
+    load_gdf_from_file = None
     load_gdf_from_file_ogr = None
 
 # ---  Class TopoDrainCore ---
@@ -366,6 +368,19 @@ class TopoDrainCore:
             if feedback:
                 feedback.reportError(error_msg)
             raise RuntimeError(error_msg)
+
+        # Normalize TIFF raster inputs centrally before invoking WhiteboxTools.
+        # This prevents failures caused by missing embedded GeoTIFF metadata.
+        # Output parameters are explicitly excluded.
+        for param_name, param_value in list(kwargs.items()):
+            if not isinstance(param_value, str):
+                continue
+
+            is_output_param = (param_name == 'output') or param_name.startswith('out_')
+            looks_like_tiff_path = param_value.lower().endswith(('.tif', '.tiff'))
+
+            if not is_output_param and looks_like_tiff_path:
+                kwargs[param_name] = self._prepare_wbt_input_raster(param_value, feedback=feedback)
         
         # Helper function to determine if a message should be displayed
         def should_show_message(msg):
@@ -492,6 +507,58 @@ class TopoDrainCore:
                 if feedback:
                     feedback.reportError(f"WhiteboxTools error: {e}")
                 raise RuntimeError(f"WhiteboxTools error: {e}")
+
+    def _prepare_wbt_input_raster(self, raster_path: str, feedback=None) -> str:
+        """
+        Create a Whitebox-safe temporary GeoTIFF for TIFF inputs.
+
+        WhiteboxTools may fail on TIFF files that rely on sidecar CRS metadata,
+        so this function normalizes TIFF inputs into a new GeoTIFF with embedded
+        metadata before processing.
+        """
+        if not raster_path:
+            return raster_path
+
+        ext = os.path.splitext(raster_path)[1].lower()
+        if ext not in ('.tif', '.tiff'):
+            return raster_path
+
+        # Avoid re-normalizing already prepared temporary files.
+        if os.path.basename(raster_path).startswith('wbt_input_'):
+            return raster_path
+
+        temp_dir = self.temp_directory or tempfile.gettempdir()
+        os.makedirs(temp_dir, exist_ok=True)
+        safe_raster_path = os.path.join(temp_dir, f"wbt_input_{uuid.uuid4().hex}.tif")
+
+        if feedback:
+            feedback.pushInfo(f"[WBTInput] Normalizing TIFF input for WhiteboxTools: {raster_path}")
+
+        try:
+            translate_kwargs = {
+                'format': 'GTiff',
+                'creationOptions': ['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=IF_SAFER']
+            }
+
+            # If CRS is available in core context, embed it explicitly.
+            if self.crs:
+                translate_kwargs['outputSRS'] = str(self.crs)
+
+            translate_options = gdal.TranslateOptions(**translate_kwargs)
+            translated_ds = gdal.Translate(safe_raster_path, raster_path, options=translate_options)
+            if translated_ds is None:
+                raise RuntimeError("GDAL Translate returned no dataset")
+            translated_ds = None
+
+            if not os.path.exists(safe_raster_path):
+                raise RuntimeError(f"Temporary raster not created at {safe_raster_path}")
+
+            if feedback:
+                feedback.pushInfo(f"[WBTInput] Using normalized raster: {safe_raster_path}")
+
+            return safe_raster_path
+        except Exception as e:
+            raise RuntimeError(f"Failed to normalize TIFF input for WhiteboxTools: {e}")
 
     ## Vector geometry functions
     @staticmethod
@@ -1442,11 +1509,8 @@ class TopoDrainCore:
                 raise RuntimeError('Process cancelled by user.')
             raise RuntimeError(f"Raster to vector lines failed: {e}")
 
-        # Load vector file - use OGR on Windows to avoid PyProj crashes
-        if self.disable_crs_operations and load_gdf_from_file_ogr:
-            gdf = load_gdf_from_file_ogr(output_vector_path, feedback)
-        else:
-            gdf = gpd.read_file(output_vector_path)
+        # Load vector file - automatically handles PyProj CRS issues with fallback
+        gdf = load_gdf_from_file(output_vector_path, feedback)
         
         if gdf.empty:
             warnings.warn(f"Warning: No vector features found in {output_vector_path}.")
@@ -1705,6 +1769,21 @@ class TopoDrainCore:
         streams_linked_output_path = defaults["streams_linked"]
         stream_network_output_path = defaults["network"]
 
+        # Ensure parent directories exist for all declared outputs.
+        for path in [
+            filled_output_path,
+            fdir_output_path,
+            facc_output_path,
+            facc_log_output_path,
+            streams_output_path,
+            streams_vec_output_path,
+            streams_linked_output_path,
+            stream_network_output_path,
+        ]:
+            out_dir = os.path.dirname(path)
+            if out_dir:
+                os.makedirs(out_dir, exist_ok=True)
+
         try:
             if feedback:
                 feedback.pushInfo(f"[ExtractValleys] Step 1/7: Filling depressions → {filled_output_path}")
@@ -1921,11 +2000,8 @@ class TopoDrainCore:
             if not os.path.exists(stream_network_output_path):
                 raise RuntimeError(f"[ExtractValleys] Network output file not found: {stream_network_output_path}")
             
-            # Load vector file - use OGR on Windows to avoid PyProj crashes
-            if self.disable_crs_operations and load_gdf_from_file_ogr:
-                gdf = load_gdf_from_file_ogr(stream_network_output_path, feedback)
-            else:
-                gdf = gpd.read_file(stream_network_output_path)
+            # Load vector file - automatically handles PyProj CRS issues with fallback
+            gdf = load_gdf_from_file(stream_network_output_path, feedback)
             
             if gdf.empty:
                 raise RuntimeError(f"[ExtractValleys] Network output file is empty: {stream_network_output_path}")
@@ -2125,11 +2201,8 @@ class TopoDrainCore:
             if not os.path.exists(watershed_vector_path):
                 raise RuntimeError(f"[WatershedDelineation] Watershed vector output file not found: {watershed_vector_path}")
             
-            # Load vector file - use OGR on Windows to avoid PyProj crashes
-            if self.disable_crs_operations and load_gdf_from_file_ogr:
-                gdf = load_gdf_from_file_ogr(watershed_vector_path, feedback)
-            else:
-                gdf = gpd.read_file(watershed_vector_path)
+            # Load vector file - automatically handles PyProj CRS issues with fallback
+            gdf = load_gdf_from_file(watershed_vector_path, feedback)
             
             if gdf.empty:
                 raise RuntimeError(f"[WatershedDelineation] Watershed vector output file is empty: {watershed_vector_path}")
