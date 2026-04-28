@@ -244,13 +244,21 @@ class CreateValleysAlgorithm(QgsProcessingAlgorithm):
         feedback.pushInfo("Reading CRS from DTM...")
         dtm_crs = get_crs_from_layer(dtm_layer)
         feedback.pushInfo(f"DTM Layer crs: {dtm_crs}")
+
+        effective_crs = dtm_crs or project_crs or self.core.crs
+        if effective_crs is None:
+            raise QgsProcessingException(
+                "Input DTM has no readable CRS metadata and no project/core CRS is available. "
+                "Please assign a CRS to the raster (e.g. EPSG:2056) and try again."
+            )
+
         # Adjust core crs with input crs but only if it is None
         if self.core.crs is None:
-            feedback.pushInfo(f"Setting core CRS from DTM CRS: {dtm_crs}")
-            self.core.set_crs(dtm_crs)
-        elif dtm_crs != self.core.crs:
+            feedback.pushInfo(f"Setting core CRS from DTM/project CRS: {effective_crs}")
+            self.core.set_crs(effective_crs)
+        elif effective_crs != self.core.crs:
             # Add warning if input crs not equal to core crs
-            feedback.pushWarning(f"DTM CRS {dtm_crs} differs from core (project) CRS {self.core.crs}!")
+            feedback.pushWarning(f"DTM/project CRS {effective_crs} differs from core CRS {self.core.crs}!")
 
         feedback.pushInfo("Running extract valleys...")
         valleys_gdf = self.core.extract_valleys(

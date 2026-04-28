@@ -622,33 +622,49 @@ def load_gdf_from_file(file_path, feedback=None):
     """
 
     try:
-        # Handle GeoPackage layer paths for GeoPandas
-        if '|' in file_path and 'layername=' in file_path:
-            # Parse GeoPackage path: "/path/file.gpkg|layername=layer_name"
-            gpkg_file = file_path.split('|')[0]
-            layer_part = file_path.split('|')[1]
-            layer_name = layer_part.split('=')[1] if '=' in layer_part else layer_part
+        # Try GeoPandas read_file first (faster if PyProj works)
+        try:
+            # Handle GeoPackage layer paths for GeoPandas
+            if '|' in file_path and 'layername=' in file_path:
+                # Parse GeoPackage path: "/path/file.gpkg|layername=layer_name"
+                gpkg_file = file_path.split('|')[0]
+                layer_part = file_path.split('|')[1]
+                layer_name = layer_part.split('=')[1] if '=' in layer_part else layer_part
+                
+                if feedback:
+                    feedback.pushInfo(f"Loading GeoPackage layer: {gpkg_file}, layer: {layer_name}")
+                
+                gdf = gpd.read_file(gpkg_file, layer=layer_name)
+            else:
+                # Regular file path
+                if feedback:
+                    feedback.pushInfo(f"Loading vector file: {file_path}")
+                
+                gdf = gpd.read_file(file_path)
+            
+            # Automatically clean QVariant data types
+            if feedback:
+                feedback.pushInfo("Cleaning data types...")
+            gdf = clean_qvariant_data(gdf)
             
             if feedback:
-                feedback.pushInfo(f"Loading GeoPackage layer: {gpkg_file}, layer: {layer_name}")
+                feedback.pushInfo(f"Successfully loaded and cleaned {len(gdf)} features")
             
-            gdf = gpd.read_file(gpkg_file, layer=layer_name)
-        else:
-            # Regular file path
-            if feedback:
-                feedback.pushInfo(f"Loading vector file: {file_path}")
+            return gdf
             
-            gdf = gpd.read_file(file_path)
-        
-        # Automatically clean QVariant data types
-        if feedback:
-            feedback.pushInfo("Cleaning data types...")
-        gdf = clean_qvariant_data(gdf)
-        
-        if feedback:
-            feedback.pushInfo(f"Successfully loaded and cleaned {len(gdf)} features")
-        
-        return gdf
+        except Exception as geopandas_error:
+            # Check if it's a PyProj CRS error
+            error_str = str(geopandas_error).lower()
+            if "expected bytes" in error_str or "crs" in error_str or "pyproj" in error_str:
+                if feedback:
+                    feedback.pushWarning(f"GeoPandas load failed (PyProj CRS issue): {geopandas_error}")
+                    feedback.pushInfo("Falling back to OGR-based loading (no CRS)...")
+                
+                # Fallback to OGR-based loading
+                return load_gdf_from_file_ogr(file_path, feedback)
+            else:
+                # Re-raise if it's not a CRS-related error
+                raise
     
     except Exception as e:
         error_msg = f"Failed to load vector file '{file_path}': {e}"
