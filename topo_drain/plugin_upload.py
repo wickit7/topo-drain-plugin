@@ -10,6 +10,12 @@ import getpass
 import xmlrpc.client
 from optparse import OptionParser
 
+try:
+    import defusedxml.xmlrpc
+    defusedxml.xmlrpc.monkey_patch()
+except ImportError:
+    pass  # defusedxml not available; xmlrpc.client used as-is
+
 standard_library.install_aliases()
 
 # Configuration
