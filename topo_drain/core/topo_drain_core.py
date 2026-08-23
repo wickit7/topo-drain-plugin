@@ -20,6 +20,11 @@ from shapely.ops import linemerge, nearest_points, substring
 from scipy.ndimage import gaussian_filter1d
 from osgeo import gdal, ogr
 
+try:
+    from .wbw_runtime_adapter import WhiteboxWorkflowsRuntimeAdapter
+except Exception:
+    WhiteboxWorkflowsRuntimeAdapter = None
+
 # Import loading functions from parent utils module
 try:
     from ..utils import load_gdf_from_file, load_gdf_from_file_ogr
@@ -30,7 +35,16 @@ except ImportError:
 
 # ---  Class TopoDrainCore ---
 class TopoDrainCore:
-    def __init__(self, whitebox_directory=None, nodata=None, crs=None, temp_directory=None, working_directory=None, disable_crs_operations=None):
+    def __init__(
+        self,
+        whitebox_directory=None,
+        nodata=None,
+        crs=None,
+        temp_directory=None,
+        working_directory=None,
+        disable_crs_operations=None,
+        use_workflow_if_available=True,
+    ):
         print("[TopoDrainCore] Initializing TopoDrainCore...")
         self._thisdir = os.path.dirname(__file__)
         print(f"[TopoDrainCore] Module directory: {self._thisdir}")
@@ -126,8 +140,52 @@ class TopoDrainCore:
         
         # Try to initialize WhiteboxTools, but don't fail if it's not available
         self.wbt = self._init_whitebox_tools(self.whitebox_directory)
+        self.wbw_runtime = None
+        self.use_workflow_if_available = bool(use_workflow_if_available)
+        self.wbt_executor = self._execute_wbt
+        self.wbt_executor_name = "_execute_wbt"
+        self._configure_wbt_executor()
         print(f"[TopoDrainCore] WhiteboxTools initialized: {self.wbt is not None}")
         print("[TopoDrainCore] Initialization complete.")
+
+    def _configure_wbt_executor(self):
+        """Select execution backend once during initialization."""
+        if not self.use_workflow_if_available:
+            self.wbt_executor = self._execute_wbt
+            self.wbt_executor_name = "_execute_wbt"
+            print("[TopoDrainCore] WBT executor selected: _execute_wbt (workflow disabled by config)")
+            return
+
+        try:
+            runtime = self.get_wbw_runtime(include_pro=False, tier="open")
+            if runtime.is_available():
+                self.wbt_executor = self._execute_wbt_workflow
+                self.wbt_executor_name = "_execute_wbt_workflow"
+                print("[TopoDrainCore] WBT executor selected: _execute_wbt_workflow")
+                return
+        except Exception:
+            pass
+
+        self.wbt_executor = self._execute_wbt
+        self.wbt_executor_name = "_execute_wbt"
+        print("[TopoDrainCore] WBT executor selected: _execute_wbt (workflow runtime unavailable)")
+
+    def get_wbw_runtime(self, include_pro: bool = False, tier: str = "open"):
+        """Return a cached whitebox_workflows runtime adapter instance.
+
+        This is intentionally additive and does not modify existing WhiteboxTools
+        execution paths.
+        """
+        if WhiteboxWorkflowsRuntimeAdapter is None:
+            raise RuntimeError("whitebox_workflows runtime adapter module is unavailable.")
+
+        if self.wbw_runtime is None:
+            self.wbw_runtime = WhiteboxWorkflowsRuntimeAdapter(
+                include_pro=include_pro,
+                tier=tier,
+            )
+
+        return self.wbw_runtime
 
     def _init_whitebox_tools(self, whitebox_directory):
         """
@@ -464,6 +522,7 @@ class TopoDrainCore:
                 if feedback:
                     feedback.reportError(f"WhiteboxTools error: {e}")
                 raise RuntimeError(f"WhiteboxTools error: {e}")
+
         else:
             # Fallback to run_tool method for tools without convenience methods
             # Build arguments list for the tool
@@ -507,6 +566,77 @@ class TopoDrainCore:
                 if feedback:
                     feedback.reportError(f"WhiteboxTools error: {e}")
                 raise RuntimeError(f"WhiteboxTools error: {e}")
+
+    def _execute_wbt_workflow(
+        self,
+        tool_name,
+        feedback=None,
+        report_progress=True,
+        **kwargs,
+    ) -> int:
+        """Execute a WBT-style tool with workflow-aware runtime fallback.
+
+        Signature intentionally mirrors _execute_wbt so callers can switch with
+        minimal changes. Runtime-first behavior is selected internally per tool.
+        """
+        runtime_error = None
+        runtime_first_tools = {
+            "breach_depressions_least_cost",
+        }
+        try_runtime_first = str(tool_name) in runtime_first_tools
+
+        expected_output_path = None
+        if isinstance(kwargs.get("output"), str) and kwargs.get("output"):
+            expected_output_path = kwargs.get("output")
+        elif isinstance(kwargs.get("out_file"), str) and kwargs.get("out_file"):
+            expected_output_path = kwargs.get("out_file")
+
+        if try_runtime_first:
+            try:
+                runtime = self.get_wbw_runtime(include_pro=False, tier="open")
+                if runtime.is_available():
+                    if feedback:
+                        feedback.pushInfo(
+                            f"[WBTWorkflow] Using whitebox_workflows runtime for {tool_name}"
+                        )
+
+                    runtime.run_tool_json_stream(
+                        str(tool_name),
+                        dict(kwargs),
+                        feedback=feedback,
+                    )
+
+                    if expected_output_path:
+                        if os.path.exists(str(expected_output_path)):
+                            return 0
+                        raise RuntimeError(
+                            f"Runtime finished without creating output: {expected_output_path}"
+                        )
+
+                    return 0
+            except Exception as exc:
+                runtime_error = exc
+                if feedback:
+                    feedback.pushWarning(
+                        f"[WBTWorkflow] Runtime path unavailable for {tool_name}, falling back to WhiteboxTools ({exc})"
+                    )
+
+        ret = self._execute_wbt(
+            tool_name,
+            feedback=feedback,
+            report_progress=report_progress,
+            **kwargs,
+        )
+
+        if ret == 0:
+            return ret
+
+        if runtime_error is not None:
+            raise RuntimeError(
+                f"Both runtime and WhiteboxTools paths failed for {tool_name}. Runtime error: {runtime_error}; WhiteboxTools return code: {ret}"
+            )
+
+        return ret
 
     def _prepare_wbt_input_raster(self, raster_path: str, feedback=None) -> str:
         """
@@ -1232,11 +1362,11 @@ class TopoDrainCore:
         Returns:
             str: Path to inverted DTM raster.
         """
-        if self.wbt is None:
-            raise RuntimeError("WhiteboxTools not initialized. Check WhiteboxTools configuration: QGIS settings -> Options -> Processing -> Provider -> WhiteboxTools -> WhiteboxTools executable.")
+        if self.wbt_executor is None:
+            raise RuntimeError("WhiteboxTools runtime not initialized. Check WhiteboxTools configuration: QGIS settings -> Options -> Processing -> Provider -> WhiteboxTools -> WhiteboxTools executable.")
 
         try:
-            ret = self._execute_wbt(
+            ret = self.wbt_executor(
                 'multiply',
                 feedback=feedback,
                 report_progress=False,  # Don't override main progress bar
@@ -1484,15 +1614,15 @@ class TopoDrainCore:
         Returns:
             LineString or MultiLineString, or None if empty.
         """
-        if self.wbt is None:
-            raise RuntimeError("WhiteboxTools not initialized. Check WhiteboxTools configuration: QGIS settings -> Options -> Processing -> Provider -> WhiteboxTools -> WhiteboxTools executable.")
+        if self.wbt_executor is None:
+            raise RuntimeError("WhiteboxTools runtime not initialized. Check WhiteboxTools configuration: QGIS settings -> Options -> Processing -> Provider -> WhiteboxTools -> WhiteboxTools executable.")
 
         if not output_vector_path:
             base, _ = os.path.splitext(raster_path)
             output_vector_path = base + ".shp"
             
         try:
-            ret = self._execute_wbt(
+            ret = self.wbt_executor(
                 'raster_to_vector_lines',
                 feedback=feedback,
                 report_progress=False,  # Don't override main progress bar
@@ -1721,8 +1851,8 @@ class TopoDrainCore:
             GeoDataFrame:
                 Extracted stream (valley) network with attributes.
         """
-        if self.wbt is None:
-            raise RuntimeError("WhiteboxTools not initialized. Check WhiteboxTools configuration: QGIS settings -> Options -> Processing -> Provider -> WhiteboxTools -> WhiteboxTools executable.")
+        if self.wbt_executor is None:
+            raise RuntimeError("WhiteboxTools runtime not initialized. Check WhiteboxTools configuration: QGIS settings -> Options -> Processing -> Provider -> WhiteboxTools -> WhiteboxTools executable.")
 
         if feedback:
             feedback.pushInfo("[ExtractValleys] Starting valley extraction process...")
@@ -1795,15 +1925,15 @@ class TopoDrainCore:
             else:
                 print(f"[ExtractValleys] Step 1/7: Filling depressions → {filled_output_path}")
             try:
-                ret = self._execute_wbt(
+                ret = self.wbt_executor(
                     'breach_depressions_least_cost',
-                    feedback=feedback,  # Pass feedback to enable cancellation during execution
-                    report_progress=False,  # Don't override main progress bar
+                    feedback=feedback,
+                    report_progress=False,
                     dem=dtm_path,
                     output=filled_output_path,
                     dist=int(dist_facc),
                     fill=True,
-                    min_dist=True
+                    min_dist=True,
                 )
                 if ret != 0 or not os.path.exists(filled_output_path):
                     raise RuntimeError(f"[ExtractValleys] Depression filling failed: WhiteboxTools returned {ret}, output not found at {filled_output_path}")
@@ -1820,7 +1950,7 @@ class TopoDrainCore:
             else:
                 print(f"[ExtractValleys] Step 2/7: Computing flow direction → {fdir_output_path}")
             try:
-                ret = self._execute_wbt(
+                ret = self.wbt_executor(
                     'd8_pointer',
                     feedback=feedback,  # Pass feedback to enable cancellation during execution
                     report_progress=False,  # Don't override main progress bar
@@ -1842,7 +1972,7 @@ class TopoDrainCore:
             else:
                 print(f"[ExtractValleys] Step 3/7: Computing flow accumulation → {facc_output_path}")
             try:
-                ret = self._execute_wbt(
+                ret = self.wbt_executor(
                     'd8_flow_accumulation',
                     feedback=feedback,  # Pass feedback to enable cancellation during execution
                     report_progress=False,  # Don't override main progress bar
@@ -1881,7 +2011,7 @@ class TopoDrainCore:
             else:
                 print(f"[ExtractValleys] Step 5/7: Extracting streams (threshold={accumulation_threshold})")
             try:
-                ret = self._execute_wbt(
+                ret = self.wbt_executor(
                     'extract_streams',
                     feedback=feedback,  # Pass feedback to enable cancellation during execution
                     report_progress=False,  # Don't override main progress bar
@@ -1904,7 +2034,7 @@ class TopoDrainCore:
             else:
                 print("[ExtractValleys] Step 6/7: Vectorizing streams")
             try:
-                ret = self._execute_wbt(
+                ret = self.wbt_executor(
                     'raster_streams_to_vector',
                     feedback=feedback,  # Pass feedback to enable cancellation during execution
                     report_progress=False,  # Don't override main progress bar
@@ -1928,7 +2058,7 @@ class TopoDrainCore:
                     feedback.setProgress(85)
                 else:
                     print("[ExtractValleys] Step 7/7: Processing network topology - Identifying stream links")
-                ret = self._execute_wbt(
+                ret = self.wbt_executor(
                     'stream_link_identifier',
                     feedback=feedback,  # Pass feedback to enable cancellation during execution
                     report_progress=False,  # Don't override main progress bar
@@ -1951,7 +2081,7 @@ class TopoDrainCore:
                     feedback.setProgress(90)
                 else:
                     print("[ExtractValleys] Converting linked streams to vectors")
-                ret = self._execute_wbt(
+                ret = self.wbt_executor(
                     'raster_streams_to_vector',
                     feedback=feedback,  # Pass feedback to enable cancellation during execution
                     report_progress=False,  # Don't override main progress bar
@@ -1974,7 +2104,7 @@ class TopoDrainCore:
                     feedback.setProgress(95)
                 else:
                     print("[ExtractValleys] Performing final network analysis")
-                ret = self._execute_wbt(
+                ret = self.wbt_executor(
                     'VectorStreamNetworkAnalysis',
                     feedback=feedback,  # Pass feedback to enable cancellation during execution
                     report_progress=False,  # Don't override main progress bar
@@ -2056,8 +2186,8 @@ class TopoDrainCore:
         Returns:
             GeoDataFrame: Delineated watershed basins as polygons with attributes.
         """
-        if self.wbt is None:
-            raise RuntimeError("WhiteboxTools not initialized. Check WhiteboxTools configuration: QGIS settings -> Options -> Processing -> Provider -> WhiteboxTools -> WhiteboxTools executable.")
+        if self.wbt_executor is None:
+            raise RuntimeError("WhiteboxTools runtime not initialized. Check WhiteboxTools configuration: QGIS settings -> Options -> Processing -> Provider -> WhiteboxTools -> WhiteboxTools executable.")
 
         if feedback:
             feedback.pushInfo("[WatershedDelineation] Starting watershed delineation process...")
@@ -2102,7 +2232,7 @@ class TopoDrainCore:
                     print(f"[WatershedDelineation] Step 2/4: Snapping pour points to streams (max distance: {max_snap_distance})...")
                 
                 try:
-                    ret = self._execute_wbt(
+                    ret = self.wbt_executor(
                         'jenson_snap_pour_points',
                         feedback=feedback,
                         report_progress=False,  # Don't override main progress bar
@@ -2141,7 +2271,7 @@ class TopoDrainCore:
                 print("[WatershedDelineation] Step 3/4: Delineating watersheds...")
             
             try:
-                ret = self._execute_wbt(
+                ret = self.wbt_executor(
                     'watershed',
                     feedback=feedback,
                     report_progress=False,  # Don't override main progress bar
@@ -2172,7 +2302,7 @@ class TopoDrainCore:
                 print("[WatershedDelineation] Step 4/4: Converting watershed raster to vector polygons...")
             
             try:
-                ret = self._execute_wbt(
+                ret = self.wbt_executor(
                     'raster_to_vector_polygons',
                     feedback=feedback,
                     report_progress=False,  # Don't override main progress bar
@@ -2284,8 +2414,8 @@ class TopoDrainCore:
             GeoDataFrame:
                 Extracted ridge (divide) network as vector geometries.
         """
-        if self.wbt is None:
-            raise RuntimeError("WhiteboxTools not initialized. Check WhiteboxTools configuration: QGIS settings -> Options -> Processing -> Provider -> WhiteboxTools -> WhiteboxTools executable.")
+        if self.wbt_executor is None:
+            raise RuntimeError("WhiteboxTools runtime not initialized. Check WhiteboxTools configuration: QGIS settings -> Options -> Processing -> Provider -> WhiteboxTools -> WhiteboxTools executable.")
 
         if feedback:
             feedback.pushInfo("[ExtractRidges] Starting ridge extraction process...")
@@ -4152,8 +4282,8 @@ class TopoDrainCore:
         Returns:
             LineString: Refined constant slope path as a Shapely LineString, or None if no path found.
         """
-        if self.wbt is None:
-            raise RuntimeError("WhiteboxTools not initialized. Check WhiteboxTools configuration: QGIS settings -> Options -> Processing -> Provider -> WhiteboxTools -> WhiteboxTools executable.")
+        if self.wbt_executor is None:
+            raise RuntimeError("WhiteboxTools runtime not initialized. Check WhiteboxTools configuration: QGIS settings -> Options -> Processing -> Provider -> WhiteboxTools -> WhiteboxTools executable.")
 
         print(f"[GetConstantSlopeLine] Starting constant slope line tracing")
         if feedback:
@@ -4211,7 +4341,7 @@ class TopoDrainCore:
             print(f"[GetConstantSlopeLine] Starting cost-distance analysis for iteration {iteration + 1}")
             # --- Run cost-distance analysis ---
             try:
-                ret = self._execute_wbt(
+                ret = self.wbt_executor(
                     'cost_distance',
                     feedback=feedback,
                     report_progress=False,  # Don't override main progress bar
@@ -4251,7 +4381,7 @@ class TopoDrainCore:
             print(f"[GetConstantSlopeLine] Tracing least-cost pathway for iteration {iteration + 1}")
             # --- Trace least-cost pathway ---
             try:
-                ret = self._execute_wbt(
+                ret = self.wbt_executor(
                     'cost_pathway',
                     feedback=feedback,
                     report_progress=False,  # Don't override main progress bar
@@ -4473,8 +4603,8 @@ class TopoDrainCore:
         Returns:
             LineString: Least-cost slope path as a Shapely LineString, or None if no path found.
         """
-        if self.wbt is None:
-            raise RuntimeError("WhiteboxTools not initialized. Check WhiteboxTools configuration: QGIS settings -> Options -> Processing -> Provider -> WhiteboxTools -> WhiteboxTools executable.")
+        if self.wbt_executor is None:
+            raise RuntimeError("WhiteboxTools runtime not initialized. Check WhiteboxTools configuration: QGIS settings -> Options -> Processing -> Provider -> WhiteboxTools -> WhiteboxTools executable.")
         
         current_iteration = 0
         current_start_point = start_point
