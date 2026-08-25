@@ -14,12 +14,12 @@ about=It automates the extraction of main valleys and ridges, creates off-contou
     
     DOCUMENTATION: Detailed INSTALLATION MANUAL and TUTORIAL GUIDES are available on the project homepage: https://github.com/wickit7/topo-drain-plugin
     
-    Core algorithms leverage WhiteboxTools (Lindsay, 2017–2020; see https://github.com/jblindsay/whitebox-tools).
-    So make shure you have installed and configured the plugin "WhiteboxTools for QGIS"!
-    - Installation video: https://www.youtube.com/watch?v=xJXDBsNbcTg
+    Core algorithms leverage whitebox_workflows as the runtime backend.
+    You need to install the Python package "whitebox_workflows" in the QGIS Python environment.
+    No separate WhiteboxTools executable or WhiteboxTools QGIS plugin is required.
     
-    This plugin requires several Python packages (numpy, shapely, pandas, geopandas, scipy).
-    These packages are widely used in geospatial data processing, but may not all are included in default QGIS installations (pandas, geopandas, and scipy). If a package is missing, follow the installation instructions below:
+    This plugin requires several Python packages (numpy, shapely, pandas, geopandas, scipy, whitebox_workflows).
+    These packages are widely used in geospatial data processing, but may not all are included in default QGIS installations. If a package is missing, follow the installation instructions below:
     - Windows, QGIS installed with OSGeo4W: https://landscapearchaeology.org/2018/installing-python-packages-in-qgis-3-for-windows/
     - macOS (terminal): https://gis.stackexchange.com/questions/351280/installing-python-modules-for-qgis-3-on-mac
     See on github site for more informations! -> https://github.com/wickit7/topo-drain-plugin
@@ -64,7 +64,7 @@ changelog=1.0.2 - WhiteboxTools TIFF input safeguard
 
 
 # Tags are comma separated with spaces allowed
-tags=keyline-design, permaculture, sponge-scape, schwammland, surface analysis, watershed-analysis, topo-drain, water-management, whiteboxtools
+tags=keyline-design, permaculture, sponge-scape, schwammland, surface analysis, watershed-analysis, topo-drain, water-management, whitebox_workflows
 
 homepage=https://github.com/wickit7/topo-drain-plugin
 category=Analysis
@@ -79,7 +79,7 @@ deprecated=False
 # (or upgraded) can be specified.
 # Check the documentation for more information.
 # The plugin name should match the exact folder name in QGIS plugins directory
-#plugin_dependencies=plugin:wbt_for_qgis;python:numpy;python:pandas;python:geopandas;python:shapely;python:scipy
+#plugin_dependencies=python:numpy;python:pandas;python:geopandas;python:shapely;python:scipy;python:whitebox_workflows
 
 # If the plugin can run on QGIS Server.
 server=False

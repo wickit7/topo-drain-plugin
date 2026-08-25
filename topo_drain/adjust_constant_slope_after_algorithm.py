@@ -14,6 +14,7 @@ from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterRasterLayer
                        QgsProcessingParameterBoolean, QgsProcessing, QgsProcessingException, 
                        QgsProcessingParameterFeatureSource)
 import os
+import gc
 import geopandas as gpd
 from .utils import get_crs_from_layer, get_crs_from_project, ensure_whiteboxtools_configured, save_gdf_to_file, save_gdf_to_file_ogr, load_gdf_from_file, load_gdf_from_file_ogr, load_gdf_from_qgis_source, get_raster_ext, get_vector_ext, clear_pyproj_cache
 
@@ -405,21 +406,46 @@ Parameters:
         else:
             feedback.pushInfo("No perimeter layer provided (optional)")
 
-        feedback.pushInfo("Running constant slope line adjustment...")
-        adjusted_lines_gdf = self.core.adjust_constant_slope_after(
-            dtm_path=dtm_path,
-            input_lines=input_lines_gdf,
-            change_after=change_after,
-            slope_after=slope_after,
-            destination_features=destination_gdfs,
-            perimeter=perimeter_gdf,
-            barrier_features=barrier_gdfs if barrier_gdfs else None,
-            allow_barriers_as_temp_destination=allow_barriers_as_temp_destination,
-            max_iterations_barrier=max_iterations_barrier,
-            slope_deviation_threshold=slope_deviation_threshold,
-            max_iterations_slope=max_iterations_slope,
-            feedback=feedback
+        feedback.pushInfo("Creating isolated TopoDrainCore instance for this run...")
+        run_core = self.core.__class__(
+            whitebox_directory=self.core.whitebox_directory,
+            nodata=self.core.nodata,
+            crs=self.core.crs,
+            temp_directory=self.core.temp_directory,
+            working_directory=self.core.working_directory,
+            disable_crs_operations=self.core.disable_crs_operations,
         )
+        run_core.gdal_driver_mapping = dict(self.core.gdal_driver_mapping)
+        run_core.ogr_driver_mapping = dict(self.core.ogr_driver_mapping)
+
+        feedback.pushInfo("Running constant slope line adjustment...")
+        try:
+            adjusted_lines_gdf = run_core.adjust_constant_slope_after(
+                dtm_path=dtm_path,
+                input_lines=input_lines_gdf,
+                change_after=change_after,
+                slope_after=slope_after,
+                destination_features=destination_gdfs,
+                perimeter=perimeter_gdf,
+                barrier_features=barrier_gdfs if barrier_gdfs else None,
+                allow_barriers_as_temp_destination=allow_barriers_as_temp_destination,
+                max_iterations_barrier=max_iterations_barrier,
+                slope_deviation_threshold=slope_deviation_threshold,
+                max_iterations_slope=max_iterations_slope,
+                feedback=feedback
+            )
+        finally:
+            try:
+                runtime = getattr(run_core, 'wbw_runtime', None)
+                if runtime is not None:
+                    try:
+                        runtime.reset_session()
+                    except Exception:
+                        pass
+                run_core.wbw_runtime = None
+            except Exception:
+                pass
+            gc.collect()
 
         if adjusted_lines_gdf.empty:
             raise QgsProcessingException("No adjusted lines were created")
@@ -433,12 +459,12 @@ Parameters:
 
         # Save result - use OGR on Windows to avoid PyProj crashes
         # all_upper=True to rename columns to uppercase
-        if self.core.disable_crs_operations:
+        if run_core.disable_crs_operations:
             feedback.pushInfo("Saving adjusted lines WITHOUT setting CRS to avoid WINDOWS PyProj issues...")   
-            save_gdf_to_file_ogr(adjusted_lines_gdf, adjusted_lines_path, self.core, feedback, all_upper=True)
+            save_gdf_to_file_ogr(adjusted_lines_gdf, adjusted_lines_path, run_core, feedback, all_upper=True)
         else:
             feedback.pushInfo("Saving adjusted lines WITH setting CRS pyproj (geopandas)...")
-            save_gdf_to_file(adjusted_lines_gdf, adjusted_lines_path, self.core, feedback, all_upper=True)
+            save_gdf_to_file(adjusted_lines_gdf, adjusted_lines_path, run_core, feedback, all_upper=True)
 
         results = {}
         # Add output parameters to results

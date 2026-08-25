@@ -1,5 +1,5 @@
 # TopoDrain-plugin
-A QGIS plugin for planning surface drainage water management. It automates the extraction of main valleys and ridges, and supports water retention planning methods, such as Keyline Design (keypoints, keylines). The algorithms are mainly based on WhiteboxTools (Lindsay, 2017–2020)
+A QGIS plugin for planning surface drainage water management. It automates the extraction of main valleys and ridges, and supports water retention planning methods, such as Keyline Design (keypoints, keylines). The algorithms are mainly based on whitebox_workflows as the runtime backend.
 
 ⚠️  DISCLAIMER: Managing surface runoff is a complex process influenced by topography, soil properties, farmland management practices, and other factors. This tool supports experienced users in planning and analysis and should be applied iteratively alongside expert judgment and complementary planning tools.
 
@@ -11,10 +11,7 @@ A QGIS plugin for planning surface drainage water management. It automates the e
   - [Python Dependencies](#python-dependencies)
     - [Windows (OSGeo4W installation)](#windows-osgeo4w-installation)
     - [macOS Installation](#macos-installation-1)
-  - [Installing and Configuring WhiteboxTools for QGIS](#installing-and-configuring-whiteboxtools-for-qgis)
-    - [Step 1: Download WhiteboxTools](#step-1-download-whiteboxtools)
-    - [Step 2: Install the WhiteboxTools QGIS Plugin](#step-2-install-the-whiteboxtools-qgis-plugin)
-    - [Step 3: Configure the WhiteboxTools Provider](#step-3-configure-the-whiteboxtools-provider)
+   - [Installing whitebox_workflows](#installing-whitebox_workflows)
     - [Verify Installation](#verify-installation)
   - [Installing the TopoDrain Plugin](#installing-the-topodrain-plugin)
 - [Recommended QGIS Plugins](#recommended-qgis-plugins)
@@ -38,12 +35,12 @@ The best way to install QGIS on Windows is using the **OSGeo4W Network Installer
 
 #### macOS Installation
 For macOS, install QGIS using the **DMG installer**:
-1. Download the DMG file "Long Term Version for maxOS" from [qgis.org](https://qgis.org/download/)
+1. Download the DMG file "Long Term Version for macOS" from [qgis.org](https://qgis.org/download/)
 2. Open the DMG file and drag QGIS to your Applications folder
 3. Launch QGIS from your Applications
 
 ### Python Dependencies
-The TopoDrain plugin requires several Python packages: `numpy`, `pandas`, `geopandas`, `shapely`, `scipy`. While these packages are widely used in geospatial data processing, not all of them are included in the default QGIS installation (particularly `pandas`, `geopandas`, and `scipy` could be missing). 
+The TopoDrain plugin requires several Python packages: `numpy`, `pandas`, `geopandas`, `shapely`, `scipy`, `whitebox_workflows`. While these packages are widely used in geospatial data processing, not all of them are included in the default QGIS installation (particularly `pandas`, `geopandas`, `scipy`, and `whitebox_workflows` could be missing). 
 
 **If a package is missing in your QGIS installation:**
 
@@ -128,48 +125,26 @@ Newer QGIS versions seem to embed Python directly inside the application without
    import scipy
    ```
 
-### Installing and Configuring WhiteboxTools for QGIS
+### Installing whitebox_workflows
 
-The TopoDrain plugin depends on **WhiteboxTools for QGIS**. You need to install both the WhiteboxTools executable and the QGIS plugin, then configure the connection.
+TopoDrain now uses **whitebox_workflows** as its runtime backend. This removes the need to install and configure the separate WhiteboxTools executable or the WhiteboxTools QGIS plugin.
 
-📺 **Watch the installation video:** https://www.youtube.com/watch?v=xJXDBsNbcTg
+Install `whitebox_workflows` into the same Python environment that QGIS uses:
 
-#### Step 1: Download WhiteboxTools
-1. Download the WhiteboxTools executable from the official repository https://www.whiteboxgeo.com/download-direct/
-2. Extract the files to an appropriate location on your machine - for example:
-   - **Windows:** `C:\WBTools\`
-   - **macOS:** `/Library/WhiteboxTools_darwin_m_series/WBT/`
-3. Verify the executable can be opened:
-   - **Windows:** Try opening `whitebox_tools.exe`
-   - **macOS:** Try opening `whitebox_tools` in the WBT folder
-   
-   **Important for macOS users:** macOS may block the program from opening because it's from an unidentified developer. If this happens:
-   - Go to **System Settings → Privacy & Security**
-   - Scroll down to the **Security** section
-   - You should see a message about `whitebox_tools` being blocked
-   - Click **"Open Anyway"** or **"Allow"** next to the message
-   - Try opening the executable again and confirm when prompted
+#### Windows (OSGeo4W installation)
+```bash
+python -m pip install whitebox_workflows
+```
 
-#### Step 2: Install the WhiteboxTools QGIS Plugin
-1. Open QGIS
-2. Go to **Plugins → Manage and Install Plugins**
-3. Search for "WhiteboxTools for QGIS"
-4. Click **Install Plugin**
+#### macOS
+If your QGIS build uses a bundled Python, install the package from the QGIS Python environment or QGIS Python Console:
 
-#### Step 3: Configure the WhiteboxTools Provider
-1. In QGIS, go to **Settings → Options → Processing → Providers**
-2. Expand the **WhiteboxTools** section
-3. Set the **WhiteboxTools executable** path:
-   - **Windows:** `C:\WBTools\whitebox_tools.exe`
-   - **macOS:** `/Library/WhiteboxTools_darwin_m_series/WBT/whitebox_tools` (without `.exe`)
+```python
+from pip._internal.cli.main import main
+main(["install", "whitebox_workflows"])
+```
 
-<img src="resources/WBT_configure_provider.png" alt="WhiteboxTools Provider Configuration" width="600">
-
-#### Verify Installation
-To verify that WhiteboxTools is properly configured:
-1. Open the **Processing Toolbox** (Processing → Toolbox)
-2. Look for the **WhiteboxTools** section
-3. Test for instance the processing tool **ContoursFromRaster** if it works
+After installation, restart QGIS and run a TopoDrain tool once to let the runtime initialize.
 
 ### Installing the TopoDrain Plugin
 
@@ -177,7 +152,7 @@ To verify that WhiteboxTools is properly configured:
 1. In QGIS, go to **Plugins → Manage and Install Plugins**
 2. In the **All** tab and search for **"TopoDrain"**
 3. Select the TopoDrain plugin and click **Install Plugin**
-   - Make sure to install the newest version (at least version ≥0.1.10)
+   - Make sure to install the newest available version from the repository
 
 After installation, you will see TopoDrain tools in the **Processing Toolbox** under the TopoDrain section.
 
