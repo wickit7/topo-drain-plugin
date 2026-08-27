@@ -933,8 +933,6 @@ def save_gdf_to_file(gdf, file_path, core, feedback, all_upper=False):
         else:
             error_msg = f"Failed to save GeoDataFrame output: {e}"
         raise QgsProcessingException(error_msg)
-    finally:
-        clear_pyproj_cache(feedback)
 
 
 def save_gdf_to_file_ogr(gdf, file_path, core, feedback, all_upper=False):
@@ -1106,8 +1104,6 @@ def save_gdf_to_file_ogr(gdf, file_path, core, feedback, all_upper=False):
         if feedback:
             feedback.pushWarning(error_msg)
         raise QgsProcessingException(error_msg)
-    finally:
-        clear_pyproj_cache(feedback)
 
 
 def get_raster_ext(raster_path, feedback=None, check_existence=True):

@@ -85,14 +85,9 @@ class TopoDrainPlugin(object):
         print("whitebox_workflows is used directly; no WhiteboxTools executable setup is required")
         
         project_crs = get_crs_from_project()
-        # Create the TopoDrainCore instance.
-        # Disable CRS operations on Windows to prevent PyProj crashes.
-        # On other platforms, CRS operations are safe
-        disable_crs = (sys.platform == 'win32')
-        if disable_crs:
-            print("[TopoDrain Plugin] Running on Windows - disabling CRS operations to prevent PyProj crashes")
-        else:
-            print(f"[TopoDrain Plugin] Running on {sys.platform} - CRS operations enabled")
+        # WBW corrupts PROJ's shared global state on all platforms; always use OGR-safe paths.
+        disable_crs = True
+        print(f"[TopoDrain Plugin] Running on {sys.platform} - CRS operations disabled (WBW/PROJ conflict)")
         
         self.core = TopoDrainCore(whitebox_directory=None, crs=project_crs, temp_directory=temp_dir, working_directory=working_dir, disable_crs_operations=disable_crs)
         
@@ -119,8 +114,9 @@ class TopoDrainPlugin(object):
 
         try:
             runtime = self.core.get_wbw_runtime(include_pro=False, tier="open")
-            # Only check importability — do NOT create a session here; the single
-            # persistent session on self.core is created lazily on first algorithm run.
+            # Reset session so next WBW call creates it fresh in the current worker thread.
+            # Reusing a session across QThreads causes PROJ thread-local crashes on Windows.
+            runtime.reset_session()
             return runtime.is_available()
         except Exception as exc:
             print(f"whitebox_workflows is not available: {exc}")

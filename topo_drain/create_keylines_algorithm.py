@@ -365,22 +365,26 @@ another valley line, alternating between the two."""
         perimeter_gdf = None
         if perimeter_layer:
             feedback.pushInfo("Converting perimeter to GeoDataFrame...")
-            try:
-                if self.core.disable_crs_operations:
-                    feedback.pushInfo("Loading perimeter WITHOUT CRS to avoid PyProj issues...")
-                    perimeter_gdf = load_gdf_from_file_ogr(perimeter_layer_path, feedback)
-                else:
-                    perimeter_gdf = load_gdf_from_file(perimeter_layer_path, feedback)
-                feedback.pushInfo(f"Successfully loaded {len(perimeter_gdf)} perimeter")
-            except Exception as e:
-                feedback.pushInfo(f"Failed to load perimeter: {e}")
-                raise QgsProcessingException(f"Failed to load perimeter: {e}")
-                
-            if not perimeter_gdf.empty:
-                feedback.pushInfo(f"Perimeter: {len(perimeter_gdf)} features")
+            perimeter_layer_path = perimeter_layer.source() if perimeter_layer else None
+            if not perimeter_layer_path:
+                feedback.pushInfo("Perimeter layer has no valid source path, skipping")
             else:
-                feedback.pushInfo("Warning: Empty perimeter layer provided")
-                perimeter_gdf = None
+                try:
+                    if self.core.disable_crs_operations:
+                        feedback.pushInfo("Loading perimeter WITHOUT CRS to avoid PyProj issues...")
+                        perimeter_gdf = load_gdf_from_file_ogr(perimeter_layer_path, feedback)
+                    else:
+                        perimeter_gdf = load_gdf_from_file(perimeter_layer_path, feedback)
+                    feedback.pushInfo(f"Successfully loaded {len(perimeter_gdf)} perimeter")
+                except Exception as e:
+                    feedback.pushInfo(f"Failed to load perimeter: {e}")
+                    raise QgsProcessingException(f"Failed to load perimeter: {e}")
+                    
+                if not perimeter_gdf.empty:
+                    feedback.pushInfo(f"Perimeter: {len(perimeter_gdf)} features")
+                else:
+                    feedback.pushInfo("Warning: Empty perimeter layer provided")
+                    perimeter_gdf = None
         else:
             feedback.pushInfo("No perimeter layer provided (optional)")
 

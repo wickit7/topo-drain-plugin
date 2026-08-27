@@ -6,7 +6,7 @@
 name=TopoDrain
 qgisMinimumVersion=3.0
 description=A QGIS plugin for planning surface drainage water management like Keyline-Design.
-version=1.0.2
+version=2.0.0
 author=Timo Wicki
 email=wickitimo@gmail.com
 about=It automates the extraction of main valleys and ridges, creates off-contour line and supports creating Keyline Designs and other water-retention planning measures. The tool can also be used for other tasks, such as planning the location and alignment of paths and roads.
@@ -34,33 +34,12 @@ repository=https://github.com/wickit7/topo-drain-plugin
 hasProcessingProvider=yes
 # Uncomment the following line and add your changelog:
 
-changelog=1.0.2 - WhiteboxTools TIFF input safeguard
-    * Auto-normalize TIFF inputs before all WhiteboxTools calls to handle missing embedded GeoTIFF geokeys
-    * Prevents "TIFF file does not contain geokeys" panic when CRS is only in sidecar files
-    1.0.1 - CRS handling improvements
-    * Centralized CRS type handling in TopoDrainCore.set_crs() to ensure string format
-    * Fixed CRS compatibility issues with different PyProj versions on macOS
-    * Improved CRS handling for GeoPandas to avoid type conversion errors
-    1.0.0 - Stable release
-    * Removed experimental flag - plugin is now stable and production-ready
-    * Enhanced Python dependency documentation with detailed installation instructions
-    0.1.10 - Imporved crs handling
-    * Improved CRS handling documentation for Windows compatibility
-    * Bug fix crs windows: Implemented alternative for saving and loading geodataframe to file with crs because of PyProj access violation issue on windwos 
-    0.1.9 - Windows compatibility release
-    * Fixed Windows compatibility issues: console window flashing when WhiteboxTools executes
-    * Enhanced GDAL virtual file system path detection (GPKG, HDF5, NETCDF)
-    * Improved sys.stdout/sys.stderr handling for Windows QGIS environment
-    0.1.8 - Documentation release
-    * Added comprehensive Keyline Design, Constant Slope lines and Watershed delineation manual with step-by-step tutorial
-    * Added installation guide in README with detailed setup instructions
-    * Improved plugin documentation and user guidance
-    * Fixed Constant Slope Lines and Adjust Constant Slope Lines algorithms (CRS attribute issue)
-    0.1.7 - Stable release (mac os) candidate - Ready for user testing
-    * Improved get keypoints algorithm performance and accuracy
-    * Enhanced keyline creation with valley-to-valley and ridge-to-ridge tracing support
-    * Code cleanup and refactoring for better maintainability
-    * Removed experimental warning message - plugin is now stable and ready for testing
+changelog=2.0.0 - whitebox_workflows migration and algorithm I/O redesign
+    * Migrated backend to whitebox_workflows (no standalone WhiteboxTools executable required)
+    * Create Valleys: added TRIB_RANK and TRIB_FACC attributes to valley lines output
+    * Create Ridges: added TRIB_RANK and TRIB_FACC attributes to ridge lines output
+    * Extract Main Valleys: updated to use TRIB_FACC attribute from new Create Valleys output for improved sorting
+    * Extract Main Ridges: updated to use TRIB_FACC attribute from new Create Ridges output for improved sorting
 
 
 # Tags are comma separated with spaces allowed

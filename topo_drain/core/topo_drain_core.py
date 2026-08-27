@@ -27,11 +27,12 @@ except Exception:
 
 # Import loading functions from parent utils module
 try:
-    from ..utils import load_gdf_from_file, load_gdf_from_file_ogr
+    from ..utils import load_gdf_from_file, load_gdf_from_file_ogr, save_gdf_to_file_ogr
 except ImportError:
     # Fallback if import fails (shouldn't happen in normal operation)
     load_gdf_from_file = None
     load_gdf_from_file_ogr = None
+    save_gdf_to_file_ogr = None
 
 # ---  Class TopoDrainCore ---
 class TopoDrainCore:
@@ -75,14 +76,8 @@ class TopoDrainCore:
             self.crs = crs
             print(f"[TopoDrainCore] CRS value set to: {self.crs}")
 
-        # Pre-create pyproj.CRS while PROJ is in valid state (before any WBW tool runs)
+        # _pyproj_crs is not used: disable_crs_operations=True always, so saves go via OGR (core.crs string)
         self._pyproj_crs = None
-        if self.crs is not None:
-            try:
-                from pyproj import CRS as _PyProjCRS
-                self._pyproj_crs = _PyProjCRS.from_user_input(self.crs)
-            except Exception:
-                pass
 
         # Configure CRS operations behavior
         # Default: CRS operations enabled (False)
@@ -396,13 +391,9 @@ class TopoDrainCore:
                 # Already a string
                 self.crs = crs
                 print(f"[TopoDrainCore] CRS set to: {self.crs}")
-            # Refresh cached pyproj.CRS; set_crs() is always called before WBW runs
-            self._pyproj_crs = None
-            try:
-                from pyproj import CRS as _PyProjCRS
-                self._pyproj_crs = _PyProjCRS.from_user_input(self.crs)
-            except Exception:
-                pass
+            # Do NOT recreate _pyproj_crs here — set_crs() runs in the worker thread on Windows
+            # where _PyProjCRS.from_user_input(string) crashes (PROJ thread-local context)
+            # _pyproj_crs retains whatever value was set on the main thread in __init__
         else:
             print(f"[TopoDrainCore] CRS unchanged (remains: {self.crs})")
 
@@ -1624,12 +1615,6 @@ class TopoDrainCore:
             warnings.warn(f"Warning: No vector features found in {output_vector_path}.")
             return None
 
-        if self._pyproj_crs is not None:
-            try:
-                gdf.crs = self._pyproj_crs
-            except Exception:
-                pass
-
         all_geometries = list(gdf.geometry) 
         # First linemerge on all geometries
         merged_geom = linemerge(all_geometries)
@@ -1896,9 +1881,13 @@ class TopoDrainCore:
             cell_pts_buf = cell_pts.copy()
             cell_pts_buf.geometry = cell_pts.geometry.buffer(res / 2.0)
 
+            # Both sides None: avoids any PyProj call in the worker thread (crashes on Windows)
+            gdf_for_join = gdf[["geometry", "LINK_ID"]].copy()
+            gdf_for_join.crs = None  # safe: None branch skips CRS.from_user_input
+
             joined = gpd.sjoin(
                 cell_pts_buf,
-                gdf[["geometry", "LINK_ID"]],
+                gdf_for_join,
                 how="inner",
             ).drop(columns="index_right")
             joined.geometry = cell_pts.geometry[joined.index]
@@ -2316,12 +2305,6 @@ class TopoDrainCore:
             gdf = load_gdf_from_file_ogr(streams_linked_output_path, feedback)
             if gdf.empty:
                 raise RuntimeError(f"[ExtractValleys] Linked streams file is empty: {streams_linked_output_path}")
-            if self._pyproj_crs is not None:
-                try:
-                    gdf.crs = self._pyproj_crs
-                except Exception:
-                    pass
-
             # Assign LINK_ID from FID
             if 'FID' in gdf.columns or 'fid' in gdf.columns:
                 fid_col = 'FID' if 'FID' in gdf.columns else 'fid'
@@ -2433,7 +2416,7 @@ class TopoDrainCore:
                         fdir_ds = None
 
                 if raster_crs_value:
-                    outlet_points_to_save = outlet_points_to_save.set_crs(raster_crs_value, allow_override=True)
+                    # CRS is written by OGR save below via core.crs string; no PyProj call needed here
                     if feedback:
                         feedback.pushInfo(
                             f"[WatershedDelineation] Outlet points had no CRS; assigned raster CRS: {raster_crs_value}"
@@ -2447,12 +2430,8 @@ class TopoDrainCore:
                         "[WatershedDelineation] Outlet points have no CRS and flow-direction raster CRS could not be determined."
                     )
 
-            # Prefer GeoPackage for robust CRS metadata persistence.
-            outlet_points_to_save.to_file(
-                pour_points_path,
-                driver='GPKG',
-                layer='pour_points',
-            )
+            # Use OGR to write pour points — gdf.to_file() calls pyproj which crashes after WBW corrupts PROJ
+            save_gdf_to_file_ogr(outlet_points_to_save, pour_points_path, self, feedback)
             
             # Determine which points to use for watershed delineation
             points_for_watershed = pour_points_path
@@ -2574,17 +2553,8 @@ class TopoDrainCore:
             if gdf.empty:
                 raise RuntimeError(f"[WatershedDelineation] Watershed vector output file is empty: {watershed_vector_path}")
 
-            if self._pyproj_crs is not None:
-                try:
-                    gdf.crs = self._pyproj_crs
-                except Exception:
-                    pass
-
             if feedback:
-                if gdf.crs is not None:
-                    feedback.pushInfo(f"[WatershedDelineation] Output CRS: {gdf.crs}")
-                else:
-                    feedback.pushInfo("[WatershedDelineation] Output has no CRS - will be set during save")
+                feedback.pushInfo("[WatershedDelineation] Output loaded (CRS set during save via core.crs)")
 
             # Always create a reliable BASIN_ID field as primary identifier
             # This addresses Windows case-sensitivity and temporary layer issues
@@ -2810,7 +2780,8 @@ class TopoDrainCore:
             else:
                 print(f"[ExtractMainValleys] Processing polygon {poly_idx + 1}/{len(perimeter)}...")
 
-            single_polygon = gpd.GeoDataFrame([poly_row])
+            # Match CRS to valley_lines so gpd.overlay doesn't compare None vs CRS (crashes on Windows)
+            single_polygon = gpd.GeoDataFrame([poly_row], geometry=perimeter.geometry.name, crs=valley_lines.crs)
             valley_clipped = gpd.overlay(valley_lines, single_polygon, how="intersection")
             if valley_clipped.empty:
                 if feedback:
@@ -2890,6 +2861,12 @@ class TopoDrainCore:
                     raise RuntimeError('Process cancelled by user.')
             else:
                 print("[ExtractMainValleys] Clipping final valley lines to perimeter...")
+            # Sync CRS so gpd.overlay doesn't compare None vs CRS (crashes on Windows)
+            if perimeter.crs is not None and gdf.crs is None:
+                try:
+                    gdf = gdf.set_crs(perimeter.crs)
+                except Exception:
+                    pass
             gdf = gpd.overlay(gdf, perimeter, how="intersection")
 
         # CRS will be set during save in utils.save_gdf_to_file()
