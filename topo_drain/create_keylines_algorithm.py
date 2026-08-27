@@ -390,47 +390,20 @@ another valley line, alternating between the two."""
         else:
             feedback.pushInfo("No slope adjustment will be applied")
 
-        # Execute keyline creation in an isolated core instance to reduce cross-run
-        # native/runtime state retention while keeping the plugin-level core untouched.
-        feedback.pushInfo("Creating isolated TopoDrainCore instance for this Create Keylines run...")
-        run_core = self.core.__class__(
-            whitebox_directory=self.core.whitebox_directory,
-            nodata=self.core.nodata,
-            crs=self.core.crs,
-            temp_directory=self.core.temp_directory,
-            working_directory=self.core.working_directory,
-            disable_crs_operations=self.core.disable_crs_operations,
-        )
-        run_core.gdal_driver_mapping = dict(self.core.gdal_driver_mapping)
-        run_core.ogr_driver_mapping = dict(self.core.ogr_driver_mapping)
-
         feedback.pushInfo("Running keylines creation...")
-        try:
-            keylines_gdf = run_core.create_keylines(
-                dtm_path=dtm_path,
-                start_points=start_points_gdf,
-                valley_lines=valley_lines_gdf,
-                ridge_lines=ridge_lines_gdf,
-                slope=slope,
-                perimeter=perimeter_gdf,
-                change_after=change_after,
-                slope_after=slope_after,
-                slope_deviation_threshold=slope_deviation_threshold,
-                max_iterations_slope=max_iterations_slope,
-                feedback=feedback
-            )
-        finally:
-            try:
-                runtime = getattr(run_core, 'wbw_runtime', None)
-                if runtime is not None:
-                    try:
-                        runtime.reset_session()
-                    except Exception:
-                        pass
-                run_core.wbw_runtime = None
-            except Exception:
-                pass
-            gc.collect()
+        keylines_gdf = self.core.create_keylines(
+            dtm_path=dtm_path,
+            start_points=start_points_gdf,
+            valley_lines=valley_lines_gdf,
+            ridge_lines=ridge_lines_gdf,
+            slope=slope,
+            perimeter=perimeter_gdf,
+            change_after=change_after,
+            slope_after=slope_after,
+            slope_deviation_threshold=slope_deviation_threshold,
+            max_iterations_slope=max_iterations_slope,
+            feedback=feedback
+        )
 
         if keylines_gdf.empty:
             raise QgsProcessingException("No keylines were created")
@@ -439,12 +412,12 @@ another valley line, alternating between the two."""
 
         # Save result - use OGR on Windows to avoid PyProj crashes
         # all_upper=True to rename columns to uppercase
-        if run_core.disable_crs_operations:
+        if self.core.disable_crs_operations:
             feedback.pushInfo("Saving keylines WITHOUT setting CRS to avoid WINDOWS PyProj issues...")   
-            save_gdf_to_file_ogr(keylines_gdf, keylines_path, run_core, feedback, all_upper=True)
+            save_gdf_to_file_ogr(keylines_gdf, keylines_path, self.core, feedback, all_upper=True)
         else:
             feedback.pushInfo("Saving keylines WITH setting CRS pyproj (geopandas)...")
-            save_gdf_to_file(keylines_gdf, keylines_path, run_core, feedback, all_upper=True)
+            save_gdf_to_file(keylines_gdf, keylines_path, self.core, feedback, all_upper=True)
 
         results = {}
         # Add output parameters to results

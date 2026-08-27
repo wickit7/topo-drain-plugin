@@ -80,7 +80,7 @@ The tool uses a series of WhiteboxTools processes:
 3. **ExtractStreams** - Identifies stream network based on flow accumulation threshold
 4. **RasterStreamsToVector** - Converts raster streams to vector polylines
 5. **StreamLinkIdentifier** - Assigns unique IDs to individual stream segments
-6. **VectorStreamNetworkAnalysis** - Analyzes network topology and calculates stream properties
+6. **_assign_stream_topology (internal)** - Computes TRIB_ID, DS_LINK_ID, NET_ID, TRIB_RANK and TRIB_FACC attributes
 
 <img src="../resources/CreateValleys.png" alt="Create Valleys Dialog" width="600">
 
@@ -106,7 +106,8 @@ The tool generates several layers:
 
 1. **Output Valley Lines (polylines)** - The primary output showing valley lines
    - **Main result** layer for further analysis
-   - Contains attributes: `LINK_ID`, `TRIB_ID`, and `DS_LINK_ID` (used in subsequent tools)
+   - Contains attributes: `LINK_ID`, `TRIB_ID`, `DS_LINK_ID`, `NET_ID`, `TRIB_RANK`, `TRIB_FACC` (used in subsequent tools)
+   - `NET_ID` identifies disconnected sub-networks; `TRIB_RANK` and `TRIB_FACC` enable global tributary ranking in Extract Main Valleys
    - Recommend styling with thin blue lines for visualization
    
 2. **Output Filled DTM (raster)** - Depression-breached terrain model
@@ -116,8 +117,8 @@ The tool generates several layers:
    - Only needed in further processing if you optionally you want to delinate watershed with "Delinate Watersheds" later
    
 4. **Output Flow Accumulation Raster** - Shows accumulated flow for each cell
-   - **Needed** in further Keyline-Design process (Extract Main Valleys)
    - Higher values indicate larger drainage areas
+   - **Note**: No longer required as input for Extract Main Valleys / Extract Main Ridges (TRIB_RANK is pre-computed by the Create Valleys/Ridges tool)
    
 5. **Output Log Accumulation Raster** - Logarithmic scale of flow accumulation
    - Better for visualization than raw accumulation values
@@ -179,19 +180,18 @@ After creating the complete valley and ridge networks, you need to identify and 
 
 ### Extract Main Valleys
 
-The **Extract Main Valleys** tool identifies the most significant valley lines (flow paths) from the complete valley network by selecting the tributaries with the highest flow accumulation values within your perimeter. The tool extracts tributaries (flow paths) with the highest flow accumulation and ranks them by their maximum flow accumulation value within the perimeter area. 
+The **Extract Main Valleys** tool identifies the most significant valley lines from the complete valley network. Tributaries are selected **globally across all disconnected sub-networks** by their maximum flow accumulation (`TRIB_FACC`), so the `nr_main` tributaries with the highest flow accumulation in the entire study area are selected, regardless of which sub-network they belong to. The `NET_ID` attribute on the output can be used to distinguish tributaries on independent networks that may share the same `TRIB_RANK`.
+
+> **Note (updated behaviour):** The flow-accumulation raster parameter has been removed. The `TRIB_RANK`, `TRIB_FACC`, and `NET_ID` attributes are computed automatically by the Extract Valleys tool. The output attribute `RANK` (1 = main valley with highest flow accumulation in the selection) is distinct from `TRIB_RANK` (global rank across all tributaries in the full valley network).
 
 <img src="../resources/ExtractMainValleys.png" alt="Extract Main Valleys Dialog" width="600">
 
-> **Performance Note**: The **Extract Main Valleys** and **Extract Main Ridges** tools can take considerable time with large areas or dense valley/ridge networks. **Always provide a perimeter** to improve performance. The progress bar may stall around 20% for an extended period during spatial join operations - this is normal for large areas. You can create an issue on the GitHub "Issues" page if it's relevant to you.
+> **Performance Note**: The **Extract Main Valleys** and **Extract Main Ridges** tools can take considerable time with large areas or dense valley/ridge networks. **Always provide a perimeter** to improve performance.
 
 #### Parameters
 
 - **Input Valley Lines**: Select the **Output Valley Lines** from the "Create Valleys" tool
-  -* *Note**: Must have `LINK_ID`, `TRIB_ID`, and `DS_LINK_ID` attributes (automatically created by Create Valleys)
-
-- **Input Flow Accumulation Raster**: Select the **Output Flow Accumulation Raster** from the "Create Valleys" tool
-  - **Note**: Use the same flow accumulation raster that was used to create the valley lines
+  - **Note**: Must have `LINK_ID`, `TRIB_ID`, `DS_LINK_ID`, `TRIB_RANK`, and `TRIB_FACC` attributes (automatically created by Create Valleys)
 
 - **Input Perimeter Polygon**: Select your perimeter polygon layer
   - Optional: If not provided, uses the full extent of valley lines
@@ -208,9 +208,10 @@ The **Extract Main Valleys** tool identifies the most significant valley lines (
 #### Output
 
 **Output Main Valleys**: Line layer containing the main valley lines with attributes:
-- `LINK_ID` - Standard cross-platform identifier for each line segment
-- `TRIB_ID` - Tributary identifier
-- `RANK` - Valley order (1 = first main valley with highest flow accumulation, 2 = second highest, etc.)
+- `LINK_ID` - Standard cross-platform identifier for each output line
+- `TRIB_ID` - Tributary identifier (from input)
+- `RANK` - Selection rank (1 = main valley with highest flow accumulation in the extracted set, 2 = second, etc.)
+- `TRIB_RANK` - Global tributary rank from the full input network (preserved for reference; 1 = highest globally)
 - `POLYGON_ID` - Identifier if multiple perimeter polygons were used
 - `DS_LINK_ID` - Downstream link identifier
 
@@ -234,7 +235,7 @@ Add labels showing the **RANK** attribute to identify the valley order:
 
 1. Enable labels for the Main Valleys layer
 2. **Label with**: `RANK`
-3. This displays: 1 = first main valley (highest flow accumulation), 2 = second highest, etc.
+3. This displays: 1 = main valley with highest flow accumulation in the selection, 2 = second highest, etc.
 
 <img src="../resources/MainValleysLabel.png" alt="Main Valleys Labels" width="600">
 
@@ -245,12 +246,15 @@ Add labels showing the **RANK** attribute to identify the valley order:
 
 ### Extract Main Ridges
 
-The **Extract Main Ridges** tool works identically to Extract Main Valleys, but operates on ridge lines instead of valley lines.
+The **Extract Main Ridges** tool works identically to Extract Main Valleys, but operates on ridge lines instead of valley lines. Ridges are also selected **globally** by `TRIB_FACC` (flow accumulation on inverted DTM).
+
+> **Note (updated behaviour):** Same changes as Extract Main Valleys: no flow-accumulation raster required; `TRIB_FACC` drives selection; output attributes are `RANK` (selection rank), `TRIB_RANK` (global rank from input), `NET_ID` (sub-network identifier).
 
 Use the same approach:
-- **Input Ridge Lines**: Select the **Output Ridge Lines** from the "Create Ridges" tool
-- **Input Flow Accumulation Raster**: Select the **Output Inverted Flow Accumulation Raster** from the "Create Ridges" tool (inverted flow accumulation)
+- **Input Ridge Lines**: Select the **Output Ridge Lines** from the "Create Ridges" tool (must have `LINK_ID`, `TRIB_ID`, `DS_LINK_ID`, `TRIB_RANK`, and `TRIB_FACC` attributes)
 - Configure the same parameters as described in the Extract Main Valleys section
+
+**Styling recommendation**: Use orange/brown thick lines to distinguish from main valleys.
 
 **Styling recommendation**: Use orange/brown thick lines to distinguish from main valleys.
 

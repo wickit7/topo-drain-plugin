@@ -428,45 +428,20 @@ Parameters:
         if change_after is not None and slope_after is not None:
             feedback.pushInfo(f"***** Phase 1/2 - Progress Reporting 1-100% - Creating first parts of line *****")
 
-        feedback.pushInfo("Creating isolated TopoDrainCore instance for this run...")
-        run_core = self.core.__class__(
-            whitebox_directory=self.core.whitebox_directory,
-            nodata=self.core.nodata,
-            crs=self.core.crs,
-            temp_directory=self.core.temp_directory,
-            working_directory=self.core.working_directory,
-            disable_crs_operations=self.core.disable_crs_operations,
-        )
-        run_core.gdal_driver_mapping = dict(self.core.gdal_driver_mapping)
-        run_core.ogr_driver_mapping = dict(self.core.ogr_driver_mapping)
-
         feedback.pushInfo("Running constant slope lines tracing...")
-        try:
-            slope_lines_gdf = run_core.get_constant_slope_lines(
-                dtm_path=dtm_path,
-                start_points=start_points_gdf,
-                destination_features=destination_gdfs,
-                slope=slope,
-                perimeter=perimeter_gdf,
-                barrier_features=barrier_gdfs if barrier_gdfs else None,
-                allow_barriers_as_temp_destination=allow_barriers_as_temp_destination,
-                max_iterations_barrier=max_iterations_barrier,
-                slope_deviation_threshold=slope_deviation_threshold,
-                max_iterations_slope=max_iterations_slope,
-                feedback=feedback
-            )
-        finally:
-            try:
-                runtime = getattr(run_core, 'wbw_runtime', None)
-                if runtime is not None:
-                    try:
-                        runtime.reset_session()
-                    except Exception:
-                        pass
-                run_core.wbw_runtime = None
-            except Exception:
-                pass
-            gc.collect()
+        slope_lines_gdf = self.core.get_constant_slope_lines(
+            dtm_path=dtm_path,
+            start_points=start_points_gdf,
+            destination_features=destination_gdfs,
+            slope=slope,
+            perimeter=perimeter_gdf,
+            barrier_features=barrier_gdfs if barrier_gdfs else None,
+            allow_barriers_as_temp_destination=allow_barriers_as_temp_destination,
+            max_iterations_barrier=max_iterations_barrier,
+            slope_deviation_threshold=slope_deviation_threshold,
+            max_iterations_slope=max_iterations_slope,
+            feedback=feedback
+        )
 
         feedback.pushInfo(f"Constant slope lines tracing complete, {len(slope_lines_gdf)} lines created")
 
@@ -479,7 +454,7 @@ Parameters:
             feedback.pushInfo(f"Applying slope adjustment after {change_after} with new slope {slope_after}")
             
             # Apply the slope adjustment using the adjust_constant_slope_after method
-            slope_lines_gdf = run_core.adjust_constant_slope_after(
+            slope_lines_gdf = self.core.adjust_constant_slope_after(
                 dtm_path=dtm_path,
                 input_lines=slope_lines_gdf,
                 change_after=change_after,
@@ -502,12 +477,12 @@ Parameters:
 
         # Save result - use OGR on Windows to avoid PyProj crashes
         # all_upper=True to rename columns to uppercase
-        if run_core.disable_crs_operations:
+        if self.core.disable_crs_operations:
             feedback.pushInfo("Saving constant slope lines WITHOUT setting CRS to avoid WINDOWS PyProj issues...")   
-            save_gdf_to_file_ogr(slope_lines_gdf, slope_lines_path, run_core, feedback, all_upper=True)
+            save_gdf_to_file_ogr(slope_lines_gdf, slope_lines_path, self.core, feedback, all_upper=True)
         else:
             feedback.pushInfo("Saving constant slope lines WITH setting CRS pyproj (geopandas)...")
-            save_gdf_to_file(slope_lines_gdf, slope_lines_path, run_core, feedback, all_upper=True)
+            save_gdf_to_file(slope_lines_gdf, slope_lines_path, self.core, feedback, all_upper=True)
 
         results = {}
         # Add output parameters to results

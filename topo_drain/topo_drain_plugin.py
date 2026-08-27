@@ -119,8 +119,9 @@ class TopoDrainPlugin(object):
 
         try:
             runtime = self.core.get_wbw_runtime(include_pro=False, tier="open")
-            runtime.get_session()
-            return True
+            # Only check importability — do NOT create a session here; the single
+            # persistent session on self.core is created lazily on first algorithm run.
+            return runtime.is_available()
         except Exception as exc:
             print(f"whitebox_workflows is not available: {exc}")
             return False

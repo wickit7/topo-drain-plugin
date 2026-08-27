@@ -15,6 +15,7 @@ from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterRasterLayer
                        QgsProcessing, QgsProcessingException, QgsVectorLayer, QgsRasterLayer,
                        QgsProject, QgsCoordinateReferenceSystem)
 import os
+import gc
 from .utils import get_crs_from_layer, ensure_whiteboxtools_configured, save_gdf_to_file, save_gdf_to_file_ogr, get_raster_ext, get_vector_ext, get_crs_from_project, clear_pyproj_cache
 
 pluginPath = os.path.dirname(__file__)
@@ -274,7 +275,6 @@ class CreateValleysAlgorithm(QgsProcessingAlgorithm):
 
         if valleys_gdf.empty:
             raise QgsProcessingException("No valleys were created")
-        
 
         # Save result WITHOUT setting CRS (avoids PyProj crashes on Windows)
         if self.core.disable_crs_operations:
