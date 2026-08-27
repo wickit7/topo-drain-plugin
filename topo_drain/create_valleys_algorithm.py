@@ -44,8 +44,6 @@ class CreateValleysAlgorithm(QgsProcessingAlgorithm):
     OUTPUT_STREAMS = 'OUTPUT_STREAMS'
     ACCUM_THRESHOLD = 'ACCUM_THRESHOLD'
     DIST_FACC = 'DIST_FACC'
-    RUN_FINAL_NETWORK_ANALYSIS = 'RUN_FINAL_NETWORK_ANALYSIS'
-
     def __init__(self, core=None):
         super().__init__()
         self.core = core  # Should be set to a TopoDrainCore instance by the plugin
@@ -115,13 +113,6 @@ class CreateValleysAlgorithm(QgsProcessingAlgorithm):
                 type=QgsProcessingParameterNumber.Integer,
                 defaultValue=1000,
                 minValue=1
-            )
-        )
-        self.addParameter(
-            QgsProcessingParameterBoolean(
-                self.RUN_FINAL_NETWORK_ANALYSIS,
-                self.tr('Run final network analysis (Vector Stream Network Analysis, experimental in workflows mode)'),
-                defaultValue=False
             )
         )
         # Output parameters
@@ -219,8 +210,6 @@ class CreateValleysAlgorithm(QgsProcessingAlgorithm):
         # Read numeric parameters
         accumulation_threshold = self.parameterAsInt(parameters, self.ACCUM_THRESHOLD, context)
         dist_facc = self.parameterAsDouble(parameters, self.DIST_FACC, context)
-        run_final_network_analysis = self.parameterAsBoolean(parameters, self.RUN_FINAL_NETWORK_ANALYSIS, context)
-
         # Extract actual file paths from layer objects for processing
         valley_file_path = valley_output_layer
         
@@ -280,7 +269,6 @@ class CreateValleysAlgorithm(QgsProcessingAlgorithm):
             streams_output_path=streams_file_path,
             accumulation_threshold=accumulation_threshold,
             dist_facc=dist_facc,
-            run_final_network_analysis=run_final_network_analysis,
             feedback=feedback
         )
 

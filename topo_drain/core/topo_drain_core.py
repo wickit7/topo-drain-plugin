@@ -1781,7 +1781,6 @@ class TopoDrainCore:
         streams_output_path: str  = None,
         accumulation_threshold: int = 1000,
         dist_facc: float = 50,
-        run_final_network_analysis: bool = False,
         postfix: str = None,
         feedback=None
     ) -> gpd.GeoDataFrame:
@@ -1805,10 +1804,6 @@ class TopoDrainCore:
                 Threshold for stream extraction (flow accumulation units).
             dist_facc (float):
                 Maximum breach distance (in raster units) for depression filling.
-            run_final_network_analysis (bool):
-                If True, execute the final `vector_stream_network_analysis` step.
-                Disabled by default because this step may hang in the current
-                whitebox_workflows runtime for some datasets.
             postfix (str, optional):
                 Optional string to include in default output filenames.
             feedback (QgsProcessingFeedback, optional):
@@ -2071,74 +2066,26 @@ class TopoDrainCore:
             else:
                 print("[ExtractValleys] Performing final network analysis")
 
-            if run_final_network_analysis:
-                analysis_attempts = [
-                (
-                    "workflow-native parameters",
-                    {
-                        "max_ridge_cutting_height": 10.0,
-                        "snap_distance": 0.1,
-                    },
-                ),
-                (
-                    "legacy-compatible parameters",
-                    {
-                        "cutting_height": 10.0,
-                        "snap": 0.1,
-                    },
-                ),
-            ]
-
-                last_analysis_error = None
-                for attempt_name, attempt_args in analysis_attempts:
-                    try:
-                        if feedback:
-                            feedback.pushInfo(
-                                f"[ExtractValleys] Final analysis attempt with {attempt_name}."
-                            )
-                        else:
-                            print(f"[ExtractValleys] Final analysis attempt with {attempt_name}.")
-
-                        ret = self.wbt_executor(
-                            'vector_stream_network_analysis',
-                            feedback=feedback,
-                            report_progress=False,
-                            streams=streams_linked_output_path,
-                            dem=dtm_path,
-                            output=stream_network_output_path,
-                            **attempt_args,
-                        )
-                        if ret != 0 or not os.path.exists(stream_network_output_path):
-                            raise RuntimeError(
-                                f"[ExtractValleys] Final network analysis failed: WhiteboxTools returned {ret}, output not found at {stream_network_output_path}"
-                            )
-                        last_analysis_error = None
-                        break
-                    except Exception as e:
-                        if feedback and feedback.isCanceled():
-                            feedback.reportError("Process cancelled by user during final network analysis.")
-                            raise RuntimeError('Process cancelled by user.')
-                        last_analysis_error = e
-                        msg = f"[ExtractValleys] Final analysis attempt failed ({attempt_name}): {e}"
-                        if feedback:
-                            feedback.pushWarning(msg)
-                        else:
-                            warnings.warn(msg)
-
-                if last_analysis_error is not None:
-                    raise RuntimeError(
-                        f"[ExtractValleys] Final network analysis failed after all attempts: {last_analysis_error}"
-                    )
-            else:
-                stream_network_output_path = streams_linked_output_path
-                msg = (
-                    "[ExtractValleys] Final network analysis is disabled "
-                    "(workflows-only stability mode). Returning linked streams output."
+            try:
+                ret = self.wbt_executor(
+                    'vector_stream_network_analysis',
+                    feedback=feedback,
+                    report_progress=False,
+                    streams=streams_linked_output_path,
+                    dem=dtm_path,
+                    output=stream_network_output_path,
+                    max_ridge_cutting_height=10.0,
+                    snap_distance=0.1,
                 )
-                if feedback:
-                    feedback.pushWarning(msg)
-                else:
-                    warnings.warn(msg)
+                if ret != 0 or not os.path.exists(stream_network_output_path):
+                    raise RuntimeError(
+                        f"[ExtractValleys] Final network analysis failed: WhiteboxTools returned {ret}, output not found at {stream_network_output_path}"
+                    )
+            except Exception as e:
+                if feedback and feedback.isCanceled():
+                    feedback.reportError("Process cancelled by user during final network analysis.")
+                    raise RuntimeError('Process cancelled by user.')
+                raise RuntimeError(f"[ExtractValleys] Final network analysis failed: {e}")
 
             if feedback:
                 feedback.pushInfo(f"[ExtractValleys] Loading network from {stream_network_output_path}")
