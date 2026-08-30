@@ -5,6 +5,7 @@
 # Purpose: Script with python functions of topo drain qgis plugin
 #
 # -----------------------------------------------------------------------------
+import logging
 import os
 import sys
 import tempfile
@@ -33,6 +34,8 @@ except ImportError:
     load_gdf_from_file = None
     load_gdf_from_file_ogr = None
     save_gdf_to_file_ogr = None
+
+_log = logging.getLogger(__name__)
 
 # ---  Class TopoDrainCore ---
 class TopoDrainCore:
@@ -293,8 +296,8 @@ class TopoDrainCore:
         """
         try:
             gdal.PopErrorHandler()  # Restore default error handler
-        except:
-            pass  # Ignore errors during cleanup
+        except Exception as e:  # Must not propagate from __del__
+            _log.debug("[TopoDrainCore] Could not pop GDAL error handler: %s", e)
 
     @staticmethod
     def _get_gdal_error_message():
@@ -308,7 +311,7 @@ class TopoDrainCore:
         try:
             error_msg = gdal.GetLastErrorMsg()
             return f" GDAL/OGR Error: {error_msg}" if error_msg else ""
-        except:
+        except Exception:
             return ""
 
     @staticmethod
@@ -353,6 +356,10 @@ class TopoDrainCore:
         ext = os.path.splitext(file_path)[1].lower()
         return self.ogr_driver_mapping.get(ext, 'ESRI Shapefile')  # Default to Shapefile if unknown extension
 
+
+    def _temp_path(self, base: str, run_uid: str, ext: str = ".tif") -> str:
+        """Return a namespaced temp file path: <temp_directory>/<base>_<run_uid><ext>"""
+        return os.path.join(self.temp_directory, f"{base}_{run_uid}{ext}")
 
     ## Setters for class configuration
     def set_temp_directory(self, temp_dir):
@@ -1143,7 +1150,7 @@ class TopoDrainCore:
                             if ogr_geom is None or not ogr_geom.IsValid():
                                 ogr_geom = None
                                 continue
-                        except:
+                        except Exception:
                             ogr_geom = None
                             continue
                         
@@ -1862,8 +1869,8 @@ class TopoDrainCore:
             stream_mask_ds = None
         try:
             os.remove(stream_mask_path)
-        except Exception:
-            pass
+        except OSError as e:
+            _log.debug("[TopoDrainCore] Could not remove temp stream mask file: %s", e)
 
         cell_mask = (stream_mask == 1) & (facc_data > 0)
         rows_arr, cols_arr = np.where(cell_mask)
@@ -2074,15 +2081,14 @@ class TopoDrainCore:
         # Build defaults for everything — use a unique run_uid so repeated calls
         # don't collide on locked/stale temp files from the previous run.
         run_uid = postfix if postfix else uuid.uuid4().hex[:8]
-        d = lambda base, ext: os.path.join(self.temp_directory, f"{base}_{run_uid}{ext}")
         defaults = {
-            "filled":         d("filled", ".tif"),
-            "fdir":           d("fdir", ".tif"),
-            "streams":        d("streams", ".tif"),
-            "streams_vec":    d("streams", ".gpkg"),
-            "streams_linked": d("streams_linked", ".gpkg"),
-            "facc":           d("facc", ".tif"),
-            "facc_log":       d("facc_log", ".tif"),
+            "filled":         self._temp_path("filled", run_uid),
+            "fdir":           self._temp_path("fdir", run_uid),
+            "streams":        self._temp_path("streams", run_uid),
+            "streams_vec":    self._temp_path("streams", run_uid, ".gpkg"),
+            "streams_linked": self._temp_path("streams_linked", run_uid, ".gpkg"),
+            "facc":           self._temp_path("facc", run_uid),
+            "facc_log":       self._temp_path("facc_log", run_uid),
         }
 
         print(f"[ExtractValleys] Define paths for outputs")
@@ -2865,8 +2871,11 @@ class TopoDrainCore:
             if perimeter.crs is not None and gdf.crs is None:
                 try:
                     gdf = gdf.set_crs(perimeter.crs)
-                except Exception:
-                    pass
+                except Exception as e:
+                    if feedback:
+                        feedback.pushWarning(f"[ExtractMainValleys] Could not set CRS for clipping: {e}")
+                    else:
+                        print(f"[ExtractMainValleys] Could not set CRS for clipping: {e}")
             gdf = gpd.overlay(gdf, perimeter, how="intersection")
 
         # CRS will be set during save in utils.save_gdf_to_file()
@@ -3042,7 +3051,7 @@ class TopoDrainCore:
                         else:
                             # Use a default value if pixel is outside raster bounds
                             elevations.append(0.0)
-                    except:
+                    except Exception:
                         # Handle any GDAL errors
                         elevations.append(0.0)
 
@@ -6058,8 +6067,8 @@ class TopoDrainCore:
                         try:
                             os.remove(path)
                             removed_temp_files += 1
-                        except Exception:
-                            pass
+                        except OSError as e:
+                            _log.debug("[CreateKeylines] Could not remove temp file %s: %s", name, e)
             if feedback and removed_temp_files > 0:
                 feedback.pushInfo(f"[CreateKeylines] Removed {removed_temp_files} stale temp files before run")
         except Exception as exc:

@@ -53,29 +53,145 @@ class TopoDrainPlugin(object):
         self.core = None  # Will hold the TopoDrainCore instance
 
     def check_python_dependencies(self):
-        # Read python dependencies from requirements.txt
-        dep_file = os.path.join(cmd_folder, "requirements.txt")
-        REQUIRED_PACKAGES = []
-        if os.path.exists(dep_file):
-            with open(dep_file, "r") as f:
-                for line in f:
-                    pkg = line.strip()
-                    if pkg and not pkg.startswith("#"):
-                        # Only take the package name (strip version specifiers)
-                        REQUIRED_PACKAGES.append(pkg.split()[0].split("=")[0])
-            missing = []
-            for pkg in REQUIRED_PACKAGES:
-                if importlib.util.find_spec(pkg) is None:
-                    missing.append(pkg)
-            if missing:
-                msg = (
-                    "The following Python packages are required but not installed in your QGIS Python environment:\n\n"
-                    + ", ".join(missing) +
-                    "\n\nPlease install them using your QGIS Python environment before using this plugin."
-                )
-                QMessageBox.critical(None, "TopoDrain Plugin - Missing Dependencies", msg)
-                return False
-        return True
+        """Return True if all required packages are present, else show an install dialog."""
+        # import_name -> pip package name
+        REQUIRED = {
+            "numpy": "numpy",
+            "pandas": "pandas",
+            "geopandas": "geopandas",
+            "shapely": "shapely",
+            "scipy": "scipy",
+            "whitebox_workflows": "whitebox-workflows",
+        }
+        missing = [
+            pip_name
+            for import_name, pip_name in REQUIRED.items()
+            if importlib.util.find_spec(import_name) is None
+        ]
+        if not missing:
+            return True
+        self._show_missing_deps_dialog(missing)
+        return False
+
+    def _build_install_command(self, packages: list) -> str:
+        """Return an exec() string safe to paste into the QGIS Python Console."""
+        if os.name == "nt":
+            pip_args = str(["pip", "install"] + packages)
+        else:
+            pip_args = str(["pip", "install", "--user"] + packages)
+
+        inner = (
+            "import runpy,sys\\n"
+            "try:\\n"
+            "    import pip\\n"
+            "except ImportError:\\n"
+            "    import ensurepip\\n"
+            "    ensurepip.bootstrap(upgrade=True)\\n"
+            f"sys.argv={pip_args}\\n"
+            "try:\\n"
+            "    runpy.run_module('pip',run_name='__main__',alter_sys=True)\\n"
+            "except SystemExit:\\n"
+            "    pass\\n"
+            "import qgis.utils\\n"
+            "qgis.utils.unloadPlugin('topo_drain')\\n"
+            "qgis.utils.loadPlugin('topo_drain')\\n"
+            "qgis.utils.startPlugin('topo_drain')\\n"
+            "print('TopoDrain dependencies installed and plugin reloaded.')"
+        )
+        return f'exec("{inner}")'
+
+    def _show_missing_deps_dialog(self, missing: list) -> None:
+        """Show a dialog with step-by-step install instructions for missing packages."""
+        command = self._build_install_command(missing)
+        try:
+            from qgis.PyQt.QtWidgets import (
+                QDialog, QVBoxLayout, QHBoxLayout,
+                QLabel, QPlainTextEdit, QPushButton, QApplication,
+            )
+            from qgis.PyQt.QtGui import QFont
+
+            parent = None
+            try:
+                from qgis.utils import iface as _iface
+                if _iface is not None:
+                    parent = _iface.mainWindow()
+            except Exception:
+                pass
+
+            dlg = QDialog(parent)
+            dlg.setWindowTitle("⚠️  Action Required — Install TopoDrain Dependencies")
+            dlg.setMinimumWidth(660)
+
+            layout = QVBoxLayout(dlg)
+            layout.setSpacing(10)
+
+            header = QLabel("<b style='font-size:13px;'>Required Python packages are missing.</b>")
+            header.setWordWrap(True)
+            header.setStyleSheet("color: #b34700; padding: 4px 0;")
+            layout.addWidget(header)
+
+            pkg_list = ", ".join(f"<b>{p}</b>" for p in missing)
+            instructions = (
+                f"The following packages are required but not installed: {pkg_list}.<br><br>"
+                "To install them:<ol>"
+                "<li>Open the QGIS Python Console:&nbsp;&nbsp;<b>Plugins &nbsp;&#9656;&nbsp; Python Console</b></li>"
+                "<li>Click <b>Copy command to clipboard</b> below, paste it into the console, "
+                "and press <b>Enter</b>.</li>"
+                "<li>The packages will install and the plugin will reload automatically — "
+                "no QGIS restart needed.</li>"
+                "</ol>"
+            )
+            lbl = QLabel(instructions)
+            lbl.setWordWrap(True)
+            lbl.setOpenExternalLinks(False)
+            layout.addWidget(lbl)
+
+            layout.addWidget(QLabel("<b>Command to paste in the Python Console:</b>"))
+
+            cmd_edit = QPlainTextEdit(command)
+            cmd_edit.setReadOnly(True)
+            font = QFont()
+            font.setFamily("Courier New" if os.name == "nt" else "Menlo")
+            font.setPointSize(10)
+            cmd_edit.setFont(font)
+            cmd_edit.setFixedHeight(140)
+            layout.addWidget(cmd_edit)
+
+            btn_row = QHBoxLayout()
+
+            copy_btn = QPushButton("📋  Copy command to clipboard")
+            copy_btn.setDefault(True)
+
+            def _copy():
+                try:
+                    QApplication.clipboard().setText(command)
+                    copy_btn.setText("✓  Copied!")
+                except Exception:
+                    pass
+
+            copy_btn.clicked.connect(_copy)
+            btn_row.addWidget(copy_btn)
+            btn_row.addStretch()
+
+            close_btn = QPushButton("Close")
+            close_btn.setDefault(False)
+            close_btn.setAutoDefault(False)
+            close_btn.clicked.connect(dlg.accept)
+            btn_row.addWidget(close_btn)
+
+            layout.addLayout(btn_row)
+
+            dlg.exec() if hasattr(dlg, "exec") and callable(dlg.exec) else dlg.exec_()
+
+        except Exception:
+            # Last-resort fallback if Qt widgets are unavailable
+            QMessageBox.critical(
+                None,
+                "TopoDrain Plugin — Missing Dependencies",
+                "Missing packages: " + ", ".join(missing) +
+                "\n\nOpen the QGIS Python Console (Plugins → Python Console) and run:\n\n" +
+                command,
+            )
     
     def initProcessing(self):
         """Init Processing provider for QGIS >= 3.8."""

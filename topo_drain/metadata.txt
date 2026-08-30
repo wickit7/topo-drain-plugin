@@ -14,9 +14,9 @@ about=It automates the extraction of main valleys and ridges, creates off-contou
     
     DOCUMENTATION: Detailed INSTALLATION MANUAL and TUTORIAL GUIDES are available on the project homepage: https://github.com/wickit7/topo-drain-plugin
     
-    Core algorithms leverage whitebox_workflows as the runtime backend.
-    You need to install the Python package "whitebox_workflows" in the QGIS Python environment.
-    No separate WhiteboxTools executable or WhiteboxTools QGIS plugin is required.
+    Core algorithms leverage whitebox_workflows as the runtime backend (Whitebox Geospatial Inc., Dr. John B. Lindsay: https://github.com/jblindsay/whitebox_next_gen).
+    You need to install the Python package "whitebox_workflows" in the QGIS Python environment. The easiest way is to install the "Whitebox Workflows for QGIS" plugin (Plugins -> Manage and Install Plugins), which handles the installation normally.
+    No separate WhiteboxTools executable or WhiteboxTools QGIS plugin is required anymore.
     
     This plugin requires several Python packages (numpy, shapely, pandas, geopandas, scipy, whitebox_workflows).
     These packages are widely used in geospatial data processing, but may not all are included in default QGIS installations. If a package is missing, follow the installation instructions below:

@@ -7,9 +7,12 @@ changing existing WhiteboxTools-based algorithm code paths.
 
 from __future__ import annotations
 
+import logging
 import gc
 import json
 from typing import Any
+
+_log = logging.getLogger(__name__)
 
 
 class WhiteboxWorkflowsRuntimeError(RuntimeError):
@@ -81,8 +84,8 @@ class WhiteboxWorkflowsRuntimeAdapter:
             if callable(method):
                 try:
                     method()
-                except Exception:
-                    pass
+                except Exception as e:
+                    _log.debug("[WbwRuntimeAdapter] Exception in teardown method %s: %s", method_name, e)
                 break
 
     @staticmethod

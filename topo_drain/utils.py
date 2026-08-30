@@ -138,8 +138,9 @@ def clear_pyproj_cache(feedback=None):
                                             if feedback:
                                                 feedback.pushInfo(f"[PyProj Cache Clear] Cleared CRS.__dict__[{key}]")
                                             cleared_something = True
-                                    except Exception:
-                                        pass
+                                    except Exception as e:
+                                        if feedback:
+                                            feedback.pushInfo(f"[PyProj Cache Clear] Could not clear CRS.__dict__[{key}]: {e}")
                             else:
                                 cache.clear()
                                 if feedback:
