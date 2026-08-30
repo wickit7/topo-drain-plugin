@@ -88,6 +88,11 @@ The tool uses a series of WhiteboxTools processes:
 
 - **Input DTM (Digital Terrain Model)**: Select your preprocessed Digital Terrain Model
 
+- **Clip DTM to Perimeter** (optional): Polygon defining the area of interest used to clip the DTM before processing.
+  - **Strongly recommended for large DTM extents** (e.g. full canton/region): clipping to your study area can reduce processing time from tens of minutes to seconds.
+  - Accepts any polygon layer, memory layers, or selected features.
+  - If not provided, the full DTM extent is processed.
+
 - **Advanced: Maximum search distance for breach paths in cells**: Maximum distance to search when breaching depressions
   - Default: 0
   - Usually the default value works well
@@ -137,6 +142,7 @@ The **Create Ridges (inverted stream network)** tool works similarly to the Crea
 It uses the same WhiteboxTools processes (D8Pointer, D8FlowAccumulation, ExtractStreams, etc.) on the inverted terrain model, where ridges become valleys in the inverted space.
 
 The parameters and outputs are identical to the Create Valleys tool, so refer to that section for detailed explanations.
+The **Clip DTM to Perimeter** optional parameter is also available and recommended for large DTM extents.
 
 **Styling recommendation:** Display ridge lines in orange/brown to distinguish them from valley lines.
 
@@ -186,7 +192,6 @@ The **Extract Main Valleys** tool identifies the most significant valley lines f
 
 <img src="../resources/ExtractMainValleys.png" alt="Extract Main Valleys Dialog" width="600">
 
-> **Performance Note**: The **Extract Main Valleys** and **Extract Main Ridges** tools can take considerable time with large areas or dense valley/ridge networks. **Always provide a perimeter** to improve performance.
 
 #### Parameters
 
@@ -272,7 +277,9 @@ Use the same approach:
 
 #### Step 1: Smooth the Lines
 
-⚠️ Before editing the Main Ridges and Main Valleys in QGIS, it's recommended to use the WhiteboxTools processing tool **"SmoothVectors"**:
+> **New in v2.2:** The **Extract Main Valleys** and **Extract Main Ridges** tools now include a built-in **Smooth output lines** option (with a configurable **Smooth filter size**). Enable it directly in those tools to skip this separate step — the smoothed result is saved as the output layer.
+
+⚠️ If you did not enable smoothing in the extraction tools, it's recommended to smooth now using the WhiteboxTools processing tool **"SmoothVectors"** before editing:
 
 - This reduces the number of vertices, making editing easier
 - It also improves useability for subsequent tools like "Get Points Along Line" (distance calculations are more appropriate on smoothed lines than on very wavy lines)

@@ -13,6 +13,7 @@ from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterVectorLayer
                        QgsProcessing, QgsProcessingParameterFeatureSource, QgsProcessingException)
 import os
 import gc
+import uuid
 from .utils import get_crs_from_layer, ensure_whiteboxtools_configured, save_gdf_to_file, save_gdf_to_file_ogr, load_gdf_from_file, load_gdf_from_file_ogr, load_gdf_from_qgis_source, get_vector_ext, get_crs_from_project, clear_pyproj_cache
 
 pluginPath = os.path.dirname(__file__)
@@ -38,6 +39,8 @@ class ExtractMainRidgesAlgorithm(QgsProcessingAlgorithm):
     OUTPUT_MAIN_RIDGES = 'OUTPUT_MAIN_RIDGES'
     NR_MAIN = 'NR_MAIN'
     CLIP_TO_PERIMETER = 'CLIP_TO_PERIMETER'
+    SMOOTH_OUTPUT = 'SMOOTH_OUTPUT'
+    SMOOTH_FILTER_SIZE = 'SMOOTH_FILTER_SIZE'
 
     def __init__(self, core=None):
         super().__init__()
@@ -125,8 +128,25 @@ Output attributes: LINK_ID, TRIB_ID, RANK (1=highest flow accumulation in select
                 defaultValue=True
             )
         )
-        
-        # Output parameters
+
+        self.addParameter(
+            QgsProcessingParameterBoolean(
+                self.SMOOTH_OUTPUT,
+                self.tr('Smooth output lines (uses WBT SmoothVectors)'),
+                defaultValue=False
+            )
+        )
+
+        self.addParameter(
+            QgsProcessingParameterNumber(
+                self.SMOOTH_FILTER_SIZE,
+                self.tr('Smooth filter size (number of vertices to average)'),
+                type=QgsProcessingParameterNumber.Integer,
+                defaultValue=10,
+                minValue=3,
+                optional=True
+            )
+        )
         main_ridges_param = QgsProcessingParameterVectorDestination(
             self.OUTPUT_MAIN_RIDGES,
             self.tr('Output Main Ridge Lines'),
@@ -164,6 +184,8 @@ Output attributes: LINK_ID, TRIB_ID, RANK (1=highest flow accumulation in select
         # Get algorithm parameters
         nr_main = self.parameterAsInt(parameters, self.NR_MAIN, context)
         clip_to_perimeter = self.parameterAsBool(parameters, self.CLIP_TO_PERIMETER, context)
+        smooth_output = self.parameterAsBool(parameters, self.SMOOTH_OUTPUT, context)
+        smooth_filter_size = self.parameterAsInt(parameters, self.SMOOTH_FILTER_SIZE, context)
 
         # Extract actual file path from layer object for processing
         main_ridges_file_path = main_ridges_output_layer
@@ -256,6 +278,32 @@ Output attributes: LINK_ID, TRIB_ID, RANK (1=highest flow accumulation in select
             raise QgsProcessingException("No main ridges were detected")
 
         feedback.pushInfo(f"Created {len(main_ridges_gdf)} main ridges")
+
+        if smooth_output:
+            feedback.pushInfo(f"[ExtractMainRidges] Smoothing output (filter_size={smooth_filter_size})...")
+            smooth_input_path = os.path.join(self.core.temp_directory, f"smooth_input_{uuid.uuid4().hex[:8]}.gpkg")
+            smooth_output_path = os.path.join(self.core.temp_directory, f"smooth_output_{uuid.uuid4().hex[:8]}.gpkg")
+            save_gdf_to_file_ogr(main_ridges_gdf, smooth_input_path, self.core, feedback)
+            try:
+                ret = self.core.wbt_executor(
+                    'smooth_vectors',
+                    feedback=feedback,
+                    report_progress=False,
+                    input=smooth_input_path,
+                    output=smooth_output_path,
+                    filter_size=smooth_filter_size,
+                )
+                if ret != 0 or not os.path.exists(smooth_output_path):
+                    feedback.pushWarning("[ExtractMainRidges] Smoothing failed, using unsmoothed result")
+                else:
+                    smoothed_gdf = load_gdf_from_file_ogr(smooth_output_path, feedback)
+                    if not smoothed_gdf.empty:
+                        main_ridges_gdf = smoothed_gdf
+                        feedback.pushInfo("[ExtractMainRidges] Smoothing applied successfully")
+                    else:
+                        feedback.pushWarning("[ExtractMainRidges] Smoothed result is empty, using unsmoothed result")
+            except Exception as e:
+                feedback.pushWarning(f"[ExtractMainRidges] Smoothing failed: {e}, using unsmoothed result")
 
         # Save result - use OGR on Windows to avoid PyProj crashes
         if self.core.disable_crs_operations:
