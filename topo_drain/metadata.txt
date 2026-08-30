@@ -10,19 +10,14 @@ version=2.2.0
 author=Timo Wicki
 email=wickitimo@gmail.com
 about=It automates the extraction of main valleys and ridges, creates off-contour line and supports creating Keyline Designs and other water-retention planning measures. The tool can also be used for other tasks, such as planning the location and alignment of paths and roads.
-    DISCLAIMER: Influencing surface runoff on land is complex and requires significant expertise. This tool is intended as an aid for users with experience in land surface water management.
     
     DOCUMENTATION: Detailed INSTALLATION MANUAL and TUTORIAL GUIDES are available on the project homepage: https://github.com/wickit7/topo-drain-plugin
     
     Core algorithms leverage whitebox_workflows as the runtime backend (Whitebox Geospatial Inc., Dr. John B. Lindsay: https://github.com/jblindsay/whitebox_next_gen).
-    You need to install the Python package "whitebox_workflows" in the QGIS Python environment. The easiest way is to install the "Whitebox Workflows for QGIS" plugin (Plugins -> Manage and Install Plugins), which handles the installation normally.
-    No separate WhiteboxTools executable or WhiteboxTools QGIS plugin is required anymore.
+    It is recommended to install the "Whitebox Workflows for QGIS" plugin first.
     
     This plugin requires several Python packages (numpy, shapely, pandas, geopandas, scipy, whitebox_workflows).
-    These packages are widely used in geospatial data processing, but may not all are included in default QGIS installations. If a package is missing, follow the installation instructions below:
-    - Windows, QGIS installed with OSGeo4W: https://landscapearchaeology.org/2018/installing-python-packages-in-qgis-3-for-windows/
-    - macOS (terminal): https://gis.stackexchange.com/questions/351280/installing-python-modules-for-qgis-3-on-mac
-    See on github site for more informations! -> https://github.com/wickit7/topo-drain-plugin
+    These packages are widely used in geospatial data processing, but may not all are included in default QGIS installations. See on github site for more informations! -> https://github.com/wickit7/topo-drain-plugin
 
 
 tracker=https://github.com/wickit7/topo-drain-plugin/issues
@@ -35,9 +30,9 @@ hasProcessingProvider=yes
 # Uncomment the following line and add your changelog:
 
 changelog=2.0.0 - whitebox_workflows migration and algorithm I/O redesign
-    * Migrated backend to whitebox_workflows (no standalone WhiteboxTools executable required)
-    * Create Valleys: added TRIB_RANK and TRIB_FACC attributes to valley lines output
-    * Create Ridges: added TRIB_RANK and TRIB_FACC attributes to ridge lines output
+    * Migrated backend to whitebox_workflows (no standalone WhiteboxTools executable required anymore)
+    * Create Valleys: added TRIB_RANK and TRIB_FACC attributes to valley lines output. Added perimeter as optional input.
+    * Create Ridges: added TRIB_RANK and TRIB_FACC attributes to ridge lines output. Added perimeter as optional input.
     * Extract Main Valleys: updated to use TRIB_FACC attribute from new Create Valleys output for improved sorting
     * Extract Main Ridges: updated to use TRIB_FACC attribute from new Create Ridges output for improved sorting
 
