@@ -334,8 +334,6 @@ Parameters:
             feedback.pushWarning(f"Input lines CRS ({input_lines_gdf.crs}) differs from DTM CRS ({self.core.crs}). Results may be incorrect!")
             feedback.pushWarning(f"Please transform input lines to match the DTM raster CRS before running this algorithm.")
         
-            feedback.pushInfo(f"Transformed input lines from {input_lines_gdf.crs} to {self.core.crs}")
-        
         feedback.pushInfo(f"Input lines: {len(input_lines_gdf)} features")
 
         # Convert destination layers to GeoDataFrames - use OGR on Windows to avoid PyProj

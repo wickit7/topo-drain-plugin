@@ -142,7 +142,7 @@ Output attributes: LINK_ID, TRIB_ID, RANK (1=highest flow accumulation in select
                 self.SMOOTH_FILTER_SIZE,
                 self.tr('Smooth filter size (number of vertices to average)'),
                 type=QgsProcessingParameterNumber.Integer,
-                defaultValue=10,
+                defaultValue=6,
                 minValue=3,
                 optional=True
             )

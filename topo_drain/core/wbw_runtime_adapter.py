@@ -109,10 +109,7 @@ class WhiteboxWorkflowsRuntimeAdapter:
             self._session = None
             # Some RuntimeSession builds expose no explicit close/dispose API.
             # Force GC to encourage timely native resource finalization.
-            try:
-                del old_session
-            except Exception:
-                pass
+            del old_session
             gc.collect()
 
         if refresh or self._session is None:
@@ -126,10 +123,7 @@ class WhiteboxWorkflowsRuntimeAdapter:
         self._session = None
         # Some RuntimeSession builds expose no explicit close/dispose API.
         # Force GC to encourage timely native resource finalization.
-        try:
-            del old_session
-        except Exception:
-            pass
+        del old_session
         gc.collect()
 
     def get_capabilities(self) -> dict[str, Any]:
@@ -189,36 +183,36 @@ class WhiteboxWorkflowsRuntimeAdapter:
                         pct_raw = event_obj.get("percent")
                         if pct_raw is not None:
                             feedback.setProgress(float(pct_raw))
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _log.debug("feedback.setProgress failed: %s", exc)
                     if message:
                         try:
                             feedback.pushInfo(message)
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            _log.debug("feedback.pushInfo failed: %s", exc)
                 return
 
             if event_type in {"warning", "warn"}:
                 if message:
                     try:
                         feedback.pushWarning(message)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _log.debug("feedback.pushWarning failed: %s", exc)
                 return
 
             if event_type in {"error", "fatal", "critical"}:
                 if message:
                     try:
                         feedback.reportError(message)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _log.debug("feedback.reportError failed: %s", exc)
                 return
 
             if message and report_progress:
                 try:
                     feedback.pushInfo(message)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _log.debug("feedback.pushInfo failed: %s", exc)
 
         def _run_once() -> Any:
             session = self.get_session(refresh=False)
@@ -230,8 +224,8 @@ class WhiteboxWorkflowsRuntimeAdapter:
                         f"available={available if available else ['none']}, "
                         f"preferred={preferred if preferred else 'none'}"
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _log.debug("feedback.pushInfo failed: %s", exc)
                 self._teardown_logged = True
             return session.run_tool_json_stream(
                 str(tool_id),

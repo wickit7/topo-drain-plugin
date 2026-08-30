@@ -34,6 +34,9 @@ import os
 import sys
 import inspect
 import importlib
+import logging
+
+_log = logging.getLogger(__name__)
 
 from qgis.core import QgsProcessingAlgorithm, QgsApplication, QgsProcessingUtils, QgsCoordinateReferenceSystem, QgsProject, QgsRasterLayer, QgsVectorLayer
 from qgis.PyQt.QtWidgets import QMessageBox
@@ -115,8 +118,8 @@ class TopoDrainPlugin(object):
                 from qgis.utils import iface as _iface
                 if _iface is not None:
                     parent = _iface.mainWindow()
-            except Exception:
-                pass
+            except Exception as exc:
+                _log.debug("Could not get QGIS main window: %s", exc)
 
             dlg = QDialog(parent)
             dlg.setWindowTitle("⚠️  Action Required — Install TopoDrain Dependencies")
@@ -166,8 +169,8 @@ class TopoDrainPlugin(object):
                 try:
                     QApplication.clipboard().setText(command)
                     copy_btn.setText("✓  Copied!")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _log.debug("Clipboard copy failed: %s", exc)
 
             copy_btn.clicked.connect(_copy)
             btn_row.addWidget(copy_btn)
