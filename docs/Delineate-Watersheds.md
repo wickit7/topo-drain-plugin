@@ -118,6 +118,7 @@ For detailed information about this tool, see the [Create Valleys (Stream Networ
 2. Search for **"Create Valleys"** (TopoDrain)
 3. Configure parameters:
    - **Input DTM**: Select your **burned DTM** (NOT the original DTM)
+   - **Clip DTM to Perimeter** (optional): If your DTM covers a large area, provide your watershed boundary polygon here to clip the DTM before processing — this can significantly reduce processing time.
    - **Accumulation Threshold**: Start with default (1000) or adjust based on desired detail
    - **Output Flow Direction Raster**: **Save this output** - it's required for watershed delineation
 4. Run the tool

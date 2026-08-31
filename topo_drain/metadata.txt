@@ -6,23 +6,18 @@
 name=TopoDrain
 qgisMinimumVersion=3.0
 description=A QGIS plugin for planning surface drainage water management like Keyline-Design.
-version=1.0.2
+version=2.2.0
 author=Timo Wicki
 email=wickitimo@gmail.com
 about=It automates the extraction of main valleys and ridges, creates off-contour line and supports creating Keyline Designs and other water-retention planning measures. The tool can also be used for other tasks, such as planning the location and alignment of paths and roads.
-    DISCLAIMER: Influencing surface runoff on land is complex and requires significant expertise. This tool is intended as an aid for users with experience in land surface water management.
     
     DOCUMENTATION: Detailed INSTALLATION MANUAL and TUTORIAL GUIDES are available on the project homepage: https://github.com/wickit7/topo-drain-plugin
     
-    Core algorithms leverage WhiteboxTools (Lindsay, 2017–2020; see https://github.com/jblindsay/whitebox-tools).
-    So make shure you have installed and configured the plugin "WhiteboxTools for QGIS"!
-    - Installation video: https://www.youtube.com/watch?v=xJXDBsNbcTg
+    Core algorithms leverage whitebox_workflows as the runtime backend (Whitebox Geospatial Inc., Dr. John B. Lindsay: https://github.com/jblindsay/whitebox_next_gen).
+    It is recommended to install the "Whitebox Workflows for QGIS" plugin first.
     
-    This plugin requires several Python packages (numpy, shapely, pandas, geopandas, scipy).
-    These packages are widely used in geospatial data processing, but may not all are included in default QGIS installations (pandas, geopandas, and scipy). If a package is missing, follow the installation instructions below:
-    - Windows, QGIS installed with OSGeo4W: https://landscapearchaeology.org/2018/installing-python-packages-in-qgis-3-for-windows/
-    - macOS (terminal): https://gis.stackexchange.com/questions/351280/installing-python-modules-for-qgis-3-on-mac
-    See on github site for more informations! -> https://github.com/wickit7/topo-drain-plugin
+    This plugin requires several Python packages (numpy, shapely, pandas, geopandas, scipy, whitebox_workflows).
+    These packages are widely used in geospatial data processing, but may not all are included in default QGIS installations. See on github site for more informations! -> https://github.com/wickit7/topo-drain-plugin
 
 
 tracker=https://github.com/wickit7/topo-drain-plugin/issues
@@ -34,37 +29,16 @@ repository=https://github.com/wickit7/topo-drain-plugin
 hasProcessingProvider=yes
 # Uncomment the following line and add your changelog:
 
-changelog=1.0.2 - WhiteboxTools TIFF input safeguard
-    * Auto-normalize TIFF inputs before all WhiteboxTools calls to handle missing embedded GeoTIFF geokeys
-    * Prevents "TIFF file does not contain geokeys" panic when CRS is only in sidecar files
-    1.0.1 - CRS handling improvements
-    * Centralized CRS type handling in TopoDrainCore.set_crs() to ensure string format
-    * Fixed CRS compatibility issues with different PyProj versions on macOS
-    * Improved CRS handling for GeoPandas to avoid type conversion errors
-    1.0.0 - Stable release
-    * Removed experimental flag - plugin is now stable and production-ready
-    * Enhanced Python dependency documentation with detailed installation instructions
-    0.1.10 - Imporved crs handling
-    * Improved CRS handling documentation for Windows compatibility
-    * Bug fix crs windows: Implemented alternative for saving and loading geodataframe to file with crs because of PyProj access violation issue on windwos 
-    0.1.9 - Windows compatibility release
-    * Fixed Windows compatibility issues: console window flashing when WhiteboxTools executes
-    * Enhanced GDAL virtual file system path detection (GPKG, HDF5, NETCDF)
-    * Improved sys.stdout/sys.stderr handling for Windows QGIS environment
-    0.1.8 - Documentation release
-    * Added comprehensive Keyline Design, Constant Slope lines and Watershed delineation manual with step-by-step tutorial
-    * Added installation guide in README with detailed setup instructions
-    * Improved plugin documentation and user guidance
-    * Fixed Constant Slope Lines and Adjust Constant Slope Lines algorithms (CRS attribute issue)
-    0.1.7 - Stable release (mac os) candidate - Ready for user testing
-    * Improved get keypoints algorithm performance and accuracy
-    * Enhanced keyline creation with valley-to-valley and ridge-to-ridge tracing support
-    * Code cleanup and refactoring for better maintainability
-    * Removed experimental warning message - plugin is now stable and ready for testing
+changelog=2.0.0 - whitebox_workflows migration and algorithm I/O redesign
+    * Migrated backend to whitebox_workflows (no standalone WhiteboxTools executable required anymore)
+    * Create Valleys: added TRIB_RANK and TRIB_FACC attributes to valley lines output. Added perimeter as optional input.
+    * Create Ridges: added TRIB_RANK and TRIB_FACC attributes to ridge lines output. Added perimeter as optional input.
+    * Extract Main Valleys: updated to use TRIB_FACC attribute from new Create Valleys output for improved sorting
+    * Extract Main Ridges: updated to use TRIB_FACC attribute from new Create Ridges output for improved sorting
 
 
 # Tags are comma separated with spaces allowed
-tags=keyline-design, permaculture, sponge-scape, schwammland, surface analysis, watershed-analysis, topo-drain, water-management, whiteboxtools
+tags=keyline-design, permaculture, sponge-scape, schwammland, surface analysis, watershed-analysis, topo-drain, water-management, whitebox_workflows
 
 homepage=https://github.com/wickit7/topo-drain-plugin
 category=Analysis
@@ -79,7 +53,7 @@ deprecated=False
 # (or upgraded) can be specified.
 # Check the documentation for more information.
 # The plugin name should match the exact folder name in QGIS plugins directory
-#plugin_dependencies=plugin:wbt_for_qgis;python:numpy;python:pandas;python:geopandas;python:shapely;python:scipy
+#plugin_dependencies=python:numpy;python:pandas;python:geopandas;python:shapely;python:scipy;python:whitebox_workflows
 
 # If the plugin can run on QGIS Server.
 server=False

@@ -11,10 +11,14 @@ from qgis.PyQt.QtGui import QIcon
 from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterRasterLayer,
                        QgsProcessingParameterRasterDestination,
                        QgsProcessingParameterVectorDestination, QgsProcessingParameterNumber,
+                       QgsProcessingParameterBoolean, QgsProcessingParameterFeatureSource,
                        QgsProcessing, QgsProcessingException, QgsVectorLayer, QgsRasterLayer,
                        QgsProject, QgsCoordinateReferenceSystem)
 import os
-from .utils import get_crs_from_layer, ensure_whiteboxtools_configured, save_gdf_to_file, save_gdf_to_file_ogr, get_raster_ext, get_vector_ext, get_crs_from_project, clear_pyproj_cache
+import gc
+import uuid
+from osgeo import gdal
+from .utils import get_crs_from_layer, ensure_whiteboxtools_configured, save_gdf_to_file, save_gdf_to_file_ogr, load_gdf_from_qgis_source, get_raster_ext, get_vector_ext, get_crs_from_project, clear_pyproj_cache
 
 pluginPath = os.path.dirname(__file__)
 
@@ -35,6 +39,7 @@ class CreateValleysAlgorithm(QgsProcessingAlgorithm):
     """
 
     INPUT_DTM = 'INPUT_DTM'
+    INPUT_PERIMETER = 'INPUT_PERIMETER'
     OUTPUT_VALLEYS = 'OUTPUT_VALLEYS'
     OUTPUT_FILLED = 'OUTPUT_FILLED'
     OUTPUT_FDIR = 'OUTPUT_FDIR'
@@ -43,7 +48,6 @@ class CreateValleysAlgorithm(QgsProcessingAlgorithm):
     OUTPUT_STREAMS = 'OUTPUT_STREAMS'
     ACCUM_THRESHOLD = 'ACCUM_THRESHOLD'
     DIST_FACC = 'DIST_FACC'
-
     def __init__(self, core=None):
         super().__init__()
         self.core = core  # Should be set to a TopoDrainCore instance by the plugin
@@ -83,7 +87,9 @@ class CreateValleysAlgorithm(QgsProcessingAlgorithm):
                 - RasterStreamsToVector: Converts rasterized stream networks into vector line features for further analysis or export.
                 - StreamLinkIdentifier: Assigns unique identifiers to each stream segment (link) in the raster stream network.
                 - VectorStreamNetworkAnalysis: Analyzes the vectorized stream network, calculating stream order (e.g., HORTON), tributary IDs (TRIB_ID), and additional attributes such as the downstream link ID (DS_LINK_ID) for each stream segment (LINK_ID).
-                For more customization, you can use individual WhiteboxTools algorithms directly in the QGIS Processing Toolbox (WhiteBox Plugin) step by step."""
+                For more customization, you can use individual WhiteboxTools algorithms directly in the QGIS Processing Toolbox (WhiteBox Plugin) step by step.
+
+                TIP: For large DTM extents, provide a Perimeter polygon to clip the DTM before processing. This can significantly reduce processing time."""
         )
 
     def icon(self):
@@ -97,6 +103,13 @@ class CreateValleysAlgorithm(QgsProcessingAlgorithm):
                 self.tr('Input DTM (Digital Terrain Model)')
             )
         )
+        perimeter_param = QgsProcessingParameterFeatureSource(
+            self.INPUT_PERIMETER,
+            self.tr('Clip DTM to Perimeter (optional — reduces processing time for large rasters)'),
+            types=[QgsProcessing.TypeVectorPolygon],
+            optional=True
+        )
+        self.addParameter(perimeter_param)
         # Algorithm parameters
         self.addParameter(
             QgsProcessingParameterNumber(
@@ -210,7 +223,6 @@ class CreateValleysAlgorithm(QgsProcessingAlgorithm):
         # Read numeric parameters
         accumulation_threshold = self.parameterAsInt(parameters, self.ACCUM_THRESHOLD, context)
         dist_facc = self.parameterAsDouble(parameters, self.DIST_FACC, context)
-
         # Extract actual file paths from layer objects for processing
         valley_file_path = valley_output_layer
         
@@ -260,9 +272,43 @@ class CreateValleysAlgorithm(QgsProcessingAlgorithm):
             # Add warning if input crs not equal to core crs
             feedback.pushWarning(f"DTM/project CRS {effective_crs} differs from core CRS {self.core.crs}!")
 
+        # Optionally clip the DTM to the perimeter before the expensive WBT chain
+        perimeter_source = self.parameterAsSource(parameters, self.INPUT_PERIMETER, context)
+        dtm_path_for_processing = dtm_path
+        if perimeter_source is not None:
+            feedback.pushInfo("[CreateValleys] Loading perimeter for DTM clip...")
+            try:
+                perimeter_gdf = load_gdf_from_qgis_source(perimeter_source, feedback)
+            except Exception as e:
+                raise QgsProcessingException(f"Failed to load perimeter: {e}")
+            if perimeter_gdf.empty:
+                raise QgsProcessingException("No features found in perimeter input")
+            perimeter_temp_path = os.path.join(
+                self.core.temp_directory,
+                f"perimeter_clip_{uuid.uuid4().hex[:8]}.gpkg"
+            )
+            save_gdf_to_file_ogr(perimeter_gdf, perimeter_temp_path, self.core, feedback)
+            clipped_dtm_path = os.path.join(
+                self.core.temp_directory,
+                f"dtm_clipped_{uuid.uuid4().hex[:8]}.tif"
+            )
+            feedback.pushInfo(f"[CreateValleys] Clipping DTM to perimeter extent → {clipped_dtm_path}")
+            warp_options = gdal.WarpOptions(
+                format='GTiff',
+                cutlineDSName=perimeter_temp_path,
+                cropToCutline=True,
+                creationOptions=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=IF_SAFER']
+            )
+            result_ds = gdal.Warp(clipped_dtm_path, dtm_path, options=warp_options)
+            if result_ds is None:
+                raise QgsProcessingException("Failed to clip DTM to perimeter extent")
+            result_ds = None
+            dtm_path_for_processing = clipped_dtm_path
+            feedback.pushInfo("[CreateValleys] DTM clipped successfully")
+
         feedback.pushInfo("Running extract valleys...")
         valleys_gdf = self.core.extract_valleys(
-            dtm_path=dtm_path,
+            dtm_path=dtm_path_for_processing,
             filled_output_path=filled_file_path,
             fdir_output_path=fdir_file_path,
             facc_output_path=facc_file_path,
@@ -275,7 +321,6 @@ class CreateValleysAlgorithm(QgsProcessingAlgorithm):
 
         if valleys_gdf.empty:
             raise QgsProcessingException("No valleys were created")
-        
 
         # Save result WITHOUT setting CRS (avoids PyProj crashes on Windows)
         if self.core.disable_crs_operations:

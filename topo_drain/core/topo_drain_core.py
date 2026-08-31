@@ -5,6 +5,7 @@
 # Purpose: Script with python functions of topo drain qgis plugin
 #
 # -----------------------------------------------------------------------------
+import logging
 import os
 import sys
 import tempfile
@@ -20,28 +21,44 @@ from shapely.ops import linemerge, nearest_points, substring
 from scipy.ndimage import gaussian_filter1d
 from osgeo import gdal, ogr
 
+try:
+    from .wbw_runtime_adapter import WhiteboxWorkflowsRuntimeAdapter
+except Exception:
+    WhiteboxWorkflowsRuntimeAdapter = None
+
 # Import loading functions from parent utils module
 try:
-    from ..utils import load_gdf_from_file, load_gdf_from_file_ogr
+    from ..utils import load_gdf_from_file, load_gdf_from_file_ogr, save_gdf_to_file_ogr
 except ImportError:
     # Fallback if import fails (shouldn't happen in normal operation)
     load_gdf_from_file = None
     load_gdf_from_file_ogr = None
+    save_gdf_to_file_ogr = None
+
+_log = logging.getLogger(__name__)
 
 # ---  Class TopoDrainCore ---
 class TopoDrainCore:
-    def __init__(self, whitebox_directory=None, nodata=None, crs=None, temp_directory=None, working_directory=None, disable_crs_operations=None):
+    def __init__(
+        self,
+        whitebox_directory=None,
+        nodata=None,
+        crs=None,
+        temp_directory=None,
+        working_directory=None,
+        disable_crs_operations=None,
+    ):
         print("[TopoDrainCore] Initializing TopoDrainCore...")
         self._thisdir = os.path.dirname(__file__)
         print(f"[TopoDrainCore] Module directory: {self._thisdir}")
         
         # Handle None whitebox_directory gracefully
         if whitebox_directory is None:
-            print("[TopoDrainCore] No WhiteboxTools directory provided")
+            print("[TopoDrainCore] No external WhiteboxTools executable is required in whitebox_workflows mode")
             self.whitebox_directory = None  # Keep as None to trigger lazy loading
         else:
             self.whitebox_directory = whitebox_directory
-        print(f"[TopoDrainCore] WhiteboxTools directory: {self.whitebox_directory if self.whitebox_directory else 'Not set'}")
+        print("[TopoDrainCore] whitebox_workflows will be loaded from the active QGIS Python environment")
         
         self.nodata = nodata if nodata is not None else -32768
         print(f"[TopoDrainCore] NoData value set to: {self.nodata}")
@@ -61,7 +78,10 @@ class TopoDrainCore:
         else:
             self.crs = crs
             print(f"[TopoDrainCore] CRS value set to: {self.crs}")
-        
+
+        # _pyproj_crs is not used: disable_crs_operations=True always, so saves go via OGR (core.crs string)
+        self._pyproj_crs = None
+
         # Configure CRS operations behavior
         # Default: CRS operations enabled (False)
         # For QGIS plugin use: should be set to True to prevent PyProj crashes
@@ -124,10 +144,42 @@ class TopoDrainCore:
         # Configure GDAL settings for the entire class
         self._configure_gdal()
         
-        # Try to initialize WhiteboxTools, but don't fail if it's not available
-        self.wbt = self._init_whitebox_tools(self.whitebox_directory)
-        print(f"[TopoDrainCore] WhiteboxTools initialized: {self.wbt is not None}")
+        # Pure whitebox_workflows mode: no classic WhiteboxTools executable is used.
+        self.wbt = None
+        self.wbw_runtime = None
+        self.wbt_executor = self._execute_wbt_workflow
+        self._configure_wbt_executor()
+        print("[TopoDrainCore] whitebox_workflows executor initialized")
         print("[TopoDrainCore] Initialization complete.")
+
+    def _configure_wbt_executor(self):
+        """Select the whitebox_workflows execution backend once during initialization."""
+        self.wbt_executor = self._execute_wbt_workflow
+        try:
+            runtime = self.get_wbw_runtime(include_pro=False, tier="open")
+            if runtime.is_available():
+                print("[TopoDrainCore] WBT executor selected: _execute_wbt_workflow")
+                return
+            print("[TopoDrainCore] Warning: whitebox_workflows runtime is not available yet")
+        except Exception as exc:
+            print(f"[TopoDrainCore] Warning: whitebox_workflows runtime unavailable: {exc}")
+
+    def get_wbw_runtime(self, include_pro: bool = False, tier: str = "open"):
+        """Return a cached whitebox_workflows runtime adapter instance.
+
+        This is intentionally additive and does not modify existing WhiteboxTools
+        execution paths.
+        """
+        if WhiteboxWorkflowsRuntimeAdapter is None:
+            raise RuntimeError("whitebox_workflows runtime adapter module is unavailable.")
+
+        if self.wbw_runtime is None:
+            self.wbw_runtime = WhiteboxWorkflowsRuntimeAdapter(
+                include_pro=include_pro,
+                tier=tier,
+            )
+
+        return self.wbw_runtime
 
     def _init_whitebox_tools(self, whitebox_directory):
         """
@@ -244,8 +296,8 @@ class TopoDrainCore:
         """
         try:
             gdal.PopErrorHandler()  # Restore default error handler
-        except:
-            pass  # Ignore errors during cleanup
+        except Exception as e:  # Must not propagate from __del__
+            _log.debug("[TopoDrainCore] Could not pop GDAL error handler: %s", e)
 
     @staticmethod
     def _get_gdal_error_message():
@@ -259,7 +311,7 @@ class TopoDrainCore:
         try:
             error_msg = gdal.GetLastErrorMsg()
             return f" GDAL/OGR Error: {error_msg}" if error_msg else ""
-        except:
+        except Exception:
             return ""
 
     @staticmethod
@@ -305,6 +357,10 @@ class TopoDrainCore:
         return self.ogr_driver_mapping.get(ext, 'ESRI Shapefile')  # Default to Shapefile if unknown extension
 
 
+    def _temp_path(self, base: str, run_uid: str, ext: str = ".tif") -> str:
+        """Return a namespaced temp file path: <temp_directory>/<base>_<run_uid><ext>"""
+        return os.path.join(self.temp_directory, f"{base}_{run_uid}{ext}")
+
     ## Setters for class configuration
     def set_temp_directory(self, temp_dir):
         self.temp_directory = temp_dir
@@ -342,6 +398,9 @@ class TopoDrainCore:
                 # Already a string
                 self.crs = crs
                 print(f"[TopoDrainCore] CRS set to: {self.crs}")
+            # Do NOT recreate _pyproj_crs here — set_crs() runs in the worker thread on Windows
+            # where _PyProjCRS.from_user_input(string) crashes (PROJ thread-local context)
+            # _pyproj_crs retains whatever value was set on the main thread in __init__
         else:
             print(f"[TopoDrainCore] CRS unchanged (remains: {self.crs})")
 
@@ -464,6 +523,7 @@ class TopoDrainCore:
                 if feedback:
                     feedback.reportError(f"WhiteboxTools error: {e}")
                 raise RuntimeError(f"WhiteboxTools error: {e}")
+
         else:
             # Fallback to run_tool method for tools without convenience methods
             # Build arguments list for the tool
@@ -507,6 +567,48 @@ class TopoDrainCore:
                 if feedback:
                     feedback.reportError(f"WhiteboxTools error: {e}")
                 raise RuntimeError(f"WhiteboxTools error: {e}")
+
+    def _execute_wbt_workflow(
+        self,
+        tool_name,
+        feedback=None,
+        report_progress=True,
+        **kwargs,
+    ) -> int:
+        """Execute a WBT-style tool using whitebox_workflows only."""
+
+        expected_output_path = None
+        if isinstance(kwargs.get("output"), str) and kwargs.get("output"):
+            expected_output_path = kwargs.get("output")
+        elif isinstance(kwargs.get("out_file"), str) and kwargs.get("out_file"):
+            expected_output_path = kwargs.get("out_file")
+
+        try:
+            runtime = self.get_wbw_runtime(include_pro=False, tier="open")
+            if feedback and report_progress:
+                feedback.pushInfo(
+                    f"[WBTWorkflow] Using whitebox_workflows runtime for {tool_name}"
+                )
+
+            runtime.run_tool_json_stream(
+                str(tool_name),
+                dict(kwargs),
+                feedback=feedback,
+                report_progress=report_progress,
+            )
+
+            if expected_output_path:
+                if os.path.exists(str(expected_output_path)):
+                    return 0
+                raise RuntimeError(
+                    f"Runtime finished without creating output: {expected_output_path}"
+                )
+
+            return 0
+        except Exception as exc:
+            raise RuntimeError(
+                f"whitebox_workflows execution failed for {tool_name}: {exc}"
+            ) from exc
 
     def _prepare_wbt_input_raster(self, raster_path: str, feedback=None) -> str:
         """
@@ -1048,7 +1150,7 @@ class TopoDrainCore:
                             if ogr_geom is None or not ogr_geom.IsValid():
                                 ogr_geom = None
                                 continue
-                        except:
+                        except Exception:
                             ogr_geom = None
                             continue
                         
@@ -1232,16 +1334,16 @@ class TopoDrainCore:
         Returns:
             str: Path to inverted DTM raster.
         """
-        if self.wbt is None:
-            raise RuntimeError("WhiteboxTools not initialized. Check WhiteboxTools configuration: QGIS settings -> Options -> Processing -> Provider -> WhiteboxTools -> WhiteboxTools executable.")
+        if self.wbt_executor is None:
+            raise RuntimeError("whitebox_workflows runtime not initialized. Check that whitebox_workflows is installed in the active QGIS Python environment.")
 
         try:
-            ret = self._execute_wbt(
-                'multiply',
+            ret = self.wbt_executor(
+                'raster_calculator',
                 feedback=feedback,
                 report_progress=False,  # Don't override main progress bar
-                input1=dtm_path,
-                input2=-1.0,
+                expression='-1 * "raster"',
+                inputs=[dtm_path],
                 output=output_path
             )
             
@@ -1470,7 +1572,7 @@ class TopoDrainCore:
 
         return output_path
 
-    def _raster_to_linestring_wbt(self, raster_path: str, snap_to_start_point: Point = None, snap_to_endpoint: Point = None, output_vector_path: str = None, feedback=None) -> LineString:
+    def _raster_to_linestring_wbt(self, raster_path: str, snap_to_start_point: Point = None, snap_to_endpoint: Point = None, output_vector_path: str = None, feedback=None, report_vector_load_info=True) -> LineString:
         """
         Uses WhiteboxTools to vectorize a raster and return a merged LineString or MultiLineString.
         Optionally snaps the endpoint to the center of a destination cell.
@@ -1484,20 +1586,24 @@ class TopoDrainCore:
         Returns:
             LineString or MultiLineString, or None if empty.
         """
-        if self.wbt is None:
-            raise RuntimeError("WhiteboxTools not initialized. Check WhiteboxTools configuration: QGIS settings -> Options -> Processing -> Provider -> WhiteboxTools -> WhiteboxTools executable.")
+        if self.wbt_executor is None:
+            raise RuntimeError("whitebox_workflows runtime not initialized. Check that whitebox_workflows is installed in the active QGIS Python environment.")
 
         if not output_vector_path:
             base, _ = os.path.splitext(raster_path)
-            output_vector_path = base + ".shp"
+            output_vector_path = base + ".gpkg"
             
         try:
-            ret = self._execute_wbt(
+            vectorize_args = {
+                "input": raster_path,
+                "output": output_vector_path,
+            }
+
+            ret = self.wbt_executor(
                 'raster_to_vector_lines',
                 feedback=feedback,
                 report_progress=False,  # Don't override main progress bar
-                i=raster_path,
-                output=output_vector_path
+                **vectorize_args,
             )
             
             if ret != 0 or not os.path.exists(output_vector_path):
@@ -1509,8 +1615,8 @@ class TopoDrainCore:
                 raise RuntimeError('Process cancelled by user.')
             raise RuntimeError(f"Raster to vector lines failed: {e}")
 
-        # Load vector file - automatically handles PyProj CRS issues with fallback
-        gdf = load_gdf_from_file(output_vector_path, feedback)
+        # Load vector file via OGR to avoid pyproj/PROJ crash after WBW tool runs
+        gdf = load_gdf_from_file_ogr(output_vector_path, feedback, report_info=report_vector_load_info)
         
         if gdf.empty:
             warnings.warn(f"Warning: No vector features found in {output_vector_path}.")
@@ -1678,6 +1784,248 @@ class TopoDrainCore:
         
         return result_candidates
 
+    def _assign_stream_topology(
+        self,
+        streams_gdf: gpd.GeoDataFrame,
+        facc_path: str,
+        snap_tolerance: float = None,
+        feedback=None,
+    ) -> gpd.GeoDataFrame:
+        """
+        Assign TRIB_ID, DS_LINK_ID and TRIB_RANK to a stream-link GeoDataFrame
+        without calling vector_stream_network_analysis.
+
+        Lines must be oriented upstream→downstream (last coord = downstream end),
+        as produced by raster_streams_to_vector with d8_pointer input.
+
+        TRIB_ID groups all links of the same tributary.  At each confluence the
+        upstream link with the highest max flow-accumulation inherits the current
+        TRIB_ID (main stem continuation); all other upstream links receive new IDs.
+        TRIB_RANK ranks tributaries globally by their max flow-accumulation
+        (rank 1 = main stem / highest facc).  It is used by extract_main_valleys
+        to select the top-N tributaries without needing the facc raster again.
+
+        Args:
+            streams_gdf:    Stream links with a LINK_ID column.
+            facc_path:      Path to the flow-accumulation raster.
+            snap_tolerance: Max endpoint distance to match links. Defaults to 1.5 × pixel size.
+            feedback:       Optional QGIS feedback.
+
+        Returns:
+            Copy of streams_gdf with five new columns:
+            - TRIB_ID    (int)   – tributary group identifier
+            - DS_LINK_ID (int)   – LINK_ID of the immediate downstream link (None at outlet)
+            - NET_ID     (int)   – connected-network identifier; links in disconnected sub-networks get different values
+            - TRIB_RANK  (int)   – global rank of the tributary by max flow-accumulation (1 = highest, across all networks)
+            - TRIB_FACC  (float) – max flow-accumulation of the tributary; used by extract_main_valleys for sorting
+        """
+        if feedback:
+            feedback.pushInfo("[AssignStreamTopology] Computing TRIB_ID and DS_LINK_ID...")
+        else:
+            print("[AssignStreamTopology] Computing TRIB_ID and DS_LINK_ID...")
+
+        gdf = streams_gdf.copy().reset_index(drop=True)
+        link_ids = gdf["LINK_ID"].tolist()
+
+        # --- Read flow accumulation raster ---
+        facc_ds = gdal.Open(facc_path, gdal.GA_ReadOnly)
+        if facc_ds is None:
+            raise RuntimeError(f"Cannot open flow accumulation raster: {facc_path}.{self._get_gdal_error_message()}")
+        try:
+            gt = facc_ds.GetGeoTransform()
+            res = abs(gt[1])
+            facc_data = facc_ds.GetRasterBand(1).ReadAsArray().astype(np.float64)
+            facc_nodata = facc_ds.GetRasterBand(1).GetNoDataValue()
+        finally:
+            facc_ds = None
+
+        if facc_nodata is not None:
+            facc_data[facc_data == facc_nodata] = 0.0
+
+        if snap_tolerance is None:
+            snap_tolerance = res * 1.5
+
+        # --- Max flow-accumulation per link via spatial join ---
+        # Rasterise all links as a binary mask, find raster cells that sit on exactly one
+        # link, then take the per-link max.  Cells shared by ≥2 links (confluences) are
+        # excluded because they carry the summed flow of all tributaries.
+        stream_mask_path = os.path.join(
+            self.temp_directory, f"_topo_stream_mask_{uuid.uuid4().hex[:8]}.tif"
+        )
+        stream_mask_path = self._vector_to_mask_raster(
+            [gdf],
+            reference_raster_path=facc_path,
+            output_path=stream_mask_path,
+            unique_values=False,
+            flatten_lines=False,
+            buffer_lines=False,
+        )
+        stream_mask_ds = gdal.Open(stream_mask_path, gdal.GA_ReadOnly)
+        if stream_mask_ds is None:
+            raise RuntimeError(f"Cannot open stream mask raster: {stream_mask_path}.{self._get_gdal_error_message()}")
+        try:
+            stream_mask = stream_mask_ds.GetRasterBand(1).ReadAsArray()
+        finally:
+            stream_mask_ds = None
+        try:
+            os.remove(stream_mask_path)
+        except OSError as e:
+            _log.debug("[TopoDrainCore] Could not remove temp stream mask file: %s", e)
+
+        cell_mask = (stream_mask == 1) & (facc_data > 0)
+        rows_arr, cols_arr = np.where(cell_mask)
+
+        max_facc: dict[int, float] = {lid: 0.0 for lid in link_ids}
+
+        if len(rows_arr) > 0:
+            cell_coords = self._pixel_indices_to_coords(rows_arr, cols_arr, gt)
+            cell_pts = gpd.GeoDataFrame(
+                {"facc_val": facc_data[rows_arr, cols_arr]},
+                geometry=gpd.points_from_xy(
+                    [c[0] for c in cell_coords], [c[1] for c in cell_coords]
+                ),
+            )
+            cell_pts_buf = cell_pts.copy()
+            cell_pts_buf.geometry = cell_pts.geometry.buffer(res / 2.0)
+
+            # Both sides None: avoids any PyProj call in the worker thread (crashes on Windows)
+            gdf_for_join = gdf[["geometry", "LINK_ID"]].copy()
+            gdf_for_join.crs = None  # safe: None branch skips CRS.from_user_input
+
+            joined = gpd.sjoin(
+                cell_pts_buf,
+                gdf_for_join,
+                how="inner",
+            ).drop(columns="index_right")
+            joined.geometry = cell_pts.geometry[joined.index]
+            joined["geom_wkt"] = joined.geometry.apply(lambda g: g.wkt)
+
+            # Exclude cells shared by multiple links (confluence cells carry inflated facc)
+            link_counts = joined.groupby("geom_wkt")["LINK_ID"].nunique()
+            exclusive = link_counts[link_counts == 1].index
+            joined_uniq = joined[joined["geom_wkt"].isin(exclusive)]
+
+            for lid, grp in joined_uniq.groupby("LINK_ID"):
+                max_facc[lid] = float(grp["facc_val"].max())
+
+        # --- Endpoint geometry dicts (upstream = first coord, downstream = last coord) ---
+        us_pts: dict[int, Point] = {}  # upstream (start) point per link
+        ds_pts: dict[int, Point] = {}  # downstream (end) point per link
+        for _, row in gdf.iterrows():
+            lid = row["LINK_ID"]
+            coords = list(row.geometry.coords)
+            us_pts[lid] = Point(coords[0])
+            ds_pts[lid] = Point(coords[-1])
+
+        # --- Build DS_LINK_ID: downstream endpoint of A ≈ upstream endpoint of B ---
+        ds_link_id: dict[int, int | None] = {}
+        for lid in link_ids:
+            ep = ds_pts[lid]
+            best_dist, best_ds = float("inf"), None
+            for other_lid, sp in us_pts.items():
+                if other_lid == lid:
+                    continue
+                d = ep.distance(sp)
+                if d < best_dist and d < snap_tolerance:
+                    best_dist, best_ds = d, other_lid
+            ds_link_id[lid] = best_ds
+
+        # --- Build reverse index: upstream links for each link ---
+        upstream_of: dict[int, list[int]] = {lid: [] for lid in link_ids}
+        for lid, ds in ds_link_id.items():
+            if ds is not None:
+                upstream_of[ds].append(lid)
+
+        # --- Assign TRIB_ID via BFS from outlet(s) upward ---
+        trib_id: dict[int, int] = {}
+        trib_counter = 0  # incremented before first use so first outlet gets TRIB_ID=1
+
+        # Outlets = links with no downstream neighbour; start from highest-facc outlet
+        outlets = [lid for lid, ds in ds_link_id.items() if ds is None]
+        outlets.sort(key=lambda x: max_facc[x], reverse=True)
+
+        if not outlets:
+            # Fallback: treat the link with highest facc as virtual outlet
+            outlets = [max(link_ids, key=lambda x: max_facc[x])]
+
+        bfs: list[int] = []
+        for outlet_lid in outlets:
+            trib_counter += 1  # each outlet starts its own tributary
+            trib_id[outlet_lid] = trib_counter
+            bfs.append(outlet_lid)
+
+        while bfs:
+            current = bfs.pop(0)
+            ups = upstream_of[current]
+            if not ups:
+                continue
+            # Sort descending by max_facc
+            ups_sorted = sorted(ups, key=lambda x: max_facc[x], reverse=True)
+            # Highest-facc upstream link continues the same tributary
+            trib_id[ups_sorted[0]] = trib_id[current]
+            # All side tributaries get new TRIB_IDs
+            for side_lid in ups_sorted[1:]:
+                trib_counter += 1
+                trib_id[side_lid] = trib_counter
+            bfs.extend(ups_sorted)
+
+        # Links not reached (e.g. isolated) get new unique IDs
+        for lid in link_ids:
+            if lid not in trib_id:
+                trib_counter += 1
+                trib_id[lid] = trib_counter
+
+        # --- Assign NET_ID: connected-component label (links in separate networks get different IDs) ---
+        net_id: dict[int, int] = {}
+        net_counter = 0
+        visited_net: set = set()
+        for lid in link_ids:
+            if lid not in visited_net:
+                net_counter += 1
+                stack = [lid]
+                while stack:
+                    curr = stack.pop()
+                    if curr in visited_net:
+                        continue
+                    visited_net.add(curr)
+                    net_id[curr] = net_counter
+                    ds = ds_link_id.get(curr)
+                    if ds is not None and ds not in visited_net:
+                        stack.append(ds)
+                    for up in upstream_of.get(curr, []):
+                        if up not in visited_net:
+                            stack.append(up)
+
+        # Rank each tributary globally by max flow accumulation (rank 1 = highest facc across all networks)
+        trib_max_facc: dict[int, float] = {}
+        for lid in link_ids:
+            tid = trib_id.get(lid)
+            if tid is not None:
+                trib_max_facc[tid] = max(trib_max_facc.get(tid, 0.0), max_facc[lid])
+        sorted_trib_ids_by_facc = sorted(trib_max_facc.keys(), key=lambda t: trib_max_facc[t], reverse=True)
+        trib_rank: dict[int, int] = {tid: rank + 1 for rank, tid in enumerate(sorted_trib_ids_by_facc)}
+
+        gdf["TRIB_ID"] = gdf["LINK_ID"].map(trib_id)
+        gdf["DS_LINK_ID"] = gdf["LINK_ID"].map(ds_link_id)
+        gdf["NET_ID"] = gdf["LINK_ID"].map(net_id)
+        gdf["TRIB_RANK"] = gdf["TRIB_ID"].map(trib_rank)
+        gdf["TRIB_FACC"] = gdf["TRIB_ID"].map(trib_max_facc)
+
+        n_tribs = len(set(trib_id.values()))
+        n_nets = len(set(net_id.values()))
+        if feedback:
+            feedback.pushInfo(
+                f"[AssignStreamTopology] Done: {len(gdf)} links, {n_tribs} tributaries, "
+                f"{n_nets} network(s), snap_tolerance={snap_tolerance:.2f}m"
+            )
+        else:
+            print(
+                f"[AssignStreamTopology] Done: {len(gdf)} links, {n_tribs} tributaries, "
+                f"{n_nets} network(s), snap_tolerance={snap_tolerance:.2f}m"
+            )
+
+        return gdf
+
     ## Core functions
     def extract_valleys(
         self,
@@ -1721,8 +2069,8 @@ class TopoDrainCore:
             GeoDataFrame:
                 Extracted stream (valley) network with attributes.
         """
-        if self.wbt is None:
-            raise RuntimeError("WhiteboxTools not initialized. Check WhiteboxTools configuration: QGIS settings -> Options -> Processing -> Provider -> WhiteboxTools -> WhiteboxTools executable.")
+        if self.wbt_executor is None:
+            raise RuntimeError("whitebox_workflows runtime not initialized. Check that whitebox_workflows is installed in the active QGIS Python environment.")
 
         if feedback:
             feedback.pushInfo("[ExtractValleys] Starting valley extraction process...")
@@ -1730,31 +2078,18 @@ class TopoDrainCore:
         else:
             print("[ExtractValleys] Starting valley extraction process...")
 
-        # Build defaults for everything
-        if not postfix:
-            d = lambda name: os.path.join(self.temp_directory, name)
-            defaults = {
-                "filled":         d("filled.tif"),
-                "fdir":           d("fdir.tif"),
-                "streams":        d("streams.tif"),
-                "streams_vec":    d("streams.shp"),
-                "streams_linked": d("streams_linked.shp"),
-                "facc":           d("facc.tif"),
-                "facc_log":       d("facc_log.tif"),
-                "network":        d("stream_network.shp"),
-            }
-        else:
-            d = lambda base: os.path.join(self.temp_directory, f"{base}_{postfix}")
-            defaults = {
-                "filled":         d("filled") + ".tif",
-                "fdir":           d("fdir") + ".tif",
-                "streams":        d("streams") + ".tif",
-                "streams_vec":    d("streams") + ".shp",
-                "streams_linked": d("streams_linked") + ".shp",
-                "facc":           d("facc") + ".tif",
-                "facc_log":       d("facc_log") + ".tif",
-                "network":        d("stream_network") + ".shp",
-            }
+        # Build defaults for everything — use a unique run_uid so repeated calls
+        # don't collide on locked/stale temp files from the previous run.
+        run_uid = postfix if postfix else uuid.uuid4().hex[:8]
+        defaults = {
+            "filled":         self._temp_path("filled", run_uid),
+            "fdir":           self._temp_path("fdir", run_uid),
+            "streams":        self._temp_path("streams", run_uid),
+            "streams_vec":    self._temp_path("streams", run_uid, ".gpkg"),
+            "streams_linked": self._temp_path("streams_linked", run_uid, ".gpkg"),
+            "facc":           self._temp_path("facc", run_uid),
+            "facc_log":       self._temp_path("facc_log", run_uid),
+        }
 
         print(f"[ExtractValleys] Define paths for outputs")
         # Only these four can be overridden
@@ -1767,7 +2102,6 @@ class TopoDrainCore:
         # intermediate paths always use defaults:
         streams_vec_output_path    = defaults["streams_vec"]
         streams_linked_output_path = defaults["streams_linked"]
-        stream_network_output_path = defaults["network"]
 
         # Ensure parent directories exist for all declared outputs.
         for path in [
@@ -1778,7 +2112,6 @@ class TopoDrainCore:
             streams_output_path,
             streams_vec_output_path,
             streams_linked_output_path,
-            stream_network_output_path,
         ]:
             out_dir = os.path.dirname(path)
             if out_dir:
@@ -1795,15 +2128,15 @@ class TopoDrainCore:
             else:
                 print(f"[ExtractValleys] Step 1/7: Filling depressions → {filled_output_path}")
             try:
-                ret = self._execute_wbt(
+                ret = self.wbt_executor(
                     'breach_depressions_least_cost',
-                    feedback=feedback,  # Pass feedback to enable cancellation during execution
-                    report_progress=False,  # Don't override main progress bar
+                    feedback=feedback,
+                    report_progress=False,
                     dem=dtm_path,
                     output=filled_output_path,
-                    dist=int(dist_facc),
-                    fill=True,
-                    min_dist=True
+                    max_dist=int(dist_facc),
+                    fill_deps=True,
+                    minimize_dist=True,
                 )
                 if ret != 0 or not os.path.exists(filled_output_path):
                     raise RuntimeError(f"[ExtractValleys] Depression filling failed: WhiteboxTools returned {ret}, output not found at {filled_output_path}")
@@ -1820,7 +2153,7 @@ class TopoDrainCore:
             else:
                 print(f"[ExtractValleys] Step 2/7: Computing flow direction → {fdir_output_path}")
             try:
-                ret = self._execute_wbt(
+                ret = self.wbt_executor(
                     'd8_pointer',
                     feedback=feedback,  # Pass feedback to enable cancellation during execution
                     report_progress=False,  # Don't override main progress bar
@@ -1842,13 +2175,13 @@ class TopoDrainCore:
             else:
                 print(f"[ExtractValleys] Step 3/7: Computing flow accumulation → {facc_output_path}")
             try:
-                ret = self._execute_wbt(
-                    'd8_flow_accumulation',
+                ret = self.wbt_executor(
+                    'd8_flow_accum',
                     feedback=feedback,  # Pass feedback to enable cancellation during execution
                     report_progress=False,  # Don't override main progress bar
-                    i=filled_output_path,
+                    raster=filled_output_path,
                     output=facc_output_path,
-                    out_type="specific contributing area"
+                    out_type="sca"
                 )
                 if ret != 0 or not os.path.exists(facc_output_path):
                     raise RuntimeError(f"[ExtractValleys] Flow accumulation failed: WhiteboxTools returned {ret}, output not found at {facc_output_path}")
@@ -1881,11 +2214,11 @@ class TopoDrainCore:
             else:
                 print(f"[ExtractValleys] Step 5/7: Extracting streams (threshold={accumulation_threshold})")
             try:
-                ret = self._execute_wbt(
+                ret = self.wbt_executor(
                     'extract_streams',
                     feedback=feedback,  # Pass feedback to enable cancellation during execution
                     report_progress=False,  # Don't override main progress bar
-                    flow_accum=facc_output_path,
+                    flow_accumulation=facc_output_path,
                     output=streams_output_path,
                     threshold=accumulation_threshold
                 )
@@ -1904,12 +2237,12 @@ class TopoDrainCore:
             else:
                 print("[ExtractValleys] Step 6/7: Vectorizing streams")
             try:
-                ret = self._execute_wbt(
+                ret = self.wbt_executor(
                     'raster_streams_to_vector',
                     feedback=feedback,  # Pass feedback to enable cancellation during execution
                     report_progress=False,  # Don't override main progress bar
                     streams=streams_output_path,
-                    d8_pntr=fdir_output_path,
+                    d8_pointer=fdir_output_path,
                     output=streams_vec_output_path
                 )
                 if ret != 0 or not os.path.exists(streams_vec_output_path):
@@ -1921,19 +2254,19 @@ class TopoDrainCore:
                     raise RuntimeError('Process cancelled by user.')
                 raise RuntimeError(f"[ExtractValleys] Vectorizing streams failed: {e}")
 
-            streams_vec_id = streams_linked_output_path.replace(".shp", "_id.tif")
+            streams_vec_id = os.path.join(self.temp_directory, f"streams_linked_id_{run_uid}.tif")
             try:
                 if feedback:
                     feedback.pushInfo("[ExtractValleys] Step 7/7: Processing network topology - Identifying stream links")
                     feedback.setProgress(85)
                 else:
                     print("[ExtractValleys] Step 7/7: Processing network topology - Identifying stream links")
-                ret = self._execute_wbt(
+                ret = self.wbt_executor(
                     'stream_link_identifier',
                     feedback=feedback,  # Pass feedback to enable cancellation during execution
                     report_progress=False,  # Don't override main progress bar
                     d8_pntr=fdir_output_path,
-                    streams=streams_output_path,
+                    streams_raster=streams_output_path,
                     output=streams_vec_id
                 )
                 if ret != 0 or not os.path.exists(streams_vec_id):
@@ -1951,12 +2284,12 @@ class TopoDrainCore:
                     feedback.setProgress(90)
                 else:
                     print("[ExtractValleys] Converting linked streams to vectors")
-                ret = self._execute_wbt(
+                ret = self.wbt_executor(
                     'raster_streams_to_vector',
                     feedback=feedback,  # Pass feedback to enable cancellation during execution
                     report_progress=False,  # Don't override main progress bar
                     streams=streams_vec_id,
-                    d8_pntr=fdir_output_path,
+                    d8_pointer=fdir_output_path,
                     output=streams_linked_output_path
                 )
                 if ret != 0 or not os.path.exists(streams_linked_output_path):
@@ -1968,43 +2301,35 @@ class TopoDrainCore:
                     raise RuntimeError('Process cancelled by user.')
                 raise RuntimeError(f"[ExtractValleys] Converting linked streams failed: {e}")
 
-            try:
-                if feedback:
-                    feedback.pushInfo("[ExtractValleys] Performing final network analysis")
-                    feedback.setProgress(95)
-                else:
-                    print("[ExtractValleys] Performing final network analysis")
-                ret = self._execute_wbt(
-                    'VectorStreamNetworkAnalysis',
-                    feedback=feedback,  # Pass feedback to enable cancellation during execution
-                    report_progress=False,  # Don't override main progress bar
-                    streams=streams_linked_output_path,
-                    dem=filled_output_path,
-                    output=stream_network_output_path
-                    )
-                if ret != 0 or not os.path.exists(stream_network_output_path):
-                    raise RuntimeError(f"[ExtractValleys] Network analysis failed: WhiteboxTools returned {ret}, output not found at {stream_network_output_path}")
-            except Exception as e:
-                # Check if cancellation was the cause
-                if feedback and feedback.isCanceled():
-                    feedback.reportError("Process cancelled by user during network analysis.")
-                    raise RuntimeError('Process cancelled by user.')
-                raise RuntimeError(f"[ExtractValleys] Network analysis failed: {e}")
+            if feedback:
+                feedback.pushInfo("[ExtractValleys] Step 7b/7: Assigning stream topology (TRIB_ID, DS_LINK_ID)")
+                feedback.setProgress(95)
+            else:
+                print("[ExtractValleys] Step 7b/7: Assigning stream topology (TRIB_ID, DS_LINK_ID)")
+
+            # Load linked streams vector via OGR to avoid pyproj/PROJ crash after WBW tool runs
+            gdf = load_gdf_from_file_ogr(streams_linked_output_path, feedback)
+            if gdf.empty:
+                raise RuntimeError(f"[ExtractValleys] Linked streams file is empty: {streams_linked_output_path}")
+            # Assign LINK_ID from FID
+            if 'FID' in gdf.columns or 'fid' in gdf.columns:
+                fid_col = 'FID' if 'FID' in gdf.columns else 'fid'
+                gdf['LINK_ID'] = gdf[fid_col]
+            else:
+                gdf['LINK_ID'] = range(1, len(gdf) + 1)
 
             if feedback:
-                feedback.pushInfo(f"[ExtractValleys] Loading network from {stream_network_output_path}")
+                feedback.pushInfo("[ExtractValleys] Created reliable 'LINK_ID' field for cross-platform compatibility")
             else:
-                print(f"[ExtractValleys] Loading network from {stream_network_output_path}")
+                print("[ExtractValleys] Created reliable 'LINK_ID' field for cross-platform compatibility")
 
-            # Check if the file exists and is non-empty before reading
-            if not os.path.exists(stream_network_output_path):
-                raise RuntimeError(f"[ExtractValleys] Network output file not found: {stream_network_output_path}")
-            
-            # Load vector file - automatically handles PyProj CRS issues with fallback
-            gdf = load_gdf_from_file(stream_network_output_path, feedback)
-            
-            if gdf.empty:
-                raise RuntimeError(f"[ExtractValleys] Network output file is empty: {stream_network_output_path}")
+            try:
+                gdf = self._assign_stream_topology(gdf, facc_output_path, feedback=feedback)
+            except Exception as e:
+                if feedback and feedback.isCanceled():
+                    feedback.reportError("Process cancelled by user during topology assignment.")
+                    raise RuntimeError('Process cancelled by user.')
+                raise RuntimeError(f"[ExtractValleys] Stream topology assignment failed: {e}")
 
             # CRS will be set during save in utils.save_gdf_to_file()
             if feedback:
@@ -2013,20 +2338,10 @@ class TopoDrainCore:
                 else:
                     feedback.pushInfo("[ExtractValleys] Output has no CRS - will be set during save")
 
-            # Always create a reliable LINK_ID field as primary identifier
-            # This addresses Windows case-sensitivity and temporary layer issues
-            if 'FID' in gdf.columns or 'fid' in gdf.columns:
-                fid_col = 'FID' if 'FID' in gdf.columns else 'fid'
-                gdf['LINK_ID'] = gdf[fid_col]
-            else:
-                gdf['LINK_ID'] = range(1, len(gdf) + 1)
-            
             if feedback:
-                feedback.pushInfo("[ExtractValleys] Created reliable 'LINK_ID' field for cross-platform compatibility")
                 feedback.pushInfo(f"[ExtractValleys] Completed: {len(gdf)} valley features extracted successfully!")
                 feedback.setProgress(99)
             else:
-                print("[ExtractValleys] Created reliable 'LINK_ID' field for cross-platform compatibility")
                 print(f"[ExtractValleys] Completed: {len(gdf)} valley features extracted successfully!")
             
             return gdf
@@ -2056,8 +2371,8 @@ class TopoDrainCore:
         Returns:
             GeoDataFrame: Delineated watershed basins as polygons with attributes.
         """
-        if self.wbt is None:
-            raise RuntimeError("WhiteboxTools not initialized. Check WhiteboxTools configuration: QGIS settings -> Options -> Processing -> Provider -> WhiteboxTools -> WhiteboxTools executable.")
+        if self.wbt_executor is None:
+            raise RuntimeError("whitebox_workflows runtime not initialized. Check that whitebox_workflows is installed in the active QGIS Python environment.")
 
         if feedback:
             feedback.pushInfo("[WatershedDelineation] Starting watershed delineation process...")
@@ -2068,11 +2383,12 @@ class TopoDrainCore:
         if outlet_points.empty:
             raise RuntimeError("[WatershedDelineation] Input outlet_points is empty")
 
-        # Generate temporary file paths
-        pour_points_path = os.path.join(self.temp_directory, "pour_points.shp")
-        snapped_points_path = os.path.join(self.temp_directory, "snapped_pour_points.shp")
-        watershed_raster_path = os.path.join(self.temp_directory, "watershed_raster.tif")
-        watershed_vector_path = os.path.join(self.temp_directory, "watershed_vector.shp")
+        # Use a unique ID per run so repeated calls don't collide on locked temp files
+        run_uid = uuid.uuid4().hex[:8]
+        pour_points_path = os.path.join(self.temp_directory, f"pour_points_{run_uid}.gpkg")
+        snapped_points_path = os.path.join(self.temp_directory, f"snapped_pour_points_{run_uid}.gpkg")
+        watershed_raster_path = os.path.join(self.temp_directory, f"watershed_raster_{run_uid}.tif")
+        watershed_vector_path = os.path.join(self.temp_directory, f"watershed_vector_{run_uid}.shp")
 
         try:
             # Step 1: Save outlet points to temporary shapefile
@@ -2085,7 +2401,43 @@ class TopoDrainCore:
             else:
                 print("[WatershedDelineation] Step 1/4: Preparing outlet points...")
 
-            outlet_points.to_file(pour_points_path)
+            # whitebox_workflows requires CRS metadata on pour_points.
+            # If missing (e.g., selected-features export from QGIS source),
+            # inherit CRS from the flow-direction raster used for delineation.
+            outlet_points_to_save = outlet_points.copy()
+            if outlet_points_to_save.crs is None:
+                raster_crs_value = None
+                fdir_ds = gdal.Open(fdir_input_path, gdal.GA_ReadOnly)
+                if fdir_ds is not None:
+                    try:
+                        raster_srs = fdir_ds.GetSpatialRef()
+                        if raster_srs is not None:
+                            auth_name = raster_srs.GetAuthorityName(None)
+                            auth_code = raster_srs.GetAuthorityCode(None)
+                            if auth_name and auth_code:
+                                raster_crs_value = f"{auth_name}:{auth_code}"
+                            else:
+                                raster_crs_value = raster_srs.ExportToWkt()
+                    finally:
+                        fdir_ds = None
+
+                if raster_crs_value:
+                    # CRS is written by OGR save below via core.crs string; no PyProj call needed here
+                    if feedback:
+                        feedback.pushInfo(
+                            f"[WatershedDelineation] Outlet points had no CRS; assigned raster CRS: {raster_crs_value}"
+                        )
+                    else:
+                        print(
+                            f"[WatershedDelineation] Outlet points had no CRS; assigned raster CRS: {raster_crs_value}"
+                        )
+                else:
+                    raise RuntimeError(
+                        "[WatershedDelineation] Outlet points have no CRS and flow-direction raster CRS could not be determined."
+                    )
+
+            # Use OGR to write pour points — gdf.to_file() calls pyproj which crashes after WBW corrupts PROJ
+            save_gdf_to_file_ogr(outlet_points_to_save, pour_points_path, self, feedback)
             
             # Determine which points to use for watershed delineation
             points_for_watershed = pour_points_path
@@ -2102,7 +2454,7 @@ class TopoDrainCore:
                     print(f"[WatershedDelineation] Step 2/4: Snapping pour points to streams (max distance: {max_snap_distance})...")
                 
                 try:
-                    ret = self._execute_wbt(
+                    ret = self.wbt_executor(
                         'jenson_snap_pour_points',
                         feedback=feedback,
                         report_progress=False,  # Don't override main progress bar
@@ -2141,12 +2493,12 @@ class TopoDrainCore:
                 print("[WatershedDelineation] Step 3/4: Delineating watersheds...")
             
             try:
-                ret = self._execute_wbt(
+                ret = self.wbt_executor(
                     'watershed',
                     feedback=feedback,
                     report_progress=False,  # Don't override main progress bar
-                    d8_pntr=fdir_input_path,
-                    pour_pts=points_for_watershed,
+                    d8_pointer=fdir_input_path,
+                    pour_points=points_for_watershed,
                     output=watershed_raster_path,
                     esri_pntr=False
                 )
@@ -2172,11 +2524,11 @@ class TopoDrainCore:
                 print("[WatershedDelineation] Step 4/4: Converting watershed raster to vector polygons...")
             
             try:
-                ret = self._execute_wbt(
+                ret = self.wbt_executor(
                     'raster_to_vector_polygons',
                     feedback=feedback,
                     report_progress=False,  # Don't override main progress bar
-                    i=watershed_raster_path,
+                    input=watershed_raster_path,
                     output=watershed_vector_path
                 )
                 
@@ -2201,19 +2553,14 @@ class TopoDrainCore:
             if not os.path.exists(watershed_vector_path):
                 raise RuntimeError(f"[WatershedDelineation] Watershed vector output file not found: {watershed_vector_path}")
             
-            # Load vector file - automatically handles PyProj CRS issues with fallback
-            gdf = load_gdf_from_file(watershed_vector_path, feedback)
+            # Load vector file via OGR to avoid pyproj/PROJ crash after WBW tool runs
+            gdf = load_gdf_from_file_ogr(watershed_vector_path, feedback)
             
             if gdf.empty:
                 raise RuntimeError(f"[WatershedDelineation] Watershed vector output file is empty: {watershed_vector_path}")
 
-            # CRS will be set during save in utils.save_gdf_to_file()
-            
             if feedback:
-                if gdf.crs is not None:
-                    feedback.pushInfo(f"[WatershedDelineation] Output CRS: {gdf.crs}")
-                else:
-                    feedback.pushInfo("[WatershedDelineation] Output has no CRS - will be set during save")
+                feedback.pushInfo("[WatershedDelineation] Output loaded (CRS set during save via core.crs)")
 
             # Always create a reliable BASIN_ID field as primary identifier
             # This addresses Windows case-sensitivity and temporary layer issues
@@ -2284,8 +2631,8 @@ class TopoDrainCore:
             GeoDataFrame:
                 Extracted ridge (divide) network as vector geometries.
         """
-        if self.wbt is None:
-            raise RuntimeError("WhiteboxTools not initialized. Check WhiteboxTools configuration: QGIS settings -> Options -> Processing -> Provider -> WhiteboxTools -> WhiteboxTools executable.")
+        if self.wbt_executor is None:
+            raise RuntimeError("whitebox_workflows runtime not initialized. Check that whitebox_workflows is installed in the active QGIS Python environment.")
 
         if feedback:
             feedback.pushInfo("[ExtractRidges] Starting ridge extraction process...")
@@ -2299,7 +2646,9 @@ class TopoDrainCore:
         else:
             print("[ExtractRidges] Inverting DTM for ridge extraction...")
         
-        inverted_dtm = os.path.join(self.temp_directory, f"inverted_dtm_{postfix}.tif")
+        # Use a unique uid per run so repeated calls don't collide on temp files.
+        run_uid = f"{postfix}_{uuid.uuid4().hex[:8]}"
+        inverted_dtm = os.path.join(self.temp_directory, f"inverted_dtm_{run_uid}.tif")
         inverted_dtm = self._invert_dtm(dtm_path, inverted_dtm, feedback=feedback)  # Remove feedback to prevent multiple progress bars
         
         if feedback:
@@ -2314,7 +2663,7 @@ class TopoDrainCore:
             feedback.pushInfo("[ExtractRidges] Extracting ridges from inverted DTM (using extract_valleys function)...")
         else:
             print("[ExtractRidges] Extracting ridges from inverted DTM (using extract_valleys function)...")
-        # If the user did not supply, leave as None—extract_valleys will pick its defaults (which include postfix).
+        # If the user did not supply, leave as None—extract_valleys will pick its defaults (which include run_uid).
         inv_filled = inverted_filled_output_path
         inv_fdir   = inverted_fdir_output_path
         inv_facc   = inverted_facc_output_path
@@ -2331,7 +2680,7 @@ class TopoDrainCore:
             streams_output_path=inv_streams,
             accumulation_threshold=accumulation_threshold,
             dist_facc=dist_facc,
-            postfix=postfix,
+            postfix=run_uid,
             feedback=feedback 
         )
 
@@ -2346,26 +2695,38 @@ class TopoDrainCore:
     def extract_main_valleys(
         self,
         valley_lines: gpd.GeoDataFrame,
-        facc_path: str,
         perimeter: gpd.GeoDataFrame = None,
         nr_main: int = 2,
         clip_to_perimeter: bool = True,
         feedback=None
     ) -> gpd.GeoDataFrame:
         """
-        Identify and merge main valley lines based on the highest flow accumulation,
-        using only points uniquely associated with one TRIB_ID (to avoid confluent points).
+        Identify and merge main valley lines using the pre-computed TRIB_RANK / TRIB_FACC attributes.
+
+        TRIB_RANK and TRIB_FACC must be present in valley_lines (added automatically by extract_valleys
+        via _assign_stream_topology). No flow-accumulation raster is required.
+
+        Tributary selection is based on TRIB_FACC (highest max flow-accumulation wins) when the
+        column is present, otherwise falls back to TRIB_RANK (ascending).  Both attributes are
+        global across all disconnected sub-networks, so the nr_main tributaries with the
+        highest flow accumulation in the study area are selected.
 
         Args:
-            valley_lines (GeoDataFrame): Valley line network with 'LINK_ID', 'TRIB_ID', and 'DS_LINK_ID' attributes.
-            facc_path (str): Path to the flow accumulation raster.
+            valley_lines (GeoDataFrame): Valley line network with 'LINK_ID', 'TRIB_ID', 'DS_LINK_ID',
+                'TRIB_RANK', and 'TRIB_FACC' attributes (output of extract_valleys).
             perimeter (GeoDataFrame, optional): Polygon defining the area boundary. If None, uses valley_lines extent.
             nr_main (int): Number of main valleys to select.
             clip_to_perimeter (bool): If True, clips output to boundary polygon of perimeter.
             feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting/logging.
 
         Returns:
-            GeoDataFrame: Main valley lines with TRIB_ID, LINK_ID, RANK, and POLYGON_ID attributes.
+            GeoDataFrame: Main valley lines with attributes:
+            - TRIB_ID    (int)   – tributary group identifier (from input)
+            - LINK_ID    (int)   – sequential identifier for each merged output line
+            - RANK       (int)   – selection rank within this extraction (1 = highest TRIB_FACC / main valley)
+            - TRIB_RANK  (int)   – global TRIB_RANK from input (preserved for reference)
+            - POLYGON_ID (int)   – perimeter polygon index
+            - DS_LINK_ID (int)   – downstream link identifier (from input)
         """
         if feedback:
             feedback.pushInfo("[ExtractMainValleys] Starting main valley extraction...")
@@ -2379,29 +2740,22 @@ class TopoDrainCore:
         if valley_lines.empty:
             raise RuntimeError("[ExtractMainValleys] Input valley_lines is empty")
 
-        # Ensure LINK_ID field is present (required)
+        # Ensure required fields are present
         if 'LINK_ID' not in valley_lines.columns:
             raise RuntimeError("[ExtractMainValleys] Input valley_lines must have a 'LINK_ID' attribute. Please use valley lines generated by the Create Valleys algorithm.")
-        
-        # Ensure TRIB_ID field is present in valley_lines
-        if 'TRIB_ID' not in valley_lines.columns:
-            # Create TRIB_ID field using LINK_ID values as fallback
-            valley_lines = valley_lines.copy()  # Avoid modifying original
-            valley_lines['TRIB_ID'] = valley_lines['LINK_ID']
-            if feedback:
-                feedback.pushWarning("[ExtractMainValleys] Warning: 'TRIB_ID' column not found in valley_lines, using 'LINK_ID' values as fallback")
-            else:
-                warnings.warn("[ExtractMainValleys] Warning: 'TRIB_ID' column not found in valley_lines, using 'LINK_ID' values as fallback")
 
-        # Ensure DS_LINK_ID field is present in valley_lines (optional field, can be null)
+        if 'TRIB_ID' not in valley_lines.columns:
+            raise RuntimeError("[ExtractMainValleys] Input valley_lines must have a 'TRIB_ID' attribute. Please use valley lines generated by the Create Valleys algorithm.")
+
+        if 'TRIB_RANK' not in valley_lines.columns:
+            raise RuntimeError(
+                "[ExtractMainValleys] Input valley_lines must have a 'TRIB_RANK' attribute. "
+                "Please use valley lines generated by the current Create Valleys algorithm (TRIB_RANK is computed automatically by extract_valleys)."
+            )
+
         if 'DS_LINK_ID' not in valley_lines.columns:
-            # Create DS_LINK_ID field with null values (not critical for main valley extraction)
-            valley_lines = valley_lines.copy()  # Avoid modifying original
+            valley_lines = valley_lines.copy()
             valley_lines['DS_LINK_ID'] = None
-            if feedback:
-                feedback.pushWarning("[ExtractMainValleys] Warning: 'DS_LINK_ID' column not found in valley_lines, created with null values as fallback")
-            else:
-                warnings.warn("[ExtractMainValleys] Warning: 'DS_LINK_ID' column not found in valley_lines, created with null values as fallback")
 
         # Create perimeter from valley_lines extent if not provided
         if perimeter is None:
@@ -2409,52 +2763,20 @@ class TopoDrainCore:
                 feedback.pushInfo("[ExtractMainValleys] No perimeter provided, using valley lines extent...")
             else:
                 print("[ExtractMainValleys] No perimeter provided, using valley lines extent...")
-            
             perimeter = self._perimeter_from_features([valley_lines])
 
         if feedback:
-            feedback.pushInfo("[ExtractMainValleys] Reading flow accumulation raster...")
+            feedback.pushInfo("[ExtractMainValleys] Using pre-computed TRIB_RANK for tributary selection...")
             feedback.setProgress(10)
-            if feedback.isCanceled():
-                feedback.reportError('Process cancelled by user after reading flow accumulation raster.')
-                raise RuntimeError('Process cancelled by user.')
         else:
-            print("[ExtractMainValleys] Reading flow accumulation raster...")
-        
-        # Read flow accumulation raster using GDAL
-        facc_ds = gdal.Open(facc_path, gdal.GA_ReadOnly)
-        if facc_ds is None:
-            raise RuntimeError(f"Cannot open flow accumulation raster: {facc_path}.{self._get_gdal_error_message()}")
-            
-        try:
-            facc_band = facc_ds.GetRasterBand(1)
-            facc = facc_band.ReadAsArray()
-            if facc is None:
-                raise RuntimeError(f"Failed to read flow accumulation data from: {facc_path}.{self._get_gdal_error_message()}")
-            
-            # Get geotransform for coordinate conversion
-            geotransform = facc_ds.GetGeoTransform()
-            if geotransform is None:
-                raise RuntimeError(f"Failed to get geotransform from: {facc_path}.{self._get_gdal_error_message()}")
-            
-            res = abs(geotransform[1])  # pixel width
-            
-        finally:
-            facc_ds = None  # Close dataset
+            print("[ExtractMainValleys] Using pre-computed TRIB_RANK for tributary selection...")
 
         # Process each polygon in the perimeter separately
         all_merged_records = []
         global_fid_counter = 1
-        
+
         for poly_idx, poly_row in perimeter.iterrows():
-            # Create single polygon GeoDataFrame with thread-safe CRS handling
-            perimeter_crs_str = str(perimeter.crs) if perimeter.crs is not None else None
-            single_polygon = gpd.GeoDataFrame([poly_row])
-            # CRS will be set during save in utils.save_gdf_to_file()
-            
-            # Calculate progress based on polygon processing (20-80% range)
             polygon_progress = 20 + int((poly_idx / len(perimeter)) * 60)
-            
             if feedback:
                 feedback.pushInfo(f"[ExtractMainValleys] Processing polygon {poly_idx + 1}/{len(perimeter)}...")
                 feedback.setProgress(polygon_progress)
@@ -2464,12 +2786,9 @@ class TopoDrainCore:
             else:
                 print(f"[ExtractMainValleys] Processing polygon {poly_idx + 1}/{len(perimeter)}...")
 
-            if feedback:
-                feedback.pushInfo(f"[ExtractMainValleys] Clipping valley lines to polygon {poly_idx + 1}...")
-            else:
-                print(f"[ExtractMainValleys] Clipping valley lines to polygon {poly_idx + 1}...")
+            # Match CRS to valley_lines so gpd.overlay doesn't compare None vs CRS (crashes on Windows)
+            single_polygon = gpd.GeoDataFrame([poly_row], geometry=perimeter.geometry.name, crs=valley_lines.crs)
             valley_clipped = gpd.overlay(valley_lines, single_polygon, how="intersection")
-            
             if valley_clipped.empty:
                 if feedback:
                     feedback.pushInfo(f"[ExtractMainValleys] No valley lines found in polygon {poly_idx + 1}, skipping...")
@@ -2477,147 +2796,32 @@ class TopoDrainCore:
                     print(f"[ExtractMainValleys] No valley lines found in polygon {poly_idx + 1}, skipping...")
                 continue
 
-            if feedback:
-                feedback.pushInfo(f"[ExtractMainValleys] Rasterizing valley lines for polygon {poly_idx + 1}...")
-            else:
-                print(f"[ExtractMainValleys] Rasterizing valley lines for polygon {poly_idx + 1}...")
-            valley_raster_path = os.path.join(self.temp_directory, f"valley_mask_poly_{poly_idx}.tif")
-           
-           # All valley lines are rasterized together into a single binary mask (1 = valley cell, 0 = background)
-            valley_mask_path = self._vector_to_mask_raster(
-                features=[valley_clipped],
-                reference_raster_path=facc_path,
-                output_path=valley_raster_path,
-                unique_values=False,
-                flatten_lines=False,
-                buffer_lines=False
+            # Select top nr_main tributaries by TRIB_FACC (highest facc first) if available, else TRIB_RANK
+            use_facc = "TRIB_FACC" in valley_clipped.columns
+            trib_cols = ["TRIB_ID", "TRIB_RANK"] + (["TRIB_FACC"] if use_facc else [])
+            trib_info = (
+                valley_clipped[trib_cols]
+                .drop_duplicates("TRIB_ID")
+                .sort_values("TRIB_FACC" if use_facc else "TRIB_RANK",
+                             ascending=not use_facc)
+                .head(nr_main)
             )
-            if feedback:
-                feedback.pushInfo(f"[ExtractMainValleys] Valley mask created at {valley_mask_path}")
-            else:
-                print(f"[ExtractMainValleys] Valley mask created at {valley_mask_path}")
-
-            # Read the valley mask data from the saved raster file using GDAL
-            valley_lines_ds = gdal.Open(valley_mask_path, gdal.GA_ReadOnly)
-            if valley_lines_ds is None:
-                raise RuntimeError(f"Cannot open valley mask raster: {valley_mask_path}.{self._get_gdal_error_message()}")
-                
-            try:
-                valley_lines_band = valley_lines_ds.GetRasterBand(1)
-                valley_mask = valley_lines_band.ReadAsArray()
-                if valley_mask is None:
-                    raise RuntimeError(f"Failed to read valley mask data from: {valley_mask_path}.{self._get_gdal_error_message()}")
-                    
-            finally:
-                valley_lines_ds = None  # Close dataset
-
-            if feedback:
-                feedback.pushInfo(f"[ExtractMainValleys] Extracting facc > 0 points for polygon {poly_idx + 1}...")
-            else:
-                print(f"[ExtractMainValleys] Extracting facc > 0 points for polygon {poly_idx + 1}...")
-            mask = (valley_mask == 1) & (facc > 0)
-            rows, cols = np.where(mask)
-            if len(rows) == 0:
+            if trib_info.empty:
                 if feedback:
-                    feedback.pushInfo(f"[ExtractMainValleys] No valley cells with flow accumulation > 0 found in polygon {poly_idx + 1}, skipping...")
+                    feedback.pushWarning(f"[ExtractMainValleys] Warning: No tributaries found in polygon {poly_idx + 1}, skipping...")
                 else:
-                    print(f"[ExtractMainValleys] No valley cells with flow accumulation > 0 found in polygon {poly_idx + 1}, skipping...")
+                    warnings.warn(f"[ExtractMainValleys] Warning: No tributaries found in polygon {poly_idx + 1}, skipping...")
                 continue
 
-            # Points are created at the center coordinates of the raster cells containing valley lines with facc > 0
-            # Convert row,col indices to world coordinates using GDAL geotransform
-            coords = self._pixel_indices_to_coords(rows, cols, geotransform)
-            points = gpd.GeoDataFrame(geometry=gpd.points_from_xy(*zip(*coords)))
-            # CRS will be set during save in utils.save_gdf_to_file()
-            points["facc"] = facc[rows, cols]
-
+            selected_trib_ids = trib_info["TRIB_ID"].tolist()
             if feedback:
-                feedback.pushInfo(f"[ExtractMainValleys] Performing spatial join for polygon {poly_idx + 1}...")
+                feedback.pushInfo(f"[ExtractMainValleys] Selected TRIB_IDs for polygon {poly_idx + 1}: {selected_trib_ids} (by TRIB_RANK)")
             else:
-                print(f"[ExtractMainValleys] Performing spatial join for polygon {poly_idx + 1}...")
-            
-            # Ensure the required columns exist in valley_clipped (they should after validation above)
-            join_columns = ["geometry"]
-            for col in ["LINK_ID", "TRIB_ID", "DS_LINK_ID"]:
-                if col in valley_clipped.columns:
-                    join_columns.append(col)
-            
-            # Spatial Join with Original Vector Lines using buffered points to ensure all valley lines within raster cells are captured
-            # Buffer points by half the cell resolution to catch all lines passing through the raster cell
-            buffer_distance = res / 2.0  # Half cell size ensures we capture lines at cell edges
-            
-            points_buffered = points.copy()
-            points_buffered.geometry = points.geometry.buffer(buffer_distance)
-            
-            # Ensure spatial index is built for faster spatial join
-            if not valley_clipped.sindex:
-                valley_clipped.sindex
-            
-            points_joined = gpd.sjoin(
-                points_buffered,
-                valley_clipped[join_columns],
-                how="inner"
-            ).drop(columns="index_right")
-            
-            # Restore original point geometries for further processing
-            points_joined.geometry = points.geometry[points_joined.index]
+                print(f"[ExtractMainValleys] Selected TRIB_IDs for polygon {poly_idx + 1}: {selected_trib_ids} (by TRIB_RANK)")
 
-            if feedback:
-                feedback.pushInfo(f"[ExtractMainValleys] Filtering ambiguous facc points for polygon {poly_idx + 1}...")
-            else:
-                print(f"[ExtractMainValleys] Filtering ambiguous facc points for polygon {poly_idx + 1}...")
-            
-            # Removes any point that belongs to multiple TRIB_IDs. Prevents "Flow Accumulation Theft" at confluences.
-            points_joined["geom_wkt"] = points_joined.geometry.apply(lambda geom: geom.wkt)
-            geom_counts = points_joined.groupby("geom_wkt")["TRIB_ID"].nunique()
-            valid_geoms = geom_counts[geom_counts == 1].index
-            points_unique = points_joined[points_joined["geom_wkt"].isin(valid_geoms)].copy()
-
-            if points_unique.empty:
-                if feedback:
-                    feedback.pushWarning(f"[ExtractMainValleys] Warning: No unique valley points found in polygon {poly_idx + 1}, skipping...")
-                else:
-                    warnings.warn(f"[ExtractMainValleys] Warning: No unique valley points found in polygon {poly_idx + 1}, skipping...")
-                continue
-
-            if feedback:
-                feedback.pushInfo(f"[ExtractMainValleys] Selecting top {nr_main} TRIB_IDs for polygon {poly_idx + 1}...")
-            else:
-                print(f"[ExtractMainValleys] Selecting top {nr_main} TRIB_IDs for polygon {poly_idx + 1}...")
-            points_sorted = points_unique.sort_values("facc", ascending=False)
-            points_top = points_sorted.drop_duplicates(subset="TRIB_ID").head(nr_main)
-
-            if points_top.empty:
-                if feedback:
-                    feedback.pushWarning(f"[ExtractMainValleys] Warning: No main valley lines could be selected for polygon {poly_idx + 1}, skipping...")
-                else:
-                    warnings.warn(f"[ExtractMainValleys] Warning: No main valley lines could be selected for polygon {poly_idx + 1}, skipping...")
-                continue
-
-            selected_trib_ids = points_top["TRIB_ID"].unique()
-            if feedback:
-                feedback.pushInfo(f"[ExtractMainValleys] Selected TRIB_IDs for polygon {poly_idx + 1}: {list(selected_trib_ids)}")
-            else:
-                print(f"[ExtractMainValleys] Selected TRIB_IDs for polygon {poly_idx + 1}: {list(selected_trib_ids)}")
-
-            # Create ranking based on flow accumulation values (highest facc gets rank 1)
-            # points_top is already sorted by facc descending since it comes from points_sorted
-            trib_id_ranking = {}
-            for rank, (_, row) in enumerate(points_top.iterrows(), 1):
-                trib_id_ranking[row["TRIB_ID"]] = rank
-            
-            if feedback:
-                feedback.pushInfo(f"[ExtractMainValleys] TRIB_ID rankings for polygon {poly_idx + 1}: {trib_id_ranking}")
-            else:
-                print(f"[ExtractMainValleys] TRIB_ID rankings for polygon {poly_idx + 1}: {trib_id_ranking}")
-
-            if feedback:
-                feedback.pushInfo(f"[ExtractMainValleys] Merging valley line segments for polygon {poly_idx + 1}...")
-            else:
-                print(f"[ExtractMainValleys] Merging valley line segments for polygon {poly_idx + 1}...") # because maybe split by perimeter
-            for trib_id in selected_trib_ids:
+            for rank_pos, trib_id in enumerate(selected_trib_ids, 1):
                 lines = valley_lines[valley_lines["TRIB_ID"] == trib_id]
-
+                trib_rank = int(trib_info[trib_info["TRIB_ID"] == trib_id]["TRIB_RANK"].iloc[0])
                 cleaned = []
                 for geom in lines.geometry:
                     if geom.is_empty:
@@ -2626,28 +2830,24 @@ class TopoDrainCore:
                         cleaned.append(geom)
                     elif isinstance(geom, MultiLineString):
                         cleaned.extend([g for g in geom.geoms if isinstance(g, LineString)])
-
                 if cleaned:
                     try:
                         merged_line = linemerge(cleaned)
-                        # Get the first matching line to copy attributes from
                         first_line = lines.iloc[0]
-                        # Get the rank for this TRIB_ID
-                        rank = trib_id_ranking.get(trib_id, 999)  # Default to 999 if not found
                         all_merged_records.append({
                             "geometry": merged_line,
                             "TRIB_ID": trib_id,
                             "LINK_ID": global_fid_counter,
-                            "RANK": rank,  # Add ranking based on flow accumulation
+                            "RANK": rank_pos,
+                            "TRIB_RANK": trib_rank,
                             "POLYGON_ID": poly_idx + 1,
-                            # Copy other attributes if they exist
                             "DS_LINK_ID": first_line.get("DS_LINK_ID", None) if hasattr(first_line, 'get') else None
                         })
                         global_fid_counter += 1
                         if feedback:
-                            feedback.pushInfo(f"[ExtractMainValleys] Merged TRIB_ID={trib_id} (RANK={rank}) for polygon {poly_idx + 1}, segments={len(cleaned)}")
+                            feedback.pushInfo(f"[ExtractMainValleys] Merged TRIB_ID={trib_id} (RANK={rank_pos}, TRIB_RANK={trib_rank}) for polygon {poly_idx + 1}, segments={len(cleaned)}")
                         else:
-                            print(f"[ExtractMainValleys] Merged TRIB_ID={trib_id} (RANK={rank}) for polygon {poly_idx + 1}, segments={len(cleaned)}")
+                            print(f"[ExtractMainValleys] Merged TRIB_ID={trib_id} (RANK={rank_pos}, TRIB_RANK={trib_rank}) for polygon {poly_idx + 1}, segments={len(cleaned)}")
                     except Exception as e:
                         raise RuntimeError(f"[ExtractMainValleys] Failed to merge lines for TRIB_ID={trib_id} in polygon {poly_idx + 1}: {e}")
 
@@ -2667,6 +2867,15 @@ class TopoDrainCore:
                     raise RuntimeError('Process cancelled by user.')
             else:
                 print("[ExtractMainValleys] Clipping final valley lines to perimeter...")
+            # Sync CRS so gpd.overlay doesn't compare None vs CRS (crashes on Windows)
+            if perimeter.crs is not None and gdf.crs is None:
+                try:
+                    gdf = gdf.set_crs(perimeter.crs)
+                except Exception as e:
+                    if feedback:
+                        feedback.pushWarning(f"[ExtractMainValleys] Could not set CRS for clipping: {e}")
+                    else:
+                        print(f"[ExtractMainValleys] Could not set CRS for clipping: {e}")
             gdf = gpd.overlay(gdf, perimeter, how="intersection")
 
         # CRS will be set during save in utils.save_gdf_to_file()
@@ -2691,27 +2900,27 @@ class TopoDrainCore:
     def extract_main_ridges(
         self,
         ridge_lines: gpd.GeoDataFrame,
-        facc_path: str,
         perimeter: gpd.GeoDataFrame = None,
         nr_main: int = 2,
         clip_to_perimeter: bool = True,
         feedback=None
     ) -> gpd.GeoDataFrame:
         """
-        Identify and trace the main ridge lines (watershed divides) using the same logic as main valley detection.
-        Merging based on the highest flow accumulation,
-        using only points uniquely associated with one TRIB_ID (to avoid confluent points).
+        Identify and trace the main ridge lines using the same logic as extract_main_valleys.
+
+        TRIB_RANK must be present in ridge_lines (added automatically by extract_ridges via
+        _assign_stream_topology). No flow-accumulation raster is required.
 
         Args:
-            ridge_lines (GeoDataFrame): Ridge line network with 'LINK_ID', 'TRIB_ID', and 'DS_LINK_ID' attributes.
-            facc_path (str): Path to the flow accumulation raster (based on inverted DTM).
+            ridge_lines (GeoDataFrame): Ridge line network with 'LINK_ID', 'TRIB_ID', 'DS_LINK_ID',
+                'TRIB_RANK', and 'TRIB_FACC' attributes (output of extract_ridges).
             perimeter (GeoDataFrame, optional): Polygon defining the area boundary. If None, uses ridge_lines extent.
             nr_main (int): Number of main ridges to select.
             clip_to_perimeter (bool): If True, clips output to boundary polygon of perimeter.
             feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting/logging.
 
         Returns:
-            GeoDataFrame: Traced main ridge lines.
+            GeoDataFrame: Traced main ridge lines with TRIB_ID, LINK_ID, RANK, TRIB_RANK, POLYGON_ID, and DS_LINK_ID attributes.
         """
         if feedback:
             feedback.pushInfo("[ExtractMainRidges] Starting main ridge extraction using main valleys logic (extract_main_valleys)...")
@@ -2720,7 +2929,6 @@ class TopoDrainCore:
 
         gdf = self.extract_main_valleys(
             valley_lines=ridge_lines,
-            facc_path=facc_path,
             perimeter=perimeter,
             nr_main=nr_main,
             clip_to_perimeter=clip_to_perimeter,
@@ -2843,7 +3051,7 @@ class TopoDrainCore:
                         else:
                             # Use a default value if pixel is outside raster bounds
                             elevations.append(0.0)
-                    except:
+                    except Exception:
                         # Handle any GDAL errors
                         elevations.append(0.0)
 
@@ -4130,7 +4338,8 @@ class TopoDrainCore:
         barrier_raster_path: str = None,
         slope_deviation_threshold: float = 0.2,
         max_iterations_slope: int = 30,
-        feedback=None
+        feedback=None,
+        report_inner_vector_load_info=True,
     ) -> LineString:
         """
         Trace lines with constant slope starting from a given point using an iterative approach.
@@ -4152,18 +4361,18 @@ class TopoDrainCore:
         Returns:
             LineString: Refined constant slope path as a Shapely LineString, or None if no path found.
         """
-        if self.wbt is None:
-            raise RuntimeError("WhiteboxTools not initialized. Check WhiteboxTools configuration: QGIS settings -> Options -> Processing -> Provider -> WhiteboxTools -> WhiteboxTools executable.")
+        if self.wbt_executor is None:
+            raise RuntimeError("whitebox_workflows runtime not initialized. Check that whitebox_workflows is installed in the active QGIS Python environment.")
 
         print(f"[GetConstantSlopeLine] Starting constant slope line tracing")
         if feedback:
-            feedback.pushInfo(f"[GetConstantSlopeLine] Starting constant slope line tracing")
-            feedback.pushInfo(f"*for more information see in Python Console")
+            feedback.pushInfo("[GetConstantSlopeLine] Running inner slope iterations (details in Python Console)")
 
         print(f"[GetConstantSlopeLine] destination raster path: {destination_raster_path}")
         print(f"[GetConstantSlopeLine] barrier raster path: {barrier_raster_path}")
         print(f"[GetConstantSlopeLine] slope: {slope}, max_iterations_slope: {max_iterations_slope}, slope_deviation_threshold: {slope_deviation_threshold}")
 
+        call_uid = uuid.uuid4().hex[:8]
         current_start_point = start_point
         accumulated_line_coords = []
         
@@ -4174,17 +4383,15 @@ class TopoDrainCore:
                 raise RuntimeError("Operation cancelled by user")
             
             print(f"[GetConstantSlopeLine] *** Slope Iteration {iteration + 1}/max. {max_iterations_slope} ***")
-            if feedback:
-                feedback.pushInfo(f"[GetConstantSlopeLine] *** Slope Iteration {iteration + 1}/max. {max_iterations_slope} ***")
 
             # --- Temporary file paths ---
-            cost_raster_path = os.path.join(self.temp_directory, f"cost_iter_{iteration}.tif")
-            source_raster_path = os.path.join(self.temp_directory, f"source_iter_{iteration}.tif")
-            accum_raster_path = os.path.join(self.temp_directory, f"accum_iter_{iteration}.tif")
-            backlink_raster_path = os.path.join(self.temp_directory, f"backlink_iter_{iteration}.tif")
-            best_destination_raster_path = os.path.join(self.temp_directory, f"destination_best_iter_{iteration}.tif")
-            pathway_raster_path = os.path.join(self.temp_directory, f"pathway_iter_{iteration}.tif")
-            pathway_vector_path = os.path.join(self.temp_directory, f"pathway_iter_{iteration}.shp")
+            cost_raster_path = os.path.join(self.temp_directory, f"cost_{call_uid}_iter_{iteration}.tif")
+            source_raster_path = os.path.join(self.temp_directory, f"source_{call_uid}_iter_{iteration}.tif")
+            accum_raster_path = os.path.join(self.temp_directory, f"accum_{call_uid}_iter_{iteration}.tif")
+            backlink_raster_path = os.path.join(self.temp_directory, f"backlink_{call_uid}_iter_{iteration}.tif")
+            best_destination_raster_path = os.path.join(self.temp_directory, f"destination_best_{call_uid}_iter_{iteration}.tif")
+            pathway_raster_path = os.path.join(self.temp_directory, f"pathway_{call_uid}_iter_{iteration}.tif")
+            pathway_vector_path = os.path.join(self.temp_directory, f"pathway_{call_uid}_iter_{iteration}.gpkg")
 
             print(f"[GetConstantSlopeLine] Create cost slope raster for iteration {iteration + 1}")
             # --- Create cost raster ---
@@ -4211,18 +4418,27 @@ class TopoDrainCore:
             print(f"[GetConstantSlopeLine] Starting cost-distance analysis for iteration {iteration + 1}")
             # --- Run cost-distance analysis ---
             try:
-                ret = self._execute_wbt(
+                cost_distance_args = {
+                    "source": source_raster_path,
+                    "cost": cost_raster_path,
+                    "output": accum_raster_path,
+                    "backlink_output": backlink_raster_path,
+                }
+
+                ret = self.wbt_executor(
                     'cost_distance',
                     feedback=feedback,
                     report_progress=False,  # Don't override main progress bar
-                    source=source_raster_path,
-                    cost=cost_raster_path,
-                    out_accum=accum_raster_path,
-                    out_backlink=backlink_raster_path
+                    **cost_distance_args,
                 )
-                
+
                 if ret != 0 or not os.path.exists(accum_raster_path) or not os.path.exists(backlink_raster_path):
-                    raise RuntimeError(f"Cost distance analysis failed in iteration {iteration + 1}: WhiteboxTools returned {ret}")
+                    raise RuntimeError(
+                        f"Cost distance analysis failed in iteration {iteration + 1}: "
+                        f"WhiteboxTools returned {ret}; outputs missing "
+                        f"(accum_exists={os.path.exists(accum_raster_path)}, "
+                        f"backlink_exists={os.path.exists(backlink_raster_path)})"
+                    )
             except Exception as e:
                 # Check if cancellation was the cause
                 if feedback and feedback.isCanceled():
@@ -4251,7 +4467,7 @@ class TopoDrainCore:
             print(f"[GetConstantSlopeLine] Tracing least-cost pathway for iteration {iteration + 1}")
             # --- Trace least-cost pathway ---
             try:
-                ret = self._execute_wbt(
+                ret = self.wbt_executor(
                     'cost_pathway',
                     feedback=feedback,
                     report_progress=False,  # Don't override main progress bar
@@ -4305,7 +4521,8 @@ class TopoDrainCore:
                 snap_to_start_point=current_start_point, 
                 snap_to_endpoint=best_destination_point, 
                 output_vector_path=pathway_vector_path,
-                feedback=feedback
+                feedback=feedback,
+                report_vector_load_info=report_inner_vector_load_info,
             )
 
             print(f"[GetConstantSlopeLine] pathway vector path: {pathway_vector_path}")
@@ -4370,7 +4587,6 @@ class TopoDrainCore:
                 print(f"[GetConstantSlopeLine] *** End of Slope iteration {iteration+1} ***")
                 if feedback:
                     feedback.pushWarning(f"[GetConstantSlopeLine] Warning: Last iteration reached without finding fully valid line segment")
-                    feedback.pushInfo(f"[GetConstantSlopeLine] *** End of Slope iteration {iteration+1} ***")
 
             if last_iteration or cut_point is None or reached_destination:
                 # If we are at the last iteration or reached destination, we can add fully line segment instead of doing another iteration
@@ -4380,8 +4596,6 @@ class TopoDrainCore:
                 else:
                     accumulated_line_coords.extend(line_segment.coords)
                 print(f"[GetConstantSlopeLine] *** End of Slope iteration {iteration+1} ***")
-                if feedback:
-                    feedback.pushInfo(f"[GetConstantSlopeLine] *** End of Slope iteration {iteration+1} ***")
                 break
 
             else:
@@ -4398,8 +4612,6 @@ class TopoDrainCore:
                     current_start_point = cut_point
                     print(f"[GetConstantSlopeLine] *** End of Slope iteration {iteration+1} ***")
                     print(f"[GetConstantSlopeLine] Continuing from cut point: {cut_point}")
-                    if feedback:
-                        feedback.pushInfo(f"[GetConstantSlopeLine] *** End of Slope iteration {iteration+1} ***")
                     iteration += 1
                 else:
                     # If cutting failed, use the whole segment
@@ -4407,7 +4619,6 @@ class TopoDrainCore:
                     print(f"[GetConstantSlopeLine] *** End of Slope iteration {iteration+1} ***")
                     if feedback:
                         feedback.pushWarning(f"[GetConstantSlopeLine] Warning: Cutting failed, using whole line segment")
-                        feedback.pushInfo(f"[GetConstantSlopeLine] *** End of Slope iteration {iteration+1} ***")
                     if accumulated_line_coords:
                         # Skip first coordinate to avoid duplication
                         accumulated_line_coords.extend(line_segment.coords[1:])
@@ -4423,8 +4634,6 @@ class TopoDrainCore:
             return None
         else:
             print(f"[GetConstantSlopeLine] Completed after {iteration + 1} iterations")
-            if feedback:
-                feedback.pushInfo(f"[GetConstantSlopeLine] Completed after {iteration + 1} iterations") 
 
         final_line = LineString(accumulated_line_coords)
 
@@ -4433,8 +4642,6 @@ class TopoDrainCore:
         final_line = TopoDrainCore._smooth_linestring(final_line, sigma=1.0)
 
         print(f"[GetConstantSlopeLine] Finished processing") 
-        if feedback:
-            feedback.pushInfo(f"[GetConstantSlopeLine] Finished processing")
 
         return final_line
 
@@ -4473,8 +4680,8 @@ class TopoDrainCore:
         Returns:
             LineString: Least-cost slope path as a Shapely LineString, or None if no path found.
         """
-        if self.wbt is None:
-            raise RuntimeError("WhiteboxTools not initialized. Check WhiteboxTools configuration: QGIS settings -> Options -> Processing -> Provider -> WhiteboxTools -> WhiteboxTools executable.")
+        if self.wbt_executor is None:
+            raise RuntimeError("whitebox_workflows runtime not initialized. Check that whitebox_workflows is installed in the active QGIS Python environment.")
         
         current_iteration = 0
         current_start_point = start_point
@@ -4741,6 +4948,7 @@ class TopoDrainCore:
         slope_deviation_threshold: float = 0.2,
         max_iterations_slope: int = 20,
         feedback=None,
+        report_inner_vector_load_info=True,
     ) -> gpd.GeoDataFrame:
         """
         Modify constant slope lines by changing to a secondary slope after a specified distance.
@@ -4859,7 +5067,8 @@ class TopoDrainCore:
                 barrier_raster_path=barrier_raster_path,  # Use binary barrier raster for simple tracing
                 slope_deviation_threshold=slope_deviation_threshold,
                 max_iterations_slope=max_iterations_slope,
-                feedback=feedback
+                feedback=feedback,
+                report_inner_vector_load_info=report_inner_vector_load_info,
                 )
         
         if second_part_line is None:
@@ -5826,6 +6035,46 @@ class TopoDrainCore:
             print("[CreateKeylines] Starting keyline creation with flexible tracing...")
             print("[CreateKeylines] Progress: 0%")
 
+        run_uid = uuid.uuid4().hex[:8]
+
+        # Clean stale keyline-related temp artifacts from previous runs.
+        # Repeated runs can otherwise accumulate many intermediate rasters/vectors.
+        cleanup_prefixes = (
+            "cost_",
+            "source_",
+            "accum_",
+            "backlink_",
+            "destination_best_",
+            "pathway_",
+            "valley_unique_",
+            "ridge_unique_",
+            "perimeter_unique_",
+            "valley_binary_",
+            "ridge_binary_",
+            "perimeter_binary_",
+            "perimeter_polygon_mask_",
+            "barrier_",
+            "destination_",
+        )
+        removed_temp_files = 0
+        try:
+            if self.temp_directory and os.path.isdir(self.temp_directory):
+                for name in os.listdir(self.temp_directory):
+                    if not name.startswith(cleanup_prefixes):
+                        continue
+                    path = os.path.join(self.temp_directory, name)
+                    if os.path.isfile(path):
+                        try:
+                            os.remove(path)
+                            removed_temp_files += 1
+                        except OSError as e:
+                            _log.debug("[CreateKeylines] Could not remove temp file %s: %s", name, e)
+            if feedback and removed_temp_files > 0:
+                feedback.pushInfo(f"[CreateKeylines] Removed {removed_temp_files} stale temp files before run")
+        except Exception as exc:
+            if feedback:
+                feedback.pushWarning(f"[CreateKeylines] Temp cleanup skipped: {exc}")
+
 
         if perimeter is None or perimeter.empty:
             # Get bounding box of valley and ridge lines as perimeter if none provided
@@ -5866,9 +6115,9 @@ class TopoDrainCore:
             raise ValueError("Perimeter must be a GeoDataFrame with Polygon or MultiPolygon geometry")
         
         # Create unique value raster masks for valley, ridge and perimeter lines to classify start points
-        valley_unique_raster_path = os.path.join(self.temp_directory, "valley_unique.tif")
-        ridge_unique_raster_path = os.path.join(self.temp_directory, "ridge_unique.tif")
-        perimeter_unique_raster_path = os.path.join(self.temp_directory, "perimeter_unique.tif")
+        valley_unique_raster_path = os.path.join(self.temp_directory, f"valley_unique_{run_uid}.tif")
+        ridge_unique_raster_path = os.path.join(self.temp_directory, f"ridge_unique_{run_uid}.tif")
+        perimeter_unique_raster_path = os.path.join(self.temp_directory, f"perimeter_unique_{run_uid}.tif")
         
         # Rasterize valley, ridge and perimeter lines with unique values for each feature
         valley_unique_raster_path, valley_id_to_geom = self._vector_to_mask_raster([valley_lines], dtm_path, output_path=valley_unique_raster_path, unique_values=True, flatten_lines=True, buffer_lines=True)
@@ -5910,7 +6159,7 @@ class TopoDrainCore:
 
         # Create binary masks here, we use it multiple times below
         valley_binary_mask = (valley_unique_mask > 0).astype(np.uint8)
-        valley_binary_raster_path = os.path.join(self.temp_directory, f"valley_binary.tif")
+        valley_binary_raster_path = os.path.join(self.temp_directory, f"valley_binary_{run_uid}.tif")
         driver = gdal.GetDriverByName('GTiff')
         valley_binary_ds = driver.Create(valley_binary_raster_path, dtm_cols, dtm_rows, 1, gdal.GDT_Byte)
         try:
@@ -5921,7 +6170,7 @@ class TopoDrainCore:
         finally:
             valley_binary_ds = None
         ridge_binary_mask = (ridge_unique_mask > 0).astype(np.uint8)
-        ridge_binary_raster_path = os.path.join(self.temp_directory, f"ridge_binary.tif")
+        ridge_binary_raster_path = os.path.join(self.temp_directory, f"ridge_binary_{run_uid}.tif")
         ridge_binary_ds = driver.Create(ridge_binary_raster_path, dtm_cols, dtm_rows, 1, gdal.GDT_Byte)
         try:
             ridge_binary_ds.SetGeoTransform(dtm_geotransform)
@@ -5931,7 +6180,7 @@ class TopoDrainCore:
         finally:
             ridge_binary_ds = None
         perimeter_binary_mask = (perimeter_unique_mask > 0).astype(np.uint8)
-        perimeter_binary_raster_path = os.path.join(self.temp_directory, f"perimeter_binary.tif")
+        perimeter_binary_raster_path = os.path.join(self.temp_directory, f"perimeter_binary_{run_uid}.tif")
         perimeter_binary_ds = driver.Create(perimeter_binary_raster_path, dtm_cols, dtm_rows, 1, gdal.GDT_Byte)
         try:
             perimeter_binary_ds.SetGeoTransform(dtm_geotransform)
@@ -5943,7 +6192,7 @@ class TopoDrainCore:
 
         # Create perimeter polygon binary mask for efficient point-in-polygon checking
         # Create binary mask for perimeter polygons (not boundaries)
-        perimeter_polygon_raster_path = os.path.join(self.temp_directory, "perimeter_polygon_mask.tif")
+        perimeter_polygon_raster_path = os.path.join(self.temp_directory, f"perimeter_polygon_mask_{run_uid}.tif")
         perimeter_polygon_raster_path = self._vector_to_mask_raster([perimeter], dtm_path, output_path=perimeter_polygon_raster_path, unique_values=False, flatten_lines=False, buffer_lines=False)
         perimeter_polygon_ds = gdal.Open(perimeter_polygon_raster_path, gdal.GA_ReadOnly)
         if perimeter_polygon_ds is None:
@@ -6343,8 +6592,8 @@ class TopoDrainCore:
                         print(f"[CreateKeylines] Adjusted {overlap_count} overlapping barrier/destination cells for point {pt_idx}")
                 
                 # Save barrier and destination masks as raster files
-                barrier_raster_path = os.path.join(self.temp_directory, f"barrier_iter{iteration}_pt{pt_idx}.tif")
-                destination_raster_path = os.path.join(self.temp_directory, f"destination_iter{iteration}_pt{pt_idx}.tif")
+                barrier_raster_path = os.path.join(self.temp_directory, f"barrier_{run_uid}_iter{iteration}_pt{pt_idx}.tif")
+                destination_raster_path = os.path.join(self.temp_directory, f"destination_{run_uid}_iter{iteration}_pt{pt_idx}.tif")
                 
                 # Write barrier mask
                 if np.any(barrier_mask):
@@ -6401,7 +6650,8 @@ class TopoDrainCore:
                         barrier_raster_path=barrier_raster_path,
                         slope_deviation_threshold=slope_deviation_threshold,
                         max_iterations_slope=max_iterations_slope,
-                        feedback=feedback
+                        feedback=feedback,
+                        report_inner_vector_load_info=False,
                     )
 
                     if traced_line is not None and not traced_line.is_empty:
@@ -6418,7 +6668,7 @@ class TopoDrainCore:
                         feedback.reportError(f"[CreateKeylines] Error tracing line for point {pt_idx}: {str(e)}")
                     else:
                         print(f"[CreateKeylines] Error tracing line for point {pt_idx}: {str(e)}")
-                    #continue
+                    continue
     
                 # Apply slope adjustment if needed
                 if use_change_after is not None and use_slope_after is not None:
@@ -6434,6 +6684,7 @@ class TopoDrainCore:
                             slope_deviation_threshold=slope_deviation_threshold,
                             max_iterations_slope=max_iterations_slope,
                             feedback=feedback,
+                            report_inner_vector_load_info=False,
                         )
 
                         if adjusted_line is not None and not adjusted_line.is_empty:
@@ -6647,10 +6898,18 @@ class TopoDrainCore:
         # CRS will be set during save in utils.save_gdf_to_file()
         
         if feedback:
-            if result_gdf.crs is not None:
-                feedback.pushInfo(f"[CreateKeylines] Output CRS: {result_gdf.crs}")
+            has_geometry = (
+                hasattr(result_gdf, "columns")
+                and "geometry" in result_gdf.columns
+                and getattr(result_gdf, "geometry", None) is not None
+            )
+            if has_geometry:
+                if result_gdf.crs is not None:
+                    feedback.pushInfo(f"[CreateKeylines] Output CRS: {result_gdf.crs}")
+                else:
+                    feedback.pushInfo("[CreateKeylines] Output has no CRS - will be set during save")
             else:
-                feedback.pushInfo("[CreateKeylines] Output has no CRS - will be set during save")
+                feedback.pushWarning("[CreateKeylines] No geometry column in output (no keylines generated).")
         
         if feedback:
             feedback.setProgress(99)

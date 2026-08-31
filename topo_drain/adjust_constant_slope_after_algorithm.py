@@ -14,6 +14,7 @@ from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterRasterLayer
                        QgsProcessingParameterBoolean, QgsProcessing, QgsProcessingException, 
                        QgsProcessingParameterFeatureSource)
 import os
+import gc
 import geopandas as gpd
 from .utils import get_crs_from_layer, get_crs_from_project, ensure_whiteboxtools_configured, save_gdf_to_file, save_gdf_to_file_ogr, load_gdf_from_file, load_gdf_from_file_ogr, load_gdf_from_qgis_source, get_raster_ext, get_vector_ext, clear_pyproj_cache
 
@@ -332,8 +333,6 @@ Parameters:
         elif str(input_lines_gdf.crs) != str(self.core.crs):
             feedback.pushWarning(f"Input lines CRS ({input_lines_gdf.crs}) differs from DTM CRS ({self.core.crs}). Results may be incorrect!")
             feedback.pushWarning(f"Please transform input lines to match the DTM raster CRS before running this algorithm.")
-        
-            feedback.pushInfo(f"Transformed input lines from {input_lines_gdf.crs} to {self.core.crs}")
         
         feedback.pushInfo(f"Input lines: {len(input_lines_gdf)} features")
 

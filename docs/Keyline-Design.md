@@ -80,13 +80,19 @@ The tool uses a series of WhiteboxTools processes:
 3. **ExtractStreams** - Identifies stream network based on flow accumulation threshold
 4. **RasterStreamsToVector** - Converts raster streams to vector polylines
 5. **StreamLinkIdentifier** - Assigns unique IDs to individual stream segments
-6. **VectorStreamNetworkAnalysis** - Analyzes network topology and calculates stream properties
+6. **_assign_stream_topology (internal)** - Computes TRIB_ID, DS_LINK_ID, NET_ID, TRIB_RANK and TRIB_FACC attributes
 
 <img src="../resources/CreateValleys.png" alt="Create Valleys Dialog" width="600">
 
 #### Parameters
 
 - **Input DTM (Digital Terrain Model)**: Select your preprocessed Digital Terrain Model
+
+- **Clip DTM to Perimeter** (optional): Polygon defining the area of interest used to clip the DTM before processing.
+  - **Recommended for large DTM extents** (e.g. full canton/region): clipping to the relevant catchment area can reduce processing time. 
+  - Accepts any polygon layer, memory layers, or selected features.
+  - If not provided, the full DTM extent is processed.
+  - Remember: Flow accumulation is only calculated within the provided DTM extent. Ideally, the DTM should cover the **entire upstream catchment** of your keyline design area — not just the keyline design perimeter itself — so that flow accumulation values correctly reflect the full contributing drainage area.
 
 - **Advanced: Maximum search distance for breach paths in cells**: Maximum distance to search when breaching depressions
   - Default: 0
@@ -106,17 +112,16 @@ The tool generates several layers:
 
 1. **Output Valley Lines (polylines)** - The primary output showing valley lines
    - **Main result** layer for further analysis
-   - Contains attributes: `LINK_ID`, `TRIB_ID`, and `DS_LINK_ID` (used in subsequent tools)
+   - Contains attributes: `LINK_ID`, `TRIB_ID`, `DS_LINK_ID`, `NET_ID`, `TRIB_RANK`, `TRIB_FACC` (used in subsequent tools)
+   - `NET_ID` identifies disconnected sub-networks; `TRIB_RANK` and `TRIB_FACC` enable global tributary ranking in Extract Main Valleys
    - Recommend styling with thin blue lines for visualization
    
 2. **Output Filled DTM (raster)** - Depression-breached terrain model
-   - Not needed in further Keyline-Design process
    
 3. **Output Flow Direction Raster** - D8 flow direction grid
    - Only needed in further processing if you optionally you want to delinate watershed with "Delinate Watersheds" later
    
 4. **Output Flow Accumulation Raster** - Shows accumulated flow for each cell
-   - **Needed** in further Keyline-Design process (Extract Main Valleys)
    - Higher values indicate larger drainage areas
    
 5. **Output Log Accumulation Raster** - Logarithmic scale of flow accumulation
@@ -125,7 +130,6 @@ The tool generates several layers:
 
 6. **Output Stream Raster** - Rasterized stream network
    - Intermediate output before vectorization
-   - Not needed in further Keyline-Design process
 
 ---
 
@@ -136,6 +140,7 @@ The **Create Ridges (inverted stream network)** tool works similarly to the Crea
 It uses the same WhiteboxTools processes (D8Pointer, D8FlowAccumulation, ExtractStreams, etc.) on the inverted terrain model, where ridges become valleys in the inverted space.
 
 The parameters and outputs are identical to the Create Valleys tool, so refer to that section for detailed explanations.
+The **Clip DTM to Perimeter** optional parameter is also available and recommended for large DTM extents.
 
 **Styling recommendation:** Display ridge lines in orange/brown to distinguish them from valley lines.
 
@@ -145,7 +150,7 @@ The parameters and outputs are identical to the Create Valleys tool, so refer to
 
 ## Create Perimeter
 
-Before extracting main valleys and ridges, you need to define the boundary (perimeter) of your study area. This perimeter will be used to clip and focus the analysis on your area of interest.
+Before (or after) extracting main valleys and ridges, you need to define the boundary (perimeter) of your study area. This perimeter will be used to clip and focus the analysis on your area of interest.
 
 ### Creating a Perimeter Polygon
 
@@ -161,7 +166,7 @@ Before extracting main valleys and ridges, you need to define the boundary (peri
 6. Toggle editing mode (click the pencil icon) and use the **Add Polygon Feature** tool to digitize your perimeter polygon around your study area (e.g., around the agricultural field on the hillslope)
 7. Save edits when finished
 
-**Tip**: Consider valley and ridge lines when drawing your polygon. You may want to include important tributaries (valleys or ridges branches) that extend beyond the exact boundary of the agricultural field, as these features can be relevant for the overall Keyline Design. Conversely, you may want to exclude main tributaries that intersect the perimeter edge but are not relevant for your study area analysis. You may need to switch back and forth between perimeter editing and the “Extract Main Valleys” and “Extract Main Ridges” tools to refine the transition between valley, ridge, and perimeter lines — the perimeter boundaries act as the “final” ridge or valley.
+**Tip**: Consider valley and ridge lines when drawing your polygon. You may want to include important tributaries (valleys or ridges branches) that extend beyond the exact boundary of the agricultural field, as these features can be relevant for the overall Keyline Design. Conversely, you may want to exclude main tributaries that intersect the perimeter edge but are not relevant for your study area analysis — or simply delete those lines afterwards in edit mode. Remember: The perimeter boundaries act as the “final” ridge or valley.
 
 **Styling recommendation**: Set the polygon to have a black outline (no fill).
 
@@ -179,19 +184,17 @@ After creating the complete valley and ridge networks, you need to identify and 
 
 ### Extract Main Valleys
 
-The **Extract Main Valleys** tool identifies the most significant valley lines (flow paths) from the complete valley network by selecting the tributaries with the highest flow accumulation values within your perimeter. The tool extracts tributaries (flow paths) with the highest flow accumulation and ranks them by their maximum flow accumulation value within the perimeter area. 
+The **Extract Main Valleys** tool identifies the most significant valley lines from the complete valley network. Tributaries are selected **globally across all disconnected sub-networks** by their maximum flow accumulation (`TRIB_FACC`), so the `nr_main` tributaries with the highest flow accumulation in the entire study area are selected, regardless of which sub-network they belong to. The `NET_ID` attribute on the output can be used to distinguish tributaries on independent networks that may share the same `TRIB_RANK`.
+
+> **Note (updated behaviour):** The flow-accumulation raster parameter has been removed. The `TRIB_RANK`, `TRIB_FACC`, and `NET_ID` attributes are computed automatically by the Extract Valleys tool. The output attribute `RANK` (1 = main valley with highest flow accumulation in the selection) is distinct from `TRIB_RANK` (global rank across all tributaries in the full valley network).
 
 <img src="../resources/ExtractMainValleys.png" alt="Extract Main Valleys Dialog" width="600">
 
-> **Performance Note**: The **Extract Main Valleys** and **Extract Main Ridges** tools can take considerable time with large areas or dense valley/ridge networks. **Always provide a perimeter** to improve performance. The progress bar may stall around 20% for an extended period during spatial join operations - this is normal for large areas. You can create an issue on the GitHub "Issues" page if it's relevant to you.
 
 #### Parameters
 
 - **Input Valley Lines**: Select the **Output Valley Lines** from the "Create Valleys" tool
-  -* *Note**: Must have `LINK_ID`, `TRIB_ID`, and `DS_LINK_ID` attributes (automatically created by Create Valleys)
-
-- **Input Flow Accumulation Raster**: Select the **Output Flow Accumulation Raster** from the "Create Valleys" tool
-  - **Note**: Use the same flow accumulation raster that was used to create the valley lines
+  - **Note**: Must have `LINK_ID`, `TRIB_ID`, `DS_LINK_ID`, `TRIB_RANK`, and `TRIB_FACC` attributes (automatically created by Create Valleys)
 
 - **Input Perimeter Polygon**: Select your perimeter polygon layer
   - Optional: If not provided, uses the full extent of valley lines
@@ -199,7 +202,6 @@ The **Extract Main Valleys** tool identifies the most significant valley lines (
 - **Number of main valleys to extract**: Specify how many main valleys to extract
   - Default: 2
   - **Tip**: Try to guess the number of main tributaries (branches) from the Valleys layer. It's better to choose a higher value - you can always delete unnecessary main valley lines later in edit mode
-  - **Example**: If you see approximately 4 main valleys, choose 5 for this parameter to ensure you capture all important features
 
 - **Clip output to perimeter**: Whether to clip the output lines to the perimeter boundary
   - Default: True
@@ -208,9 +210,10 @@ The **Extract Main Valleys** tool identifies the most significant valley lines (
 #### Output
 
 **Output Main Valleys**: Line layer containing the main valley lines with attributes:
-- `LINK_ID` - Standard cross-platform identifier for each line segment
-- `TRIB_ID` - Tributary identifier
-- `RANK` - Valley order (1 = first main valley with highest flow accumulation, 2 = second highest, etc.)
+- `LINK_ID` - Standard cross-platform identifier for each output line
+- `TRIB_ID` - Tributary identifier (from input)
+- `RANK` - Selection rank (1 = main valley with highest flow accumulation in the extracted set, 2 = second, etc.)
+- `TRIB_RANK` - Global tributary rank from the full input network (preserved for reference; 1 = highest globally)
 - `POLYGON_ID` - Identifier if multiple perimeter polygons were used
 - `DS_LINK_ID` - Downstream link identifier
 
@@ -234,23 +237,26 @@ Add labels showing the **RANK** attribute to identify the valley order:
 
 1. Enable labels for the Main Valleys layer
 2. **Label with**: `RANK`
-3. This displays: 1 = first main valley (highest flow accumulation), 2 = second highest, etc.
+3. This displays: 1 = main valley with highest flow accumulation in the selection, 2 = second highest, etc.
 
 <img src="../resources/MainValleysLabel.png" alt="Main Valleys Labels" width="600">
 
 
-> **Note**: If you run a tool multiple times and overwrite an existing layer, you may need to refresh the layer visibility in QGIS. Right-click on the layer → **Change Data Source** → select the data file again to refresh the layer.
+> ⚠️ If you run a tool multiple times and overwrite an existing layer, you may need to refresh the layer visibility in QGIS. Right-click on the layer → **Change Data Source** → select the data file again to refresh the layer.
 
 ---
 
 ### Extract Main Ridges
 
-The **Extract Main Ridges** tool works identically to Extract Main Valleys, but operates on ridge lines instead of valley lines.
+The **Extract Main Ridges** tool works identically to Extract Main Valleys, but operates on ridge lines instead of valley lines. Ridges are also selected **globally** by `TRIB_FACC` (flow accumulation on inverted DTM).
+
+> **Note (updated behaviour):** Same changes as Extract Main Valleys: no flow-accumulation raster required; `TRIB_FACC` drives selection; output attributes are `RANK` (selection rank), `TRIB_RANK` (global rank from input), `NET_ID` (sub-network identifier).
 
 Use the same approach:
-- **Input Ridge Lines**: Select the **Output Ridge Lines** from the "Create Ridges" tool
-- **Input Flow Accumulation Raster**: Select the **Output Inverted Flow Accumulation Raster** from the "Create Ridges" tool (inverted flow accumulation)
+- **Input Ridge Lines**: Select the **Output Ridge Lines** from the "Create Ridges" tool (must have `LINK_ID`, `TRIB_ID`, `DS_LINK_ID`, `TRIB_RANK`, and `TRIB_FACC` attributes)
 - Configure the same parameters as described in the Extract Main Valleys section
+
+**Styling recommendation**: Use orange/brown thick lines to distinguish from main valleys.
 
 **Styling recommendation**: Use orange/brown thick lines to distinguish from main valleys.
 
@@ -268,7 +274,9 @@ Use the same approach:
 
 #### Step 1: Smooth the Lines
 
-⚠️ Before editing the Main Ridges and Main Valleys in QGIS, it's recommended to use the WhiteboxTools processing tool **"SmoothVectors"**:
+It's recommended to smooth the extracted lines using the WhiteboxTools processing tool **"SmoothVectors"** before editing:
+
+> **Note (v2.2+):** The **Extract Main Valleys** and **Extract Main Ridges** tools also include a built-in **Smooth output lines** option (with a configurable **Smooth filter size**) as an alternative to this separate step.
 
 - This reduces the number of vertices, making editing easier
 - It also improves useability for subsequent tools like "Get Points Along Line" (distance calculations are more appropriate on smoothed lines than on very wavy lines)
@@ -284,7 +292,7 @@ Edit the Main Valleys and Main Ridges layers to create a clean pattern:
 3. Delete unnecessary segments or features
 4. Repeat for Main Ridges layer
 
-**Pattern recommendation**: While the "Create Keylines" tool can handle valley-to-valley or ridge-to-ridge tracing, it's recommended to create a pattern with **alternating** features:
+**Pattern recommendation**: Although the "Create Keylines" tool can handle valley-to-valley or ridge-to-ridge tracing, it's recommended to create a pattern with **alternating** features:
 
 **Perimeter → Valley → Ridge → Valley → ... → Perimeter**
 
@@ -447,13 +455,15 @@ The algorithm creates a cost raster based on (Euclidean) distance and the expect
 #### Parameters
 
 - **Input DTM (Digital Terrain Model)**: Select your DTM raster layer
+  - **Tip**: Consider using the **Output Filled DTM** from the "Create Valleys" tool instead of the original DTM — it has depressions breached and is slightly smoother, which can improve keyline tracing quality.
+  - **Tip**: Alternatively or additionally, apply the WhiteboxTools **"Feature Preserving Smoothing"** tool to your DTM before use. This reduces surface noise while preserving terrain features such as ridges and valleys, and can further improve keyline tracing.
 
 - **Start Points**: Select your regularly spaced points layer
   - Select only the specific points where you want keylines to start from
   - **Recommended**: Start from points on main valley lines
   - **Note**: You can also start from ridge lines or from the perimeter (which automatically acts as ridge or valley), but always define slope parameters from the valley to ridge perspective regardless of start point
   - **Tip**: If createing Start Points manually use snapping option in edit mode
-  - **Tip**: Start with only 1-2 selected points first, even if you want to create more, to ensure it works as expected. Then select all desired points in a second run. Performance of the tool is not very good with many start points!
+  - **Tip**: Start with only 1-2 selected points first, even if you want to create more, to ensure it works as expected. Then select all desired points in a second run. Performance of the tool is not very good with many start points.
 
 - **Main Valley Lines**: Select your processed Main Valleys layer
 

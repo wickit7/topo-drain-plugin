@@ -138,8 +138,9 @@ def clear_pyproj_cache(feedback=None):
                                             if feedback:
                                                 feedback.pushInfo(f"[PyProj Cache Clear] Cleared CRS.__dict__[{key}]")
                                             cleared_something = True
-                                    except Exception:
-                                        pass
+                                    except Exception as e:
+                                        if feedback:
+                                            feedback.pushInfo(f"[PyProj Cache Clear] Could not clear CRS.__dict__[{key}]: {e}")
                             else:
                                 cache.clear()
                                 if feedback:
@@ -210,25 +211,25 @@ def clear_pyproj_cache(feedback=None):
 
 def ensure_whiteboxtools_configured(processing_instance, feedback=None):
     """
-    Utility function to ensure WhiteboxTools is configured before running algorithms.
-    Handles plugin connection and WhiteboxTools verification with proper feedback.
+    Utility function to ensure whitebox_workflows is configured before running algorithms.
+    Handles plugin connection and workflow runtime verification with proper feedback.
     
     Args:
         processing_instance: The processing algorithm instance that has a 'plugin' attribute
         feedback: QgsProcessingFeedback object for progress reporting
         
     Returns:
-        bool: True if WhiteboxTools is configured or verification was successful, False otherwise
+        bool: True if whitebox_workflows is configured or verification was successful, False otherwise
         
     Raises:
-        QgsProcessingException: If WhiteboxTools is not configured and feedback is None
+        QgsProcessingException: If whitebox_workflows is not configured and feedback is None
     """
     try:
         # First try to use existing plugin reference
         if hasattr(processing_instance, 'plugin') and processing_instance.plugin:
             if hasattr(processing_instance.plugin, 'ensure_whiteboxtools_configured'):
                 if not processing_instance.plugin.ensure_whiteboxtools_configured():
-                    error_msg = "WhiteboxTools is not configured. Please install and configure the WhiteboxTools for QGIS plugin."
+                    error_msg = "whitebox_workflows is not configured. Please install whitebox_workflows in the QGIS Python environment."
                     if feedback:
                         feedback.pushWarning(error_msg)
                         return False
@@ -236,11 +237,11 @@ def ensure_whiteboxtools_configured(processing_instance, feedback=None):
                         raise QgsProcessingException(error_msg)
                 else:
                     if feedback:
-                        feedback.pushInfo("WhiteboxTools configuration verified")
+                        feedback.pushInfo("whitebox_workflows configuration verified")
                     return True
             else:
                 if feedback:
-                    feedback.pushWarning("Plugin found but WhiteboxTools configuration method not available")
+                    feedback.pushWarning("Plugin found but whitebox_workflows configuration method not available")
                 return False
         else:
             # Try to automatically find and connect to the TopoDrain plugin
@@ -256,31 +257,31 @@ def ensure_whiteboxtools_configured(processing_instance, feedback=None):
                     if feedback:
                         feedback.pushInfo("Successfully connected to TopoDrain plugin")
                     
-                    # Now try to configure WhiteboxTools
+                    # Now try to configure whitebox_workflows
                     if hasattr(topo_drain_plugin, 'ensure_whiteboxtools_configured'):
                         if not topo_drain_plugin.ensure_whiteboxtools_configured():
                             if feedback:
-                                feedback.pushWarning("WhiteboxTools is not configured. Please install and configure the WhiteboxTools for QGIS plugin.")
+                                feedback.pushWarning("whitebox_workflows is not configured. Please install whitebox_workflows in the QGIS Python environment.")
                             return False
                         else:
                             if feedback:
-                                feedback.pushInfo("WhiteboxTools configuration verified")
+                                feedback.pushInfo("whitebox_workflows configuration verified")
                             return True
                     else:
                         if feedback:
-                            feedback.pushWarning("TopoDrain plugin found but configuration method not available")
+                            feedback.pushWarning("TopoDrain plugin found but workflow configuration method not available")
                         return False
                 else:
                     if feedback:
-                        feedback.pushWarning("TopoDrain plugin not found in QGIS registry - cannot verify WhiteboxTools configuration")
+                        feedback.pushWarning("TopoDrain plugin not found in QGIS registry - cannot verify whitebox_workflows configuration")
                     return False
             except Exception as e:
                 if feedback:
-                    feedback.pushWarning(f"Could not connect to TopoDrain plugin: {e} - continuing without WhiteboxTools verification")
+                    feedback.pushWarning(f"Could not connect to TopoDrain plugin: {e} - continuing without whitebox_workflows verification")
                 return False
                 
     except Exception as e:
-        error_msg = f"Error during WhiteboxTools configuration check: {e}"
+        error_msg = f"Error during whitebox_workflows configuration check: {e}"
         if feedback:
             feedback.pushWarning(error_msg)
             return False
@@ -602,7 +603,7 @@ def load_gdf_from_qgis_source(qgis_source, feedback=None):
         raise Exception(error_msg)
 
 
-def load_gdf_from_file(file_path, feedback=None):
+def load_gdf_from_file(file_path, feedback=None, report_info=True):
     """
     Load a GeoDataFrame from a file path, handling GeoPackage layer syntax.
     Automatically cleans QVariant data types for compatibility.
@@ -613,6 +614,7 @@ def load_gdf_from_file(file_path, feedback=None):
     Args:
         file_path (str): Path to the vector file, may include GeoPackage layer syntax
         feedback (QgsProcessingFeedback, optional): Processing feedback for logging
+        report_info (bool, optional): If True, emit informational progress logs. Warnings/errors are still reported regardless. Default True.
     
     Returns:
         gpd.GeoDataFrame: Loaded GeoDataFrame with cleaned data types
@@ -631,23 +633,23 @@ def load_gdf_from_file(file_path, feedback=None):
                 layer_part = file_path.split('|')[1]
                 layer_name = layer_part.split('=')[1] if '=' in layer_part else layer_part
                 
-                if feedback:
+                if feedback and report_info:
                     feedback.pushInfo(f"Loading GeoPackage layer: {gpkg_file}, layer: {layer_name}")
                 
                 gdf = gpd.read_file(gpkg_file, layer=layer_name)
             else:
                 # Regular file path
-                if feedback:
+                if feedback and report_info:
                     feedback.pushInfo(f"Loading vector file: {file_path}")
                 
                 gdf = gpd.read_file(file_path)
             
             # Automatically clean QVariant data types
-            if feedback:
+            if feedback and report_info:
                 feedback.pushInfo("Cleaning data types...")
             gdf = clean_qvariant_data(gdf)
             
-            if feedback:
+            if feedback and report_info:
                 feedback.pushInfo(f"Successfully loaded and cleaned {len(gdf)} features")
             
             return gdf
@@ -661,7 +663,7 @@ def load_gdf_from_file(file_path, feedback=None):
                     feedback.pushInfo("Falling back to OGR-based loading (no CRS)...")
                 
                 # Fallback to OGR-based loading
-                return load_gdf_from_file_ogr(file_path, feedback)
+                return load_gdf_from_file_ogr(file_path, feedback, report_info=report_info)
             else:
                 # Re-raise if it's not a CRS-related error
                 raise
@@ -673,7 +675,7 @@ def load_gdf_from_file(file_path, feedback=None):
         raise Exception(error_msg)
 
 
-def load_gdf_from_file_ogr(file_path, feedback=None):
+def load_gdf_from_file_ogr(file_path, feedback=None, report_info=True):
     """
     Load a GeoDataFrame from a file path using OGR directly (bypasses GeoPandas read_file).
     This avoids PyProj completely by using GDAL/OGR for reading - CRS is NOT loaded.
@@ -684,6 +686,7 @@ def load_gdf_from_file_ogr(file_path, feedback=None):
     Args:
         file_path (str): Path to the vector file, may include GeoPackage layer syntax
         feedback (QgsProcessingFeedback, optional): Processing feedback for logging
+        report_info (bool, optional): If True, emit informational progress logs. Warnings/errors are still reported regardless. Default True.
     
     Returns:
         gpd.GeoDataFrame: Loaded GeoDataFrame with cleaned data types and crs=None
@@ -709,10 +712,10 @@ def load_gdf_from_file_ogr(file_path, feedback=None):
             layer_part = file_path.split('|')[1]
             layer_name = layer_part.split('=')[1] if '=' in layer_part else layer_part
             
-            if feedback:
+            if feedback and report_info:
                 feedback.pushInfo(f"Loading GeoPackage layer with OGR: {actual_file_path}, layer: {layer_name}")
         else:
-            if feedback:
+            if feedback and report_info:
                 feedback.pushInfo(f"Loading vector file with OGR: {actual_file_path}")
         
         # Open data source
@@ -768,7 +771,7 @@ def load_gdf_from_file_ogr(file_path, feedback=None):
         ds = None
         
         if feature_count == 0:
-            if feedback:
+            if feedback and report_info:
                 feedback.pushInfo("No features found in file")
             return gpd.GeoDataFrame()
         
@@ -776,11 +779,11 @@ def load_gdf_from_file_ogr(file_path, feedback=None):
         gdf = gpd.GeoDataFrame(attributes, geometry=geometries, crs=None)
         
         # Clean QVariant data types
-        if feedback:
+        if feedback and report_info:
             feedback.pushInfo("Cleaning data types...")
         gdf = clean_qvariant_data(gdf)
         
-        if feedback:
+        if feedback and report_info:
             feedback.pushInfo(f"✓ Successfully loaded {len(gdf)} features using OGR (no CRS)")
         
         return gdf

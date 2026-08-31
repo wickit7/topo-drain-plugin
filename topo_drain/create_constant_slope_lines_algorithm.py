@@ -14,6 +14,7 @@ from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterRasterLayer
                        QgsProcessing, QgsProcessingException, QgsProcessingParameterFeatureSource,
                        QgsProcessingParameterBoolean)
 import os
+import gc
 import geopandas as gpd
 from .utils import get_crs_from_layer, ensure_whiteboxtools_configured, save_gdf_to_file, save_gdf_to_file_ogr, load_gdf_from_file, load_gdf_from_file_ogr, load_gdf_from_qgis_source, get_raster_ext, get_vector_ext, get_crs_from_project, clear_pyproj_cache
 

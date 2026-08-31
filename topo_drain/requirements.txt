@@ -3,3 +3,4 @@ pandas
 geopandas
 shapely
 scipy
+whitebox_workflows
