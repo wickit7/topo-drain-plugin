@@ -35,6 +35,10 @@ If you have downloaded multiple DTM tiles, you need to merge them into a single 
 
 > **Tip:** If your DTM has a large extent, you may want to clip it to your study area to make subsequent processing faster. Use the GDAL processing tool **"Clip raster by extent"** or **"Clip raster by mask layer"**.
 
+### Optional: Smoothing the DTM
+
+For noisy or high-resolution DTMs, applying the WhiteboxTools **"FeaturePreservingSmoothing"** tool can reduce noise while preserving terrain features, improving valley/ridge extraction and keyline tracing quality. Use the smoothed output as your DTM in subsequent steps.
+
 ### Optional: Burning Streams at Roads (for Watershed Delineation)
 
 If you plan to delineate water basins later (e.g., using the TopoDrain tool **"Delineate Watershed"**), you may want to apply preprocessing to ensure meaningful delineation at road crossings. 
