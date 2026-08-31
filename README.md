@@ -12,13 +12,13 @@ A QGIS plugin for planning surface drainage water management. It automates the e
    - [Installing whitebox_workflows](#installing-whitebox_workflows)
     - [Verify Installation](#verify-installation)
   - [Installing the TopoDrain Plugin](#installing-the-topodrain-plugin)
-- [Recommended QGIS Plugins](#recommended-qgis-plugins)
-  - [Profile Tool](#profile-tool)
-  - [For Users in Switzerland: Swiss Geo Downloader](#for-users-in-switzerland-swiss-geo-downloader)
 - [Documentation and Tutorials](#documentation-and-tutorials)
   - [Keyline Design Manual](#keyline-design-manual)
   - [Create Constant Slope Lines Manual](#create-constant-slope-lines-manual)
   - [Delineate Watersheds Manual](#delineate-watersheds-manual)
+- [Recommended QGIS Plugins](#recommended-qgis-plugins)
+  - [Profile Tool](#profile-tool)
+  - [For Users in Switzerland: Swiss Geo Downloader](#for-users-in-switzerland-swiss-geo-downloader)
 ## Installation Guide
 
 ### Installing QGIS
@@ -48,7 +48,6 @@ from pip._internal.cli.main import main
 main(["install", "whitebox_workflows"])
 ```
 
-After installation, restart QGIS and run a TopoDrain tool once to let the runtime initialize.
 
 ### Installing the TopoDrain Plugin
 
@@ -61,23 +60,6 @@ After installation, restart QGIS and run a TopoDrain tool once to let the runtim
 After installation, you will see TopoDrain tools in the **Processing Toolbox** under the TopoDrain section.
 
 <img src="resources/TopoDrain_installed.png" alt="TopoDrain in Processing Toolbox" width="600">
-
-## Recommended QGIS Plugins
-
-### Profile Tool
-The **Profile tool** plugin is highly recommended for verifying results created with TopoDrain tools. It allows you to plot terrain profiles, which is essential for checking the slope of created keylines respectively constant slope lines.
-
-**Installation:** Go to **Plugins → Manage and Install Plugins**, search for "Profile tool", and click **Install Plugin**.
-
-### For Users in Switzerland: Swiss Geo Downloader
-The **Swiss Geo Downloader** plugin is useful for downloading Digital Terrain Data (swissALTI3D) and other data directly within QGIS:
-1. Install the plugin from **Plugins → Manage and Install Plugins**
-2. Open the plugin: **Plugins → Swiss Geo Downloader**
-3. Search for dataset **swissALTI3D**
-4. Request file list
-5. Choose best resolution!
-6. Download tiles for your study site (TIF files)
-7. Use the GDAL **"Merge"** tool to combine multiple tiles into a single TIF file
 
 ## Documentation and Tutorials
 
@@ -118,3 +100,20 @@ This tutorial covers:
 - Creating valley networks from burned terrain models
 - Defining pour points (watershed outlets)
 - Automated watershed boundary delineation
+
+## Recommended QGIS Plugins
+
+### Profile Tool
+The **Profile tool** plugin is highly recommended for verifying results created with TopoDrain tools. It allows you to plot terrain profiles, which is essential for checking the slope of created keylines respectively constant slope lines.
+
+**Installation:** Go to **Plugins → Manage and Install Plugins**, search for "Profile tool", and click **Install Plugin**.
+
+### For Users in Switzerland: Swiss Geo Downloader
+The **Swiss Geo Downloader** plugin is useful for downloading Digital Terrain Data (swissALTI3D) and other data directly within QGIS:
+1. Install the plugin from **Plugins → Manage and Install Plugins**
+2. Open the plugin: **Plugins → Swiss Geo Downloader**
+3. Search for dataset **swissALTI3D**
+4. Request file list
+5. Choose best resolution!
+6. Download tiles for your study site (TIF files)
+7. Use the GDAL **"Merge"** tool to combine multiple tiles into a single TIF file
