@@ -89,9 +89,10 @@ The tool uses a series of WhiteboxTools processes:
 - **Input DTM (Digital Terrain Model)**: Select your preprocessed Digital Terrain Model
 
 - **Clip DTM to Perimeter** (optional): Polygon defining the area of interest used to clip the DTM before processing.
-  - **Strongly recommended for large DTM extents** (e.g. full canton/region): clipping to your study area can reduce processing time from tens of minutes to seconds.
+  - **Recommended for large DTM extents** (e.g. full canton/region): clipping to the relevant catchment area can reduce processing time. 
   - Accepts any polygon layer, memory layers, or selected features.
   - If not provided, the full DTM extent is processed.
+  - Remember: Flow accumulation is only calculated within the provided DTM extent. Ideally, the DTM should cover the **entire upstream catchment** of your keyline design area — not just the keyline design perimeter itself — so that flow accumulation values correctly reflect the full contributing drainage area.
 
 - **Advanced: Maximum search distance for breach paths in cells**: Maximum distance to search when breaching depressions
   - Default: 0
@@ -116,14 +117,12 @@ The tool generates several layers:
    - Recommend styling with thin blue lines for visualization
    
 2. **Output Filled DTM (raster)** - Depression-breached terrain model
-   - Not needed in further Keyline-Design process
    
 3. **Output Flow Direction Raster** - D8 flow direction grid
    - Only needed in further processing if you optionally you want to delinate watershed with "Delinate Watersheds" later
    
 4. **Output Flow Accumulation Raster** - Shows accumulated flow for each cell
    - Higher values indicate larger drainage areas
-   - **Note**: No longer required as input for Extract Main Valleys / Extract Main Ridges (TRIB_RANK is pre-computed by the Create Valleys/Ridges tool)
    
 5. **Output Log Accumulation Raster** - Logarithmic scale of flow accumulation
    - Better for visualization than raw accumulation values
@@ -131,7 +130,6 @@ The tool generates several layers:
 
 6. **Output Stream Raster** - Rasterized stream network
    - Intermediate output before vectorization
-   - Not needed in further Keyline-Design process
 
 ---
 
@@ -152,7 +150,7 @@ The **Clip DTM to Perimeter** optional parameter is also available and recommend
 
 ## Create Perimeter
 
-Before extracting main valleys and ridges, you need to define the boundary (perimeter) of your study area. This perimeter will be used to clip and focus the analysis on your area of interest.
+Before (or after) extracting main valleys and ridges, you need to define the boundary (perimeter) of your study area. This perimeter will be used to clip and focus the analysis on your area of interest.
 
 ### Creating a Perimeter Polygon
 
@@ -168,7 +166,7 @@ Before extracting main valleys and ridges, you need to define the boundary (peri
 6. Toggle editing mode (click the pencil icon) and use the **Add Polygon Feature** tool to digitize your perimeter polygon around your study area (e.g., around the agricultural field on the hillslope)
 7. Save edits when finished
 
-**Tip**: Consider valley and ridge lines when drawing your polygon. You may want to include important tributaries (valleys or ridges branches) that extend beyond the exact boundary of the agricultural field, as these features can be relevant for the overall Keyline Design. Conversely, you may want to exclude main tributaries that intersect the perimeter edge but are not relevant for your study area analysis. You may need to switch back and forth between perimeter editing and the “Extract Main Valleys” and “Extract Main Ridges” tools to refine the transition between valley, ridge, and perimeter lines — the perimeter boundaries act as the “final” ridge or valley.
+**Tip**: Consider valley and ridge lines when drawing your polygon. You may want to include important tributaries (valleys or ridges branches) that extend beyond the exact boundary of the agricultural field, as these features can be relevant for the overall Keyline Design. Conversely, you may want to exclude main tributaries that intersect the perimeter edge but are not relevant for your study area analysis — or simply delete those lines afterwards in edit mode. Remember: The perimeter boundaries act as the “final” ridge or valley.
 
 **Styling recommendation**: Set the polygon to have a black outline (no fill).
 
@@ -204,7 +202,6 @@ The **Extract Main Valleys** tool identifies the most significant valley lines f
 - **Number of main valleys to extract**: Specify how many main valleys to extract
   - Default: 2
   - **Tip**: Try to guess the number of main tributaries (branches) from the Valleys layer. It's better to choose a higher value - you can always delete unnecessary main valley lines later in edit mode
-  - **Example**: If you see approximately 4 main valleys, choose 5 for this parameter to ensure you capture all important features
 
 - **Clip output to perimeter**: Whether to clip the output lines to the perimeter boundary
   - Default: True
@@ -245,7 +242,7 @@ Add labels showing the **RANK** attribute to identify the valley order:
 <img src="../resources/MainValleysLabel.png" alt="Main Valleys Labels" width="600">
 
 
-> **Note**: If you run a tool multiple times and overwrite an existing layer, you may need to refresh the layer visibility in QGIS. Right-click on the layer → **Change Data Source** → select the data file again to refresh the layer.
+> ⚠️ If you run a tool multiple times and overwrite an existing layer, you may need to refresh the layer visibility in QGIS. Right-click on the layer → **Change Data Source** → select the data file again to refresh the layer.
 
 ---
 
@@ -277,9 +274,9 @@ Use the same approach:
 
 #### Step 1: Smooth the Lines
 
-> **New in v2.2:** The **Extract Main Valleys** and **Extract Main Ridges** tools now include a built-in **Smooth output lines** option (with a configurable **Smooth filter size**). Enable it directly in those tools to skip this separate step — the smoothed result is saved as the output layer.
+It's recommended to smooth the extracted lines using the WhiteboxTools processing tool **"SmoothVectors"** before editing:
 
-⚠️ If you did not enable smoothing in the extraction tools, it's recommended to smooth now using the WhiteboxTools processing tool **"SmoothVectors"** before editing:
+> **Note (v2.2+):** The **Extract Main Valleys** and **Extract Main Ridges** tools also include a built-in **Smooth output lines** option (with a configurable **Smooth filter size**) as an alternative to this separate step.
 
 - This reduces the number of vertices, making editing easier
 - It also improves useability for subsequent tools like "Get Points Along Line" (distance calculations are more appropriate on smoothed lines than on very wavy lines)
@@ -295,7 +292,7 @@ Edit the Main Valleys and Main Ridges layers to create a clean pattern:
 3. Delete unnecessary segments or features
 4. Repeat for Main Ridges layer
 
-**Pattern recommendation**: While the "Create Keylines" tool can handle valley-to-valley or ridge-to-ridge tracing, it's recommended to create a pattern with **alternating** features:
+**Pattern recommendation**: Although the "Create Keylines" tool can handle valley-to-valley or ridge-to-ridge tracing, it's recommended to create a pattern with **alternating** features:
 
 **Perimeter → Valley → Ridge → Valley → ... → Perimeter**
 
@@ -458,13 +455,15 @@ The algorithm creates a cost raster based on (Euclidean) distance and the expect
 #### Parameters
 
 - **Input DTM (Digital Terrain Model)**: Select your DTM raster layer
+  - **Tip**: Consider using the **Output Filled DTM** from the "Create Valleys" tool instead of the original DTM — it has depressions breached and is slightly smoother, which can improve keyline tracing quality.
+  - **Tip**: Alternatively or additionally, apply the WhiteboxTools **"Feature Preserving Smoothing"** tool to your DTM before use. This reduces surface noise while preserving terrain features such as ridges and valleys, and can further improve keyline tracing.
 
 - **Start Points**: Select your regularly spaced points layer
   - Select only the specific points where you want keylines to start from
   - **Recommended**: Start from points on main valley lines
   - **Note**: You can also start from ridge lines or from the perimeter (which automatically acts as ridge or valley), but always define slope parameters from the valley to ridge perspective regardless of start point
   - **Tip**: If createing Start Points manually use snapping option in edit mode
-  - **Tip**: Start with only 1-2 selected points first, even if you want to create more, to ensure it works as expected. Then select all desired points in a second run. Performance of the tool is not very good with many start points!
+  - **Tip**: Start with only 1-2 selected points first, even if you want to create more, to ensure it works as expected. Then select all desired points in a second run. Performance of the tool is not very good with many start points.
 
 - **Main Valley Lines**: Select your processed Main Valleys layer
 

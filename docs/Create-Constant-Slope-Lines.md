@@ -96,7 +96,7 @@ Open the **Processing Toolbox** in QGIS and then the tool **"Create Constant Slo
 
 - **Input DTM (Digital Terrain Model)**
   - Select your preprocessed DTM raster layer
-  - This provides elevation data for slope calculations
+  - **Tip**: Consider applying the WhiteboxTools **"Feature Preserving Smoothing"** tool to your DTM before use. This reduces surface noise while preserving terrain features, and can further improve line tracing.
 
 - **Start Points**
   - Select your `StartPoints` layer
