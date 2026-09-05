@@ -15,6 +15,7 @@ from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterVectorLayer
                        QgsProcessing, QgsProcessingParameterFeatureSource, QgsProcessingException)
 import gc
 import geopandas as gpd
+from shapely.ops import transform as _shapely_transform
 from .utils import get_crs_from_layer, ensure_whiteboxtools_configured, save_gdf_to_file, save_gdf_to_file_ogr, load_gdf_from_file, load_gdf_from_file_ogr, load_gdf_from_qgis_source, get_vector_ext, get_crs_from_project, clear_pyproj_cache
 
 pluginPath = os.path.dirname(__file__)
@@ -280,29 +281,44 @@ Output attributes: LINK_ID, TRIB_ID, RANK (1=highest flow accumulation in select
 
         if smooth_output:
             feedback.pushInfo(f"[ExtractMainValleys] Smoothing output (filter_size={smooth_filter_size})...")
-            smooth_input_path = os.path.join(self.core.temp_directory, f"smooth_input_{uuid.uuid4().hex[:8]}.gpkg")
-            smooth_output_path = os.path.join(self.core.temp_directory, f"smooth_output_{uuid.uuid4().hex[:8]}.gpkg")
-            save_gdf_to_file_ogr(main_valleys_gdf, smooth_input_path, self.core, feedback)
-            try:
-                ret = self.core.wbt_executor(
-                    'smooth_vectors',
-                    feedback=feedback,
-                    report_progress=False,
-                    input=smooth_input_path,
-                    output=smooth_output_path,
-                    filter_size=smooth_filter_size,
-                )
-                if ret != 0 or not os.path.exists(smooth_output_path):
-                    feedback.pushWarning("[ExtractMainValleys] Smoothing failed, using unsmoothed result")
-                else:
-                    smoothed_gdf = load_gdf_from_file_ogr(smooth_output_path, feedback)
-                    if not smoothed_gdf.empty:
-                        main_valleys_gdf = smoothed_gdf
-                        feedback.pushInfo("[ExtractMainValleys] Smoothing applied successfully")
+            smoothed_gdf = None
+            # Strip any Z dimension: whitebox_workflows' Vector model derives from the classic
+            # Shapefile geometry model, and a 3D geometry type declaration is a likely cause of
+            # its "must be of POLYLINE or POLYGON base shape type" rejection.
+            smooth_source_gdf = main_valleys_gdf.copy()
+            smooth_source_gdf['geometry'] = smooth_source_gdf.geometry.apply(
+                lambda g: _shapely_transform(lambda x, y, z=None: (x, y), g)
+            )
+            # GPKG first (matches all other temp I/O); if whitebox_workflows rejects our
+            # hand-written GPKG geometry type, retry once with Shapefile before giving up.
+            for smooth_ext in (".gpkg", ".shp"):
+                smooth_input_path = os.path.join(self.core.temp_directory, f"smooth_input_{uuid.uuid4().hex[:8]}{smooth_ext}")
+                smooth_output_path = os.path.join(self.core.temp_directory, f"smooth_output_{uuid.uuid4().hex[:8]}{smooth_ext}")
+                save_gdf_to_file_ogr(smooth_source_gdf, smooth_input_path, self.core, feedback)
+                try:
+                    ret = self.core.wbt_executor(
+                        'smooth_vectors',
+                        feedback=feedback,
+                        report_progress=False,
+                        input=smooth_input_path,
+                        output=smooth_output_path,
+                        filter_size=smooth_filter_size,
+                    )
+                    if ret != 0 or not os.path.exists(smooth_output_path):
+                        raise RuntimeError(f"smooth_vectors returned {ret}")
+                    candidate_gdf = load_gdf_from_file_ogr(smooth_output_path, feedback)
+                    if candidate_gdf.empty:
+                        raise RuntimeError("smoothed result is empty")
+                    smoothed_gdf = candidate_gdf
+                    break
+                except Exception as e:
+                    if smooth_ext == ".gpkg":
+                        feedback.pushWarning(f"[ExtractMainValleys] Smoothing via GPKG failed ({e}), retrying via Shapefile...")
                     else:
-                        feedback.pushWarning("[ExtractMainValleys] Smoothed result is empty, using unsmoothed result")
-            except Exception as e:
-                feedback.pushWarning(f"[ExtractMainValleys] Smoothing failed: {e}, using unsmoothed result")
+                        feedback.pushWarning(f"[ExtractMainValleys] Smoothing failed: {e}, using unsmoothed result")
+            if smoothed_gdf is not None:
+                main_valleys_gdf = smoothed_gdf
+                feedback.pushInfo("[ExtractMainValleys] Smoothing applied successfully")
 
         # Save result - use OGR on Windows to avoid PyProj crashes
         if self.core.disable_crs_operations:

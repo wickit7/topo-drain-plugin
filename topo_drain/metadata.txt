@@ -6,7 +6,7 @@
 name=TopoDrain
 qgisMinimumVersion=3.0
 description=A QGIS plugin for planning surface drainage water management like Keyline-Design.
-version=2.2.0
+version=2.2.1
 author=Timo Wicki
 email=wickitimo@gmail.com
 about=It automates the extraction of main valleys and ridges, creates off-contour line and supports creating Keyline Designs and other water-retention planning measures. The tool can also be used for other tasks, such as planning the location and alignment of paths and roads.
@@ -29,7 +29,10 @@ repository=https://github.com/wickit7/topo-drain-plugin
 hasProcessingProvider=yes
 # Uncomment the following line and add your changelog:
 
-changelog=2.0.0 - whitebox_workflows migration and algorithm I/O redesign
+changelog=2.2.1 - CRS handling, progress reporting and stability fixes
+    * Fixed false "no CRS" warnings/errors for QGIS-sourced vector inputs (outlet points, perimeters, etc.) without risking PyProj/PROJ crashes
+    * Fixed algorithm abort on invalid (e.g. self-intersecting) perimeter geometries; invalid polygons are now auto-repaired
+    2.0.0 - whitebox_workflows migration and algorithm I/O redesign
     * Migrated backend to whitebox_workflows (no standalone WhiteboxTools executable required anymore)
     * Create Valleys: added TRIB_RANK and TRIB_FACC attributes to valley lines output. Added perimeter as optional input.
     * Create Ridges: added TRIB_RANK and TRIB_FACC attributes to ridge lines output. Added perimeter as optional input.

@@ -37,6 +37,26 @@ except ImportError:
 
 _log = logging.getLogger(__name__)
 
+
+class _ScopedProgressFeedback:
+    """Wraps a QGIS feedback object, rescaling a tool's own 0-100% progress into [start, end]."""
+
+    def __init__(self, feedback, start: float, end: float):
+        self._feedback = feedback
+        self._start = start
+        self._end = end
+
+    def setProgress(self, value):
+        try:
+            scaled = self._start + (float(value) / 100.0) * (self._end - self._start)
+        except (TypeError, ValueError):
+            return
+        self._feedback.setProgress(scaled)
+
+    def __getattr__(self, name):
+        return getattr(self._feedback, name)
+
+
 # ---  Class TopoDrainCore ---
 class TopoDrainCore:
     def __init__(
@@ -360,6 +380,10 @@ class TopoDrainCore:
     def _temp_path(self, base: str, run_uid: str, ext: str = ".tif") -> str:
         """Return a namespaced temp file path: <temp_directory>/<base>_<run_uid><ext>"""
         return os.path.join(self.temp_directory, f"{base}_{run_uid}{ext}")
+
+    def _scoped_feedback(self, feedback, start: float, end: float):
+        """Wrap feedback so a tool's own 0-100% progress is rescaled into [start, end], or None if no feedback."""
+        return _ScopedProgressFeedback(feedback, start, end) if feedback else None
 
     ## Setters for class configuration
     def set_temp_directory(self, temp_dir):
@@ -1303,6 +1327,7 @@ class TopoDrainCore:
             # Configure warp options
             warp_options = gdal.WarpOptions(
                 format=driver_name,
+                srcSRS=self.crs if self.crs else None,
                 cutlineDSName=mem_ds,  # Use memory dataset as cutline
                 cutlineLayer='mask',
                 cropToCutline=True,
@@ -1341,7 +1366,7 @@ class TopoDrainCore:
             ret = self.wbt_executor(
                 'raster_calculator',
                 feedback=feedback,
-                report_progress=False,  # Don't override main progress bar
+                report_progress=True,
                 expression='-1 * "raster"',
                 inputs=[dtm_path],
                 output=output_path
@@ -2130,8 +2155,8 @@ class TopoDrainCore:
             try:
                 ret = self.wbt_executor(
                     'breach_depressions_least_cost',
-                    feedback=feedback,
-                    report_progress=False,
+                    feedback=self._scoped_feedback(feedback, 10, 25),
+                    report_progress=True,  # This step is often the slowest; show live progress within its 10-25% range
                     dem=dtm_path,
                     output=filled_output_path,
                     max_dist=int(dist_facc),
@@ -2177,8 +2202,8 @@ class TopoDrainCore:
             try:
                 ret = self.wbt_executor(
                     'd8_flow_accum',
-                    feedback=feedback,  # Pass feedback to enable cancellation during execution
-                    report_progress=False,  # Don't override main progress bar
+                    feedback=self._scoped_feedback(feedback, 40, 55),
+                    report_progress=True,  # Can be slow on large rasters; show live progress within its 40-55% range
                     raster=filled_output_path,
                     output=facc_output_path,
                     out_type="sca"
@@ -2356,6 +2381,7 @@ class TopoDrainCore:
         fdir_input_path: str,
         streams_input_path: str = None,
         max_snap_distance: float = 0,
+        outlet_points_crs: str = None,
         feedback=None
     ) -> gpd.GeoDataFrame:
         """
@@ -2366,6 +2392,8 @@ class TopoDrainCore:
             fdir_input_path (str): Path to the flow-direction raster (supports all GDAL formats in gdal_driver_mapping).
             streams_input_path (str, optional): Path to the stream raster. Needed if max_snap_distance > 0.
             max_snap_distance (float, optional): Distance which outlet point can be moved towards location with highest flow accumulation. Default: 0.
+            outlet_points_crs (str, optional): Real CRS of outlet_points (e.g., from the QGIS source), used
+                since outlet_points.crs is always None when loaded via load_gdf_from_qgis_source.
             feedback (QgsProcessingFeedback, optional): Optional feedback object for progress reporting/logging (for QGIS Plugin).
 
         Returns:
@@ -2402,34 +2430,41 @@ class TopoDrainCore:
                 print("[WatershedDelineation] Step 1/4: Preparing outlet points...")
 
             # whitebox_workflows requires CRS metadata on pour_points.
-            # If missing (e.g., selected-features export from QGIS source),
-            # inherit CRS from the flow-direction raster used for delineation.
+            # outlet_points.crs is always None here (load_gdf_from_qgis_source never sets it, to
+            # avoid PyProj calls). Recover a CRS string without ever touching PyProj/GeoDataFrame.crs:
+            # prefer the caller-supplied outlet_points_crs (real source CRS), then the already-configured
+            # self.crs (set earlier from the project/raster via QGIS APIs), then fall back to reading the
+            # flow-direction raster directly with GDAL.
             outlet_points_to_save = outlet_points.copy()
             if outlet_points_to_save.crs is None:
-                raster_crs_value = None
-                fdir_ds = gdal.Open(fdir_input_path, gdal.GA_ReadOnly)
-                if fdir_ds is not None:
-                    try:
-                        raster_srs = fdir_ds.GetSpatialRef()
-                        if raster_srs is not None:
-                            auth_name = raster_srs.GetAuthorityName(None)
-                            auth_code = raster_srs.GetAuthorityCode(None)
-                            if auth_name and auth_code:
-                                raster_crs_value = f"{auth_name}:{auth_code}"
-                            else:
-                                raster_crs_value = raster_srs.ExportToWkt()
-                    finally:
-                        fdir_ds = None
+                raster_crs_value = outlet_points_crs or self.crs
+
+                if not raster_crs_value:
+                    fdir_ds = gdal.Open(fdir_input_path, gdal.GA_ReadOnly)
+                    if fdir_ds is not None:
+                        try:
+                            raster_srs = fdir_ds.GetSpatialRef()
+                            if raster_srs is not None:
+                                auth_name = raster_srs.GetAuthorityName(None)
+                                auth_code = raster_srs.GetAuthorityCode(None)
+                                if auth_name and auth_code:
+                                    raster_crs_value = f"{auth_name}:{auth_code}"
+                                else:
+                                    raster_crs_value = raster_srs.ExportToWkt()
+                        finally:
+                            fdir_ds = None
 
                 if raster_crs_value:
                     # CRS is written by OGR save below via core.crs string; no PyProj call needed here
+                    if self.crs != raster_crs_value:
+                        self.crs = raster_crs_value
                     if feedback:
                         feedback.pushInfo(
-                            f"[WatershedDelineation] Outlet points had no CRS; assigned raster CRS: {raster_crs_value}"
+                            f"[WatershedDelineation] Outlet points had no CRS; using: {raster_crs_value}"
                         )
                     else:
                         print(
-                            f"[WatershedDelineation] Outlet points had no CRS; assigned raster CRS: {raster_crs_value}"
+                            f"[WatershedDelineation] Outlet points had no CRS; using: {raster_crs_value}"
                         )
                 else:
                     raise RuntimeError(
@@ -2649,7 +2684,11 @@ class TopoDrainCore:
         # Use a unique uid per run so repeated calls don't collide on temp files.
         run_uid = f"{postfix}_{uuid.uuid4().hex[:8]}"
         inverted_dtm = os.path.join(self.temp_directory, f"inverted_dtm_{run_uid}.tif")
-        inverted_dtm = self._invert_dtm(dtm_path, inverted_dtm, feedback=feedback)  # Remove feedback to prevent multiple progress bars
+        inverted_dtm = self._invert_dtm(
+            dtm_path,
+            inverted_dtm,
+            feedback=self._scoped_feedback(feedback, 0, 5),
+        )
         
         if feedback:
             feedback.pushInfo(f"[ExtractRidges] DTM inversion complete: {inverted_dtm}")
@@ -2867,15 +2906,10 @@ class TopoDrainCore:
                     raise RuntimeError('Process cancelled by user.')
             else:
                 print("[ExtractMainValleys] Clipping final valley lines to perimeter...")
-            # Sync CRS so gpd.overlay doesn't compare None vs CRS (crashes on Windows)
-            if perimeter.crs is not None and gdf.crs is None:
-                try:
-                    gdf = gdf.set_crs(perimeter.crs)
-                except Exception as e:
-                    if feedback:
-                        feedback.pushWarning(f"[ExtractMainValleys] Could not set CRS for clipping: {e}")
-                    else:
-                        print(f"[ExtractMainValleys] Could not set CRS for clipping: {e}")
+            # Both gdf and perimeter are always crs=None here (load_gdf_from_qgis_source/
+            # load_gdf_from_file_ogr never set a CRS), so overlay compares None == None safely.
+            # Never call .set_crs()/.to_crs() here: pyproj.CRS construction segfaults once WBW
+            # has corrupted PROJ's global state earlier in this process/session.
             gdf = gpd.overlay(gdf, perimeter, how="intersection")
 
         # CRS will be set during save in utils.save_gdf_to_file()

@@ -233,8 +233,10 @@ class TopoDrainPlugin(object):
 
         try:
             runtime = self.core.get_wbw_runtime(include_pro=False, tier="open")
-            # Reset session so next WBW call creates it fresh in the current worker thread.
-            # Reusing a session across QThreads causes PROJ thread-local crashes on Windows.
+            # Always rebuild the session for each algorithm run. Reusing a RuntimeSession
+            # across separate Processing runs (even from the same pooled thread) triggers an
+            # unrecoverable Rust-side assert/abort inside whitebox_workflows on the Nth run.
+            # This re-adds a brief per-run construction cost, but avoids a hard QGIS crash.
             runtime.reset_session()
             return runtime.is_available()
         except Exception as exc:
