@@ -12,11 +12,14 @@ import warnings
 import pandas as pd
 import geopandas as gpd
 import numpy as np
+from shapely.validation import make_valid
 from qgis.core import (
     QgsProject,
     QgsRasterLayer,
     QgsVectorLayer,
     QgsFeatureSource,
+    QgsFeatureRequest,
+    QgsProcessingFeatureSource,
     QgsProcessingException
 )
 
@@ -510,6 +513,18 @@ def clean_qvariant_data(gdf):
         return gdf
         
     cleaned_gdf = gdf.copy()
+    if cleaned_gdf.columns.has_duplicates:
+        used_names = set()
+        unique_names = []
+        for column in cleaned_gdf.columns:
+            candidate = str(column)
+            suffix = 2
+            while candidate in used_names:
+                candidate = f"{column}_{suffix}"
+                suffix += 1
+            used_names.add(candidate)
+            unique_names.append(candidate)
+        cleaned_gdf.columns = unique_names
     
     for column in cleaned_gdf.columns:
         if column == 'geometry':
@@ -558,6 +573,17 @@ def clean_qvariant_data(gdf):
     return cleaned_gdf
 
 
+def _make_valid_polygonal(geom):
+    """Repair an invalid polygon/multipolygon, discarding any non-polygonal parts make_valid() may produce."""
+    fixed = make_valid(geom)
+    if fixed.geom_type in ('Polygon', 'MultiPolygon'):
+        return fixed
+    polys = [g for g in getattr(fixed, 'geoms', [fixed]) if g.geom_type in ('Polygon', 'MultiPolygon')]
+    if not polys:
+        return fixed
+    return polys[0] if len(polys) == 1 else gpd.GeoSeries(polys).unary_union
+
+
 def load_gdf_from_qgis_source(qgis_source, feedback=None):
     """
     Load a GeoDataFrame from a QGIS QgsProcessingParameterFeatureSource.
@@ -568,7 +594,10 @@ def load_gdf_from_qgis_source(qgis_source, feedback=None):
         feedback (QgsProcessingFeedback, optional): Processing feedback for logging
     
     Returns:
-        gpd.GeoDataFrame: Loaded GeoDataFrame with cleaned data types and crs=None for safe handling
+        gpd.GeoDataFrame: Loaded GeoDataFrame with cleaned data types and crs=None for safe handling.
+                          Never call gdf.crs=/set_crs()/to_crs() here: pyproj.CRS.from_user_input()
+                          crashes once WBW has corrupted PROJ's global state in a prior run.
+                          Use get_crs_from_layer(qgis_source) to get the real CRS as a plain string instead.
     
     Raises:
         Exception: If source loading fails
@@ -578,14 +607,34 @@ def load_gdf_from_qgis_source(qgis_source, feedback=None):
         if feedback:
             feedback.pushInfo("Loading features from QGIS source...")
         
+        # Bypass QGIS's "Invalid features filtering" setting, which otherwise aborts the whole
+        # algorithm on any invalid (e.g. self-intersecting) geometry instead of just this feature.
+        # QgsProcessingFeatureSource overrides a plain request's own check with its own configured
+        # one, so the FlagSkipGeometryValidityChecks flag is required (not just the request flag).
+        request = QgsFeatureRequest()
+        request.setInvalidGeometryCheck(QgsFeatureRequest.GeometryNoCheck)
+        if isinstance(qgis_source, QgsProcessingFeatureSource):
+            features = qgis_source.getFeatures(request, QgsProcessingFeatureSource.FlagSkipGeometryValidityChecks)
+        else:
+            features = qgis_source.getFeatures(request)
+
         # Load GeoDataFrame from QGIS source features
-        gdf = gpd.GeoDataFrame.from_features(qgis_source.getFeatures())
+        gdf = gpd.GeoDataFrame.from_features(features)
         
         if gdf.empty:
             if feedback:
                 feedback.pushInfo("No features found in QGIS source")
             return gdf
         
+        # Repair invalid polygon geometries (e.g. self-intersections) so downstream
+        # buffering/clipping doesn't fail or silently produce empty results.
+        if gdf.geom_type.isin(['Polygon', 'MultiPolygon']).any():
+            invalid_mask = ~gdf.geometry.is_valid
+            if invalid_mask.any():
+                if feedback:
+                    feedback.pushWarning(f"Repairing {int(invalid_mask.sum())} invalid geometries from QGIS source...")
+                gdf.loc[invalid_mask, 'geometry'] = gdf.loc[invalid_mask, 'geometry'].apply(_make_valid_polygonal)
+
         # Automatically clean QVariant data types
         if feedback:
             feedback.pushInfo("Cleaning data types...")
@@ -607,72 +656,23 @@ def load_gdf_from_file(file_path, feedback=None, report_info=True):
     """
     Load a GeoDataFrame from a file path, handling GeoPackage layer syntax.
     Automatically cleans QVariant data types for compatibility.
-    
-    This function handles both regular file paths and QGIS GeoPackage layer paths
-    in the format "/path/file.gpkg|layername=layer_name".
-    
+
+    Delegates entirely to load_gdf_from_file_ogr(): gpd.read_file() constructs a
+    pyproj.CRS internally, which segfaults (not a catchable Python exception) once
+    WBW has corrupted PROJ's global state earlier in this process/session.
+
     Args:
         file_path (str): Path to the vector file, may include GeoPackage layer syntax
         feedback (QgsProcessingFeedback, optional): Processing feedback for logging
         report_info (bool, optional): If True, emit informational progress logs. Warnings/errors are still reported regardless. Default True.
     
     Returns:
-        gpd.GeoDataFrame: Loaded GeoDataFrame with cleaned data types
+        gpd.GeoDataFrame: Loaded GeoDataFrame with cleaned data types and crs=None
     
     Raises:
         Exception: If file loading fails
     """
-
-    try:
-        # Try GeoPandas read_file first (faster if PyProj works)
-        try:
-            # Handle GeoPackage layer paths for GeoPandas
-            if '|' in file_path and 'layername=' in file_path:
-                # Parse GeoPackage path: "/path/file.gpkg|layername=layer_name"
-                gpkg_file = file_path.split('|')[0]
-                layer_part = file_path.split('|')[1]
-                layer_name = layer_part.split('=')[1] if '=' in layer_part else layer_part
-                
-                if feedback and report_info:
-                    feedback.pushInfo(f"Loading GeoPackage layer: {gpkg_file}, layer: {layer_name}")
-                
-                gdf = gpd.read_file(gpkg_file, layer=layer_name)
-            else:
-                # Regular file path
-                if feedback and report_info:
-                    feedback.pushInfo(f"Loading vector file: {file_path}")
-                
-                gdf = gpd.read_file(file_path)
-            
-            # Automatically clean QVariant data types
-            if feedback and report_info:
-                feedback.pushInfo("Cleaning data types...")
-            gdf = clean_qvariant_data(gdf)
-            
-            if feedback and report_info:
-                feedback.pushInfo(f"Successfully loaded and cleaned {len(gdf)} features")
-            
-            return gdf
-            
-        except Exception as geopandas_error:
-            # Check if it's a PyProj CRS error
-            error_str = str(geopandas_error).lower()
-            if "expected bytes" in error_str or "crs" in error_str or "pyproj" in error_str:
-                if feedback:
-                    feedback.pushWarning(f"GeoPandas load failed (PyProj CRS issue): {geopandas_error}")
-                    feedback.pushInfo("Falling back to OGR-based loading (no CRS)...")
-                
-                # Fallback to OGR-based loading
-                return load_gdf_from_file_ogr(file_path, feedback, report_info=report_info)
-            else:
-                # Re-raise if it's not a CRS-related error
-                raise
-    
-    except Exception as e:
-        error_msg = f"Failed to load vector file '{file_path}': {e}"
-        if feedback:
-            feedback.pushInfo(error_msg)
-        raise Exception(error_msg)
+    return load_gdf_from_file_ogr(file_path, feedback, report_info=report_info)
 
 
 def load_gdf_from_file_ogr(file_path, feedback=None, report_info=True):
@@ -814,6 +814,11 @@ def _remove_id_columns_and_retry(gdf, file_path, driver, feedback):
 
 
 def save_gdf_to_file(gdf, file_path, core, feedback, all_upper=False):
+    """Save a vector output through the CRS-safe OGR writer."""
+    return save_gdf_to_file_ogr(gdf, file_path, core, feedback, all_upper=all_upper)
+
+
+def _save_gdf_to_file_geopandas_legacy(gdf, file_path, core, feedback, all_upper=False):
     """
     Save GeoDataFrame to file with proper format handling using core's OGR driver mapping.
     Automatically cleans QVariant data types before saving to prevent field type errors.
@@ -970,6 +975,15 @@ def save_gdf_to_file_ogr(gdf, file_path, core, feedback, all_upper=False):
         if feedback:
             feedback.pushInfo("Cleaning data types before saving...")
         cleaned_gdf = clean_qvariant_data(gdf)
+
+        # Drop any 'fid'/'id' column: GPKG/OGR treats a field literally named "fid" as the
+        # primary key, so leftover/duplicate values from a source layer (e.g. after merging
+        # features) violate its UNIQUE constraint on insert.
+        id_columns = [col for col in cleaned_gdf.columns if col.lower() in ('fid', 'id')]
+        if id_columns:
+            cleaned_gdf = cleaned_gdf.drop(columns=id_columns)
+            if feedback:
+                feedback.pushInfo(f"Dropped id-like columns before OGR save: {id_columns}")
         
         # Get file extension and driver
         file_ext = os.path.splitext(file_path)[1].lower()
@@ -1025,24 +1039,23 @@ def save_gdf_to_file_ogr(gdf, file_path, core, feedback, all_upper=False):
         if ds is None:
             raise QgsProcessingException(f"Could not create data source: {file_path}")
         
-        # Determine geometry type from first geometry
+        # Determine geometry type: use the first non-null geometry (not just row 0, which may be
+        # None), and promote to the Multi* variant if the geometries are a mix of single/multi
+        # parts. Falling back to wkbUnknown/"GEOMETRY" instead of a concrete type is what caused
+        # whitebox_workflows to reject the file with "must be of POLYLINE or POLYGON base shape type".
         geom_type = ogr.wkbUnknown
         if len(cleaned_gdf) > 0:
-            first_geom = cleaned_gdf.iloc[0].geometry
-            if first_geom is not None:
-                from shapely.geometry import Point, LineString, Polygon, MultiPoint, MultiLineString, MultiPolygon
-                if isinstance(first_geom, Point):
-                    geom_type = ogr.wkbPoint
-                elif isinstance(first_geom, LineString):
-                    geom_type = ogr.wkbLineString
-                elif isinstance(first_geom, Polygon):
-                    geom_type = ogr.wkbPolygon
-                elif isinstance(first_geom, MultiPoint):
-                    geom_type = ogr.wkbMultiPoint
-                elif isinstance(first_geom, MultiLineString):
-                    geom_type = ogr.wkbMultiLineString
-                elif isinstance(first_geom, MultiPolygon):
-                    geom_type = ogr.wkbMultiPolygon
+            from shapely.geometry import Point, LineString, Polygon, MultiPoint, MultiLineString, MultiPolygon
+            non_null_geoms = [g for g in cleaned_gdf.geometry if g is not None]
+            if non_null_geoms:
+                has_multi = any(isinstance(g, (MultiPoint, MultiLineString, MultiPolygon)) for g in non_null_geoms)
+                first_geom = non_null_geoms[0]
+                if isinstance(first_geom, (Point, MultiPoint)):
+                    geom_type = ogr.wkbMultiPoint if has_multi else ogr.wkbPoint
+                elif isinstance(first_geom, (LineString, MultiLineString)):
+                    geom_type = ogr.wkbMultiLineString if has_multi else ogr.wkbLineString
+                elif isinstance(first_geom, (Polygon, MultiPolygon)):
+                    geom_type = ogr.wkbMultiPolygon if has_multi else ogr.wkbPolygon
         
         # Create layer
         layer_name = os.path.splitext(os.path.basename(file_path))[0]

@@ -248,14 +248,33 @@ Use Cases:
         outlet_points_gdf = load_gdf_from_qgis_source(outlet_points_source, feedback)
         
         if outlet_points_gdf.empty:
-            raise QgsProcessingException("No features found in outlet points input")
+            source_path = self.parameterAsString(
+                parameters, self.INPUT_OUTLET_POINTS, context
+            )
+            if hasattr(outlet_points_source, 'source'):
+                processing_source_path = outlet_points_source.source()
+                if processing_source_path:
+                    feedback.pushInfo(
+                        f"Processing source URI: {processing_source_path}"
+                    )
+                    source_path = processing_source_path
+            if source_path:
+                feedback.pushWarning(
+                    "QGIS returned no features; retrying the outlet layer directly with OGR: "
+                    f"{source_path}"
+                )
+                outlet_points_gdf = load_gdf_from_file_ogr(source_path, feedback)
+            if outlet_points_gdf.empty:
+                raise QgsProcessingException("No features found in outlet points input")
 
         # Note: Avoid calling .set_crs() or .to_crs() to prevent PyProj crashes on Windows
-        # User should ensure outlet points are in the same CRS as flow direction raster
-        if outlet_points_gdf.crs is None:
+        # outlet_points_gdf.crs is always None (load_gdf_from_qgis_source never sets it), so
+        # get the real source CRS via QGIS APIs (no PyProj involved) for warnings/fallback.
+        outlet_points_crs = get_crs_from_layer(outlet_points_source)
+        if outlet_points_crs is None:
             feedback.pushWarning(f"Outlet points have no CRS! This may cause issues. Please ensure CRS is set correctly.")
-        elif str(outlet_points_gdf.crs) != str(self.core.crs):
-            feedback.pushWarning(f"Outlet points CRS ({outlet_points_gdf.crs}) differs from flow direction CRS ({self.core.crs}). Results may be incorrect!")
+        elif str(outlet_points_crs) != str(self.core.crs):
+            feedback.pushWarning(f"Outlet points CRS ({outlet_points_crs}) differs from flow direction CRS ({self.core.crs}). Results may be incorrect!")
             feedback.pushWarning(f"Please transform outlet points to match the flow direction raster CRS before running this algorithm.")
         
         feedback.pushInfo(f"Outlet Points: {len(outlet_points_gdf)} features")
@@ -270,6 +289,7 @@ Use Cases:
         feedback.pushInfo("Running watershed delineation...")
         watersheds_gdf = self.core.delineate_watersheds(
             outlet_points=outlet_points_gdf,
+            outlet_points_crs=outlet_points_crs,
             fdir_input_path=fdir_path,
             streams_input_path=streams_path,
             max_snap_distance=max_snap_distance,

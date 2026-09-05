@@ -181,6 +181,8 @@ class CreateValleysAlgorithm(QgsProcessingAlgorithm):
         # CRITICAL: Clear PyProj cache at start to prevent Windows crashes on repeated runs
         # This removes stale CRS object pointers from previous QThread runs
         #clear_pyproj_cache(feedback) # seems not to resolve the issue
+        feedback.pushInfo("[CreateValleys] Initializing processing task...")
+        feedback.setProgress(1)
         
         # Ensure WhiteboxTools is configured before running
         if not ensure_whiteboxtools_configured(self, feedback):
@@ -293,11 +295,16 @@ class CreateValleysAlgorithm(QgsProcessingAlgorithm):
                 f"dtm_clipped_{uuid.uuid4().hex[:8]}.tif"
             )
             feedback.pushInfo(f"[CreateValleys] Clipping DTM to perimeter extent → {clipped_dtm_path}")
+            def _warp_progress(complete, message, unknown):
+                feedback.setProgress(complete * 10)  # DTM clip occupies the 0-10% range
+                return not feedback.isCanceled()
             warp_options = gdal.WarpOptions(
                 format='GTiff',
+                srcSRS=effective_crs,
                 cutlineDSName=perimeter_temp_path,
                 cropToCutline=True,
-                creationOptions=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=IF_SAFER']
+                creationOptions=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=IF_SAFER'],
+                callback=_warp_progress
             )
             result_ds = gdal.Warp(clipped_dtm_path, dtm_path, options=warp_options)
             if result_ds is None:

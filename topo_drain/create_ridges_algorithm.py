@@ -180,6 +180,8 @@ class CreateRidgesAlgorithm(QgsProcessingAlgorithm):
     def processAlgorithm(self, parameters, context, feedback):
         # CRITICAL: Clear PyProj cache at start to prevent Windows crashes on repeated runs
         #clear_pyproj_cache(feedback) # seems not to resolve the issue
+        feedback.pushInfo("[CreateRidges] Initializing processing task...")
+        feedback.setProgress(1)
         
         # Ensure WhiteboxTools is configured before running
         if not ensure_whiteboxtools_configured(self, feedback):
@@ -255,13 +257,14 @@ class CreateRidgesAlgorithm(QgsProcessingAlgorithm):
         feedback.pushInfo("Reading CRS from DTM...")
         dtm_crs = get_crs_from_layer(dtm_layer)
         feedback.pushInfo(f"DTM Layer crs: {dtm_crs}")
+        effective_crs = dtm_crs or project_crs or self.core.crs
         # Adjust core crs with input crs but only if it is None
         if self.core.crs is None:
-            feedback.pushInfo(f"Setting core CRS from DTM CRS: {dtm_crs}")
-            self.core.set_crs(dtm_crs)
-        elif dtm_crs != self.core.crs:
+            feedback.pushInfo(f"Setting core CRS from DTM/project CRS: {effective_crs}")
+            self.core.set_crs(effective_crs)
+        elif effective_crs != self.core.crs:
             # Add warning if input crs not equal to core crs
-            feedback.pushWarning(f"DTM CRS {dtm_crs} differs from core (project) CRS {self.core.crs}!")
+            feedback.pushWarning(f"DTM/project CRS {effective_crs} differs from core (project) CRS {self.core.crs}!")
 
         # Optionally clip the DTM to the perimeter before the expensive WBT chain
         perimeter_source = self.parameterAsSource(parameters, self.INPUT_PERIMETER, context)
@@ -286,6 +289,7 @@ class CreateRidgesAlgorithm(QgsProcessingAlgorithm):
             feedback.pushInfo(f"[CreateRidges] Clipping DTM to perimeter extent → {clipped_dtm_path}")
             warp_options = gdal.WarpOptions(
                 format='GTiff',
+                srcSRS=effective_crs,
                 cutlineDSName=perimeter_temp_path,
                 cropToCutline=True,
                 creationOptions=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=IF_SAFER']

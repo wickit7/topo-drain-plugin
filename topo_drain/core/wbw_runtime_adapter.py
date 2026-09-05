@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import gc
 import json
+import threading
 from typing import Any
 
 _log = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ class WhiteboxWorkflowsRuntimeAdapter:
         self.tier = str(tier or "open").strip().lower() or "open"
         self._wbw = None
         self._session = None
+        self._session_thread_id = None
         self._teardown_logged = False
 
     def _load_backend(self):
@@ -108,23 +110,43 @@ class WhiteboxWorkflowsRuntimeAdapter:
             self._dispose_session(old_session)
             self._session = None
             # Some RuntimeSession builds expose no explicit close/dispose API.
-            # Force GC to encourage timely native resource finalization.
+            # gc.collect() (full) stops every thread in the process, including the Qt
+            # main/GUI thread, and was freezing QGIS on every algorithm run; gen-0-only
+            # is enough to break cyclic refs to the just-dereferenced session.
             del old_session
-            gc.collect()
+            gc.collect(0)
 
         if refresh or self._session is None:
             self._session = self._create_session()
+            self._session_thread_id = threading.get_ident()
         return self._session
 
     def reset_session(self) -> None:
         """Drop the cached session so the next call creates a fresh RuntimeSession."""
         old_session = self._session
+        if old_session is None:
+            return  # Nothing to dispose; avoid an unnecessary GC pause on every run.
         self._dispose_session(old_session)
         self._session = None
+        self._session_thread_id = None
         # Some RuntimeSession builds expose no explicit close/dispose API.
-        # Force GC to encourage timely native resource finalization.
+        # gc.collect() (full) stops every thread in the process, including the Qt
+        # main/GUI thread, and was freezing QGIS on every algorithm run; gen-0-only
+        # is enough to break cyclic refs to the just-dereferenced session.
         del old_session
-        gc.collect()
+        gc.collect(0)
+
+    def reset_session_if_stale(self) -> None:
+        """Reset the cached session only if it belongs to a different thread.
+
+        Constructing a RuntimeSession is expensive and can block QGIS's main GUI
+        thread (native init doesn't release the GIL). Reusing a session across a
+        terminated QThread crashes on Windows, so only reset when the owning
+        thread actually changed instead of unconditionally on every run.
+        """
+        if self._session is not None and self._session_thread_id == threading.get_ident():
+            return
+        self.reset_session()
 
     def get_capabilities(self) -> dict[str, Any]:
         session = self.get_session()
