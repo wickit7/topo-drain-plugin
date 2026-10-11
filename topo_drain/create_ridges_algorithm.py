@@ -16,7 +16,6 @@ from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterRasterLayer
 import os
 import gc
 import uuid
-from osgeo import gdal
 from .utils import get_crs_from_layer, ensure_whiteboxtools_configured, save_gdf_to_file, save_gdf_to_file_ogr, load_gdf_from_qgis_source, get_raster_ext, get_vector_ext, get_crs_from_project, clear_pyproj_cache
 
 pluginPath = os.path.dirname(__file__)
@@ -287,18 +286,13 @@ class CreateRidgesAlgorithm(QgsProcessingAlgorithm):
                 f"dtm_clipped_{uuid.uuid4().hex[:8]}.tif"
             )
             feedback.pushInfo(f"[CreateRidges] Clipping DTM to perimeter extent → {clipped_dtm_path}")
-            warp_options = gdal.WarpOptions(
-                format='GTiff',
-                srcSRS=effective_crs,
-                cutlineDSName=perimeter_temp_path,
-                cropToCutline=True,
-                creationOptions=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=IF_SAFER']
-            )
-            result_ds = gdal.Warp(clipped_dtm_path, dtm_path, options=warp_options)
-            if result_ds is None:
-                raise QgsProcessingException("Failed to clip DTM to perimeter extent")
-            result_ds = None
-            dtm_path_for_processing = clipped_dtm_path
+            try:
+                dtm_path_for_processing = self.core._clip_raster(
+                    dtm_path, perimeter_temp_path, clipped_dtm_path,
+                    crs=effective_crs, feedback=feedback
+                )
+            except RuntimeError as e:
+                raise QgsProcessingException(f"Failed to clip DTM to perimeter: {e}") from e
             feedback.pushInfo("[CreateRidges] DTM clipped successfully")
 
         feedback.pushInfo("Running extract ridges...")
