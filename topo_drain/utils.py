@@ -956,6 +956,7 @@ def save_gdf_to_file_ogr(gdf, file_path, core, feedback, all_upper=False):
     Raises:
         QgsProcessingException: If saving fails
     """
+    ds = layer = feature = None
     try:
         from osgeo import ogr, osr
         
@@ -1065,6 +1066,7 @@ def save_gdf_to_file_ogr(gdf, file_path, core, feedback, all_upper=False):
             raise QgsProcessingException("Could not create layer")
         
         # Create fields (excluding geometry column)
+        field_indices = {}
         for column in cleaned_gdf.columns:
             if column == 'geometry':
                 continue
@@ -1079,7 +1081,23 @@ def save_gdf_to_file_ogr(gdf, file_path, core, feedback, all_upper=False):
                 field_type = ogr.OFTString
             
             field_defn = ogr.FieldDefn(column, field_type)
-            layer.CreateField(field_defn)
+            field_index = layer.GetLayerDefn().GetFieldCount()
+            result = layer.CreateField(field_defn)
+            if result != ogr.OGRERR_NONE:
+                raise QgsProcessingException(f"Could not create field '{column}' (OGR error {result})")
+            definition = layer.GetLayerDefn()
+            if definition.GetFieldCount() != field_index + 1:
+                raise QgsProcessingException(f"OGR did not create an attribute field for '{column}'")
+            # Drivers may shorten or rename fields, including resolving name collisions.
+            field_indices[column] = field_index
+            actual_name = definition.GetFieldDefn(field_index).GetName()
+            if actual_name != column:
+                message = f"OGR output field renamed: '{column}' -> '{actual_name}'"
+                if feedback:
+                    feedback.pushInfo(message)
+                else:
+                    warnings.warn(message)
+            definition = None
         
         # Add features
         for idx, row in cleaned_gdf.iterrows():
@@ -1098,14 +1116,16 @@ def save_gdf_to_file_ogr(gdf, file_path, core, feedback, all_upper=False):
                 value = row[column]
                 if pd.isna(value):
                     continue
-                feature.SetField(column, value)
+                feature.SetField(field_indices[column], value)
             
             # Add feature to layer
-            layer.CreateFeature(feature)
+            result = layer.CreateFeature(feature)
+            if result != ogr.OGRERR_NONE:
+                raise QgsProcessingException(f"Could not write feature at row {idx} (OGR error {result})")
             feature = None
         
         # Close dataset
-        ds = None
+        layer = ds = None
         
         if feedback:
             feedback.pushInfo(f"✓ GeoDataFrame saved using OGR: {file_path}")
@@ -1118,6 +1138,8 @@ def save_gdf_to_file_ogr(gdf, file_path, core, feedback, all_upper=False):
         if feedback:
             feedback.pushWarning(error_msg)
         raise QgsProcessingException(error_msg)
+    finally:
+        feature = layer = ds = None
 
 
 def get_raster_ext(raster_path, feedback=None, check_existence=True):
@@ -1230,4 +1252,3 @@ def get_vector_ext(vector_path, feedback=None, check_existence=True):
         if feedback:
             feedback.pushInfo(error_msg)
         raise Exception(error_msg)
-

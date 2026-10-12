@@ -63,6 +63,8 @@ After installation, you will see TopoDrain tools in the **Processing Toolbox** u
 
 ## Documentation and Tutorials
 
+**YouTube videos:** [youtube.com/@TopoDrain](https://www.youtube.com/@TopoDrain)
+
 ### Keyline Design Manual
 A comprehensive step-by-step tutorial for creating a Keyline Design using the TopoDrain plugin tools is available:
 

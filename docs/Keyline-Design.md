@@ -96,6 +96,8 @@ The tool uses a series of WhiteboxTools processes:
   - **Recommended for large DTM extents** (e.g. full canton/region): clipping to the relevant catchment area can reduce processing time. 
   - Accepts any polygon layer, memory layers, or selected features.
   - If not provided, the full DTM extent is processed.
+  - Pixels outside the polygon (including polygon holes) are explicitly marked as NoData, not zero elevation. Existing finite source NoData values are retained; DTMs without NoData, or with non-finite NoData, receive a finite missing-data value. Integer DTMs are converted to floating point during clipping so this value can be represented without changing valid zero elevations.
+  - Clipping changes the terrain boundary and can remove natural drainage routes. Results near the boundary may differ from processing the full DTM, and a smaller raster is not guaranteed to breach faster. Include surrounding terrain where possible.
   - Remember: Flow accumulation is only calculated within the provided DTM extent. Ideally, the DTM should cover the **entire upstream catchment** of your keyline design area — not just the keyline design perimeter itself — so that flow accumulation values correctly reflect the full contributing drainage area.
 
 - **Advanced: Maximum search distance for breach paths in cells**: Maximum distance to search when breaching depressions
@@ -118,6 +120,7 @@ The tool generates several layers:
    - **Main result** layer for further analysis
    - Contains attributes: `LINK_ID`, `TRIB_ID`, `DS_LINK_ID`, `NET_ID`, `TRIB_RANK`, `TRIB_FACC` (used in subsequent tools)
    - `NET_ID` identifies disconnected sub-networks; `TRIB_RANK` and `TRIB_FACC` enable global tributary ranking in Extract Main Valleys
+   - At confluences, the upstream link with the highest measured flow accumulation continues the same `TRIB_ID`. Shared confluence cells are excluded. If a short link has no exclusive cells, its valid upstream endpoint accumulation is used as a conservative estimate; the downstream junction value is never used. The processing log reports these estimates and warns if no valid estimate is available.
    - Recommend styling with thin blue lines for visualization
    
 2. **Output Filled DTM (raster)** - Depression-breached terrain model
@@ -510,6 +513,8 @@ This creates keylines that initially move water (1% slope), then transition to l
 #### Output
 
 **Output Keylines**: Line layer containing all traced keylines with attributes describing the slope characteristics.
+
+For Shapefile output, attribute names are limited to 10 characters. OGR shortens names such as `CHANGE_AFTER` to `CHANGE_AFT` and `SLOPE_AFTER` to `SLOPE_AFTE`, resolving collisions with suffixes. The direct OGR save path logs renamed fields and preserves their values. Use GeoPackage (`.gpkg`) to retain full attribute names.
 - `SLOPE` - Value of input parameter "Desired Slope"
 - `CHANGE_AFTER` - Value of input parameter "Change Slope At Distance"
 - `SLOPE_AFTER` - Value of input parameter "New Slope After Change Point"

@@ -6,6 +6,7 @@
 #
 # -----------------------------------------------------------------------------
 import logging
+import math
 import os
 import sys
 import tempfile
@@ -36,6 +37,9 @@ except ImportError:
     save_gdf_to_file_ogr = None
 
 _log = logging.getLogger(__name__)
+
+# A finite, Float32-representable sentinel far outside ordinary elevations.
+DTM_NODATA = -3.4028234663852886e38
 
 
 class _ScopedProgressFeedback:
@@ -1265,85 +1269,82 @@ class TopoDrainCore:
             pixel_indices.append((px, py))
         return pixel_indices
 
-    # _clip_raster not used yet and therefore not debugged
-    def _clip_raster(self, raster_path: str, mask: gpd.GeoDataFrame, out_path: str) -> str:
+    def _clip_raster(
+        self, raster_path: str, mask: str, out_path: str, crs: str = None, feedback=None
+    ) -> str:
         """
-        Clip a raster file using a polygon mask using GDAL.
+        Clip a DTM using GDAL, explicitly marking excluded pixels as NoData.
 
         Args:
             raster_path (str): Path to input raster (supports all GDAL formats in gdal_driver_mapping).
-            mask (GeoDataFrame): Polygon(s) to use as mask.
+            mask (str): Path to a polygon datasource with CRS metadata.
             out_path (str): Desired path for output masked raster.
+            crs (str, optional): Source CRS override. Otherwise use the raster metadata.
+            feedback (QgsProcessingFeedback, optional): Progress and cancellation feedback.
 
         Returns:
             str: Path to the masked raster.
         """
-        if mask.empty:
-            raise ValueError("The provided GeoDataFrame is empty. Cannot mask raster.")
+        source = gdal.Open(raster_path, gdal.GA_ReadOnly)
+        if source is None:
+            raise RuntimeError(f"Cannot open input DTM: {raster_path}")
 
-        # Create memory vector layer from mask GeoDataFrame
-        mem_driver = ogr.GetDriverByName('Memory')
-        if mem_driver is None:
-            raise RuntimeError(f"Memory driver not available.{self._get_gdal_error_message()}")
-            
-        mem_ds = mem_driver.CreateDataSource('')
-        if mem_ds is None:
-            raise RuntimeError(f"Failed to create memory datasource.{self._get_gdal_error_message()}")
-        
         try:
-            mem_layer = mem_ds.CreateLayer('mask', None, ogr.wkbPolygon)
-            if mem_layer is None:
-                raise RuntimeError(f"Failed to create memory layer.{self._get_gdal_error_message()}")
-            
-            # Add mask geometries to layer
-            for _, row in mask.iterrows():
-                geom = row.geometry
-                
-                # Create OGR feature
-                feature = ogr.Feature(mem_layer.GetLayerDefn())
-                
-                # Convert Shapely geometry to OGR geometry
-                ogr_geom = ogr.CreateGeometryFromWkt(geom.wkt)
-                if ogr_geom is None:
-                    continue
-                
-                feature.SetGeometry(ogr_geom)
-                
-                # Add feature to layer
-                result = mem_layer.CreateFeature(feature)
-                if result != ogr.OGRERR_NONE:
-                    continue
-                
-                feature = None  # Clean up feature
-                ogr_geom = None  # Clean up geometry
+            band = source.GetRasterBand(1)
+            nodata = band.GetNoDataValue()
+            if nodata is None or not math.isfinite(nodata):
+                nodata = DTM_NODATA
 
-            # Use gdal.Warp to crop and mask the raster
-            # Ensure output directory exists
-            os.makedirs(os.path.dirname(out_path), exist_ok=True)
-            
-            # Determine GDAL driver based on output file extension
-            driver_name = self._get_gdal_driver_from_path(out_path)
-            
-            # Configure warp options
-            warp_options = gdal.WarpOptions(
-                format=driver_name,
-                srcSRS=self.crs if self.crs else None,
-                cutlineDSName=mem_ds,  # Use memory dataset as cutline
-                cutlineLayer='mask',
+            # Integer rasters cannot necessarily represent a negative NoData value.
+            output_type = band.DataType
+            if output_type not in (gdal.GDT_Float32, gdal.GDT_Float64):
+                output_type = gdal.GDT_Float64
+            band = None
+
+            out_dir = os.path.dirname(out_path)
+            if out_dir:
+                os.makedirs(out_dir, exist_ok=True)
+
+            def warp_progress(complete, message, unknown):
+                if feedback is not None:
+                    feedback.setProgress(complete * 10)
+                    return not feedback.isCanceled()
+                return True
+
+            message = f"[DTMClip] Destination NoData: {nodata}"
+            if feedback is not None:
+                feedback.pushInfo(message)
+            else:
+                print(message)
+            options = gdal.WarpOptions(
+                format=self._get_gdal_driver_from_path(out_path),
+                srcSRS=crs,
+                cutlineDSName=mask,
                 cropToCutline=True,
-                creationOptions=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=IF_SAFER']
+                dstNodata=nodata,
+                outputType=output_type,
+                creationOptions=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=IF_SAFER'],
+                callback=warp_progress,
             )
-            
-            # Perform the warp operation
-            result_ds = gdal.Warp(out_path, raster_path, options=warp_options)
-            if result_ds is None:
-                raise RuntimeError(f"Failed to mask raster: {raster_path}.{self._get_gdal_error_message()}")
-            
-            result_ds = None  # Close result dataset
-            
+            result = gdal.Warp(out_path, source, options=options)
+            if result is None:
+                if feedback is not None and feedback.isCanceled():
+                    raise RuntimeError("DTM clipping cancelled by user.")
+                raise RuntimeError(f"Failed to clip DTM to perimeter: {gdal.GetLastErrorMsg()}")
+            try:
+                message = (
+                    f"[DTMClip] Raster size: {source.RasterXSize} x {source.RasterYSize}"
+                    f" -> {result.RasterXSize} x {result.RasterYSize}; "
+                    f"pixel size: {result.GetGeoTransform()[1]}, {result.GetGeoTransform()[5]}"
+                )
+                if feedback is not None:
+                    feedback.pushInfo(message)
+                else:
+                    print(message)
+            finally:
+                result = None
         finally:
-            mem_layer = None
-            mem_ds = None
+            source = None
 
         return out_path
 
@@ -1826,6 +1827,8 @@ class TopoDrainCore:
         TRIB_ID groups all links of the same tributary.  At each confluence the
         upstream link with the highest max flow-accumulation inherits the current
         TRIB_ID (main stem continuation); all other upstream links receive new IDs.
+        Links without exclusive raster cells use their upstream endpoint's valid
+        accumulation as a conservative estimate, never the downstream confluence.
         TRIB_RANK ranks tributaries globally by their max flow-accumulation
         (rank 1 = main stem / highest facc).  It is used by extract_main_valleys
         to select the top-N tributaries without needing the facc raster again.
@@ -1897,10 +1900,11 @@ class TopoDrainCore:
         except OSError as e:
             _log.debug("[TopoDrainCore] Could not remove temp stream mask file: %s", e)
 
-        cell_mask = (stream_mask == 1) & (facc_data > 0)
+        cell_mask = (stream_mask == 1) & np.isfinite(facc_data) & (facc_data > 0)
         rows_arr, cols_arr = np.where(cell_mask)
 
         max_facc: dict[int, float] = {lid: 0.0 for lid in link_ids}
+        measured_links = set()
 
         if len(rows_arr) > 0:
             cell_coords = self._pixel_indices_to_coords(rows_arr, cols_arr, gt)
@@ -1932,6 +1936,7 @@ class TopoDrainCore:
 
             for lid, grp in joined_uniq.groupby("LINK_ID"):
                 max_facc[lid] = float(grp["facc_val"].max())
+                measured_links.add(lid)
 
         # --- Endpoint geometry dicts (upstream = first coord, downstream = last coord) ---
         us_pts: dict[int, Point] = {}  # upstream (start) point per link
@@ -1941,6 +1946,47 @@ class TopoDrainCore:
             coords = list(row.geometry.coords)
             us_pts[lid] = Point(coords[0])
             ds_pts[lid] = Point(coords[-1])
+
+        missing_links = [lid for lid in link_ids if lid not in measured_links]
+        if missing_links:
+            inverse_gt = gdal.InvGeoTransform(gt)
+            if inverse_gt is None:
+                raise RuntimeError("Cannot invert flow accumulation raster geotransform.")
+            height, width = facc_data.shape
+            for lid in missing_links:
+                start_col, start_row = gdal.ApplyGeoTransform(
+                    inverse_gt, us_pts[lid].x, us_pts[lid].y
+                )
+                end_col, end_row = gdal.ApplyGeoTransform(
+                    inverse_gt, ds_pts[lid].x, ds_pts[lid].y
+                )
+                col, row = math.floor(start_col), math.floor(start_row)
+                end_cell = (math.floor(end_col), math.floor(end_row))
+                # The upper junction contributes to this link; the lower one also
+                # contains the competing tributary and must never be sampled.
+                if (col, row) != end_cell and 0 <= row < height and 0 <= col < width:
+                    value = float(facc_data[row, col])
+                    if math.isfinite(value) and value > 0:
+                        max_facc[lid] = value
+                        message = (
+                            f"[AssignStreamTopology] LINK_ID={lid}: no exclusive raster cells; "
+                            f"using upstream endpoint accumulation {value} "
+                            f"(row={row}, col={col})."
+                        )
+                        if feedback is not None:
+                            feedback.pushInfo(message)
+                        else:
+                            _log.info(message)
+                        continue
+                message = (
+                    f"[AssignStreamTopology] LINK_ID={lid}: no exclusive raster cells "
+                    "and no valid upstream endpoint separate from the downstream cell; "
+                    "accumulation remains 0. Tributary continuation may be unreliable."
+                )
+                if feedback is not None:
+                    feedback.pushWarning(message)
+                else:
+                    _log.warning(message)
 
         # --- Build DS_LINK_ID: downstream endpoint of A ≈ upstream endpoint of B ---
         ds_link_id: dict[int, int | None] = {}
@@ -4157,6 +4203,7 @@ class TopoDrainCore:
             acc_data = acc_band.ReadAsArray()
             if acc_data is None:
                 raise RuntimeError(f"Cannot read accumulation data from: {accum_raster_path}")
+            acc_nodata = acc_band.GetNoDataValue()
                 
             # Get spatial information for coordinate conversion
             geotransform = acc_ds.GetGeoTransform()
@@ -4191,8 +4238,12 @@ class TopoDrainCore:
         finally:
             dest_ds = None  # Close destination dataset
 
-        # Consider only destination cells (where value == 1)
-        mask = (dest_data == 1)
+        # Consider only reachable destination cells. Cells with NoData accumulated cost
+        # (e.g. barrier cells overlapping a destination) would otherwise win as minimum (-32768).
+        acc_data = acc_data.astype(np.float64)
+        mask = (dest_data == 1) & np.isfinite(acc_data) & (acc_data >= 0)
+        if acc_nodata is not None:
+            mask &= acc_data != acc_nodata
         acc_masked = np.where(mask, acc_data, np.nan)
 
         # Identify cell with minimum accumulated cost
@@ -4785,7 +4836,8 @@ class TopoDrainCore:
             
             if current_barrier_value is not None:
                 working_barrier_data = np.where(orig_barrier_data == current_barrier_value, 1, 0).astype(orig_barrier_data.dtype) # current barrier act as barrier and not as destination
-                working_destination_data = np.where((orig_dest_data == 1) | ((orig_barrier_data >= 1) & (orig_barrier_data != current_barrier_value)), 1, 0).astype(orig_dest_data.dtype)  # all other barriers act as temporary destinations except the current one
+                # all other barriers act as temporary destinations except the current one, whose cells are never destinations
+                working_destination_data = np.where(((orig_dest_data == 1) | (orig_barrier_data >= 1)) & (orig_barrier_data != current_barrier_value), 1, 0).astype(orig_dest_data.dtype)
             else:
                 working_barrier_data = None # all barriers acting as temporary destinations and not as barriers
                 working_destination_data = np.where((orig_dest_data == 1) | (orig_barrier_data >= 1), 1, 0).astype(orig_dest_data.dtype) 
