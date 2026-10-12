@@ -33,6 +33,7 @@ changelog=2.2.2 - Perimeter clipping, tributary topology and Shapefile export fi
     * Create Valleys and Create Ridges: explicitly preserve or assign finite NoData when clipping to a perimeter, avoiding artificial zero-elevation terrain
     * Fixed main-stem continuation for short stream links without exclusive flow-accumulation cells by using valid upstream endpoint accumulation; unresolved cases now report warnings
     * Fixed direct OGR Shapefile export for long or colliding attribute names, including CHANGE_AFTER and SLOPE_AFTER; field and feature creation errors are now checked
+    * Create Constant Slope Lines: fixed lines stopping at the first barrier when barriers are allowed as temporary destinations
     2.2.1 - CRS handling, progress reporting and stability fixes
     * Fixed false "no CRS" warnings/errors for QGIS-sourced vector inputs (outlet points, perimeters, etc.) without risking PyProj/PROJ crashes
     * Fixed algorithm abort on invalid (e.g. self-intersecting) perimeter geometries; invalid polygons are now auto-repaired
