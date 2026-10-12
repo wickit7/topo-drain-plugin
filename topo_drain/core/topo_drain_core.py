@@ -4203,6 +4203,7 @@ class TopoDrainCore:
             acc_data = acc_band.ReadAsArray()
             if acc_data is None:
                 raise RuntimeError(f"Cannot read accumulation data from: {accum_raster_path}")
+            acc_nodata = acc_band.GetNoDataValue()
                 
             # Get spatial information for coordinate conversion
             geotransform = acc_ds.GetGeoTransform()
@@ -4237,8 +4238,12 @@ class TopoDrainCore:
         finally:
             dest_ds = None  # Close destination dataset
 
-        # Consider only destination cells (where value == 1)
-        mask = (dest_data == 1)
+        # Consider only reachable destination cells. Cells with NoData accumulated cost
+        # (e.g. barrier cells overlapping a destination) would otherwise win as minimum (-32768).
+        acc_data = acc_data.astype(np.float64)
+        mask = (dest_data == 1) & np.isfinite(acc_data) & (acc_data >= 0)
+        if acc_nodata is not None:
+            mask &= acc_data != acc_nodata
         acc_masked = np.where(mask, acc_data, np.nan)
 
         # Identify cell with minimum accumulated cost
@@ -4831,7 +4836,8 @@ class TopoDrainCore:
             
             if current_barrier_value is not None:
                 working_barrier_data = np.where(orig_barrier_data == current_barrier_value, 1, 0).astype(orig_barrier_data.dtype) # current barrier act as barrier and not as destination
-                working_destination_data = np.where((orig_dest_data == 1) | ((orig_barrier_data >= 1) & (orig_barrier_data != current_barrier_value)), 1, 0).astype(orig_dest_data.dtype)  # all other barriers act as temporary destinations except the current one
+                # all other barriers act as temporary destinations except the current one, whose cells are never destinations
+                working_destination_data = np.where(((orig_dest_data == 1) | (orig_barrier_data >= 1)) & (orig_barrier_data != current_barrier_value), 1, 0).astype(orig_dest_data.dtype)
             else:
                 working_barrier_data = None # all barriers acting as temporary destinations and not as barriers
                 working_destination_data = np.where((orig_dest_data == 1) | (orig_barrier_data >= 1), 1, 0).astype(orig_dest_data.dtype) 
